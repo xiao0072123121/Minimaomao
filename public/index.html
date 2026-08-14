@@ -463,23 +463,13 @@
     .strategy-head h2 { margin: 0 0 4px; font-size: 17px; font-weight: 700; }
     .strategy-head p { margin: 0; color: var(--muted); font-size: 12px; }
 
-    .strategy-direction {
-      flex: 0 0 auto;
-      padding: 7px 12px;
-      border: 1px solid var(--border);
-      border-radius: 999px;
-      color: var(--muted);
-      background: rgba(255, 255, 255, .025);
-      font-size: 13px;
-      font-weight: 700;
-    }
-
-    .strategy-card[data-bias="bullish"] .strategy-direction { color: var(--red); border-color: rgba(255, 107, 112, .22); background: rgba(255, 107, 112, .07); }
-    .strategy-card[data-bias="bearish"] .strategy-direction { color: var(--green); border-color: rgba(55, 213, 154, .22); background: rgba(55, 213, 154, .07); }
+    #strategy-direction { color: var(--muted); font-weight: 700; }
+    .strategy-card[data-bias="bullish"] #strategy-direction { color: var(--red); }
+    .strategy-card[data-bias="bearish"] #strategy-direction { color: var(--green); }
 
     .strategy-metrics {
       display: grid;
-      grid-template-columns: repeat(6, minmax(0, 1fr));
+      grid-template-columns: repeat(7, minmax(0, 1fr));
       gap: 8px;
     }
 
@@ -997,15 +987,15 @@
           <h2 id="strategy-title">日内交易策略</h2>
           <p id="strategy-status">等待H1与M15已收盘K线…</p>
         </div>
-        <div id="strategy-direction" class="strategy-direction">观望</div>
       </div>
       <div class="strategy-metrics" aria-label="日内策略参数">
-        <div class="strategy-metric"><span>策略优先级</span><b id="strategy-priority">等待</b></div>
-        <div class="strategy-metric"><span>策略评分</span><b id="strategy-score">—</b></div>
-        <div class="strategy-metric"><span>参考入场区</span><b id="strategy-entry">—</b></div>
+        <div class="strategy-metric"><span>方向</span><b id="strategy-direction">观望</b></div>
+        <div class="strategy-metric"><span>入场区域</span><b id="strategy-entry">—</b></div>
         <div class="strategy-metric"><span>止损</span><b id="strategy-stop">—</b></div>
         <div class="strategy-metric"><span>止盈</span><b id="strategy-take-profit">—</b></div>
         <div class="strategy-metric"><span>盈亏比</span><b id="strategy-rr">—</b></div>
+        <div class="strategy-metric"><span>策略评分</span><b id="strategy-score">—</b></div>
+        <div class="strategy-metric"><span>策略优先级</span><b id="strategy-priority">等待</b></div>
       </div>
       <div class="strategy-body">
         <div class="strategy-note"><span>策略依据</span><p id="strategy-summary">等待多周期判断完成。</p></div>
