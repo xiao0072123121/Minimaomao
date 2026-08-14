@@ -1540,9 +1540,15 @@
     const py = chart.y(candle.close);
     $("hover-line").setAttribute("x1", px);
     $("hover-line").setAttribute("x2", px);
+    $("hover-horizontal-line").setAttribute("y1", py);
+    $("hover-horizontal-line").setAttribute("y2", py);
     $("hover-point").setAttribute("cx", px);
     $("hover-point").setAttribute("cy", py);
     $("hover-layer").setAttribute("visibility", "visible");
+    const priceLabel = $("hover-price-label");
+    priceLabel.textContent = priceFormat.format(candle.close);
+    priceLabel.style.top = `${py / chart.H * 100}%`;
+    priceLabel.classList.add("visible");
 
     const rsiValue = chart.rsi[index];
     const rsiChart = $("rsi-chart")._chart;
@@ -1580,6 +1586,7 @@
 
   function hideTooltip() {
     $("tooltip").classList.remove("visible");
+    $("hover-price-label").classList.remove("visible");
     $("hover-layer").setAttribute("visibility", "hidden");
     $("rsi-hover-layer").setAttribute("visibility", "hidden");
   }
