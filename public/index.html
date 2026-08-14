@@ -927,9 +927,10 @@
 
       <div id="chart-wrap" class="chart-wrap" title="滚轮缩放K线；按住鼠标左键可左右拖动">
         <svg id="price-chart" viewBox="0 0 1000 710" preserveAspectRatio="none" role="img" aria-label="Binance 合约价格K线图">
+          <defs><clipPath id="price-plot-clip"><rect x="12" y="14" width="922" height="665"></rect></clipPath></defs>
           <g id="grid-layer"></g>
-          <g id="candle-layer"></g>
-          <g id="ma-layer">
+          <g id="candle-layer" clip-path="url(#price-plot-clip)"></g>
+          <g id="ma-layer" clip-path="url(#price-plot-clip)">
             <path id="ma20-line" class="ma-line ma20-line"></path>
             <path id="ma60-line" class="ma-line ma60-line"></path>
           </g>
@@ -958,10 +959,10 @@
         <div class="rsi-heading"><span>RSI (14)</span><b id="rsi-current">—</b></div>
         <div class="rsi-wrap">
           <svg id="rsi-chart" viewBox="0 0 1000 122" preserveAspectRatio="none" role="img" aria-label="RSI 相对强弱指标附图">
-            <defs><linearGradient id="rsi-gradient" x1="0" x2="0" y1="0" y2="1"><stop stop-color="#f0b94d" stop-opacity=".56"/><stop offset="1" stop-color="#f0b94d" stop-opacity="0"/></linearGradient></defs>
+            <defs><linearGradient id="rsi-gradient" x1="0" x2="0" y1="0" y2="1"><stop stop-color="#f0b94d" stop-opacity=".56"/><stop offset="1" stop-color="#f0b94d" stop-opacity="0"/></linearGradient><clipPath id="rsi-plot-clip"><rect x="12" y="8" width="922" height="104"></rect></clipPath></defs>
             <g id="rsi-grid-layer"></g>
-            <path id="rsi-area" class="rsi-fill"></path>
-            <path id="rsi-line" class="rsi-line"></path>
+            <path id="rsi-area" class="rsi-fill" clip-path="url(#rsi-plot-clip)"></path>
+            <path id="rsi-line" class="rsi-line" clip-path="url(#rsi-plot-clip)"></path>
             <g id="rsi-hover-layer" visibility="hidden">
               <line id="rsi-hover-line" class="rsi-hover-line" y1="8" y2="112"></line>
               <circle id="rsi-hover-point" class="rsi-hover-point" r="4"></circle>

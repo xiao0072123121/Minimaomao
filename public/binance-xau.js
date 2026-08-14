@@ -31,6 +31,7 @@
   const TOOLTIP_EDGE_GAP = 12;
   const RANGE_EXPANSION_COOLDOWN = 800;
   const PAN_EXPANSION_THRESHOLD = 24;
+  const MAX_RIGHT_BLANK_RATIO = 0.22;
 
   const RANGES = {
     "5d": { label: "5日", start: (end) => end - 5 * DAY },
@@ -92,6 +93,7 @@
     candles: [],
     timelineStart: 0,
     timelineEnd: 100,
+    rightBlankRatio: 0,
     showMa20: true,
     showMa60: true,
     loadToken: 0,
@@ -232,6 +234,7 @@
     state.directionStates = {};
     state.timelineStart = 0;
     state.timelineEnd = 100;
+    state.rightBlankRatio = 0;
     clearTimeout(state.analysisRenderTimer);
     state.analysisRenderTimer = null;
     $("mid-price").textContent = "—";
@@ -1180,6 +1183,7 @@
     const margin = { top: 8, right: 66, bottom: 10, left: 12 };
     const innerW = W - margin.left - margin.right;
     const innerH = H - margin.top - margin.bottom;
+    const contentOffsetX = state.rightBlankRatio * innerW;
     const axisTextScaleX = getSvgTextScaleX(svg, W, H);
     const y = (value) => margin.top + (100 - value) / 100 * innerH;
     let gridMarkup = "";
@@ -1198,7 +1202,7 @@
       svg._chart = null;
       return;
     }
-    const x = (index) => margin.left + (index / Math.max(1, candles.length - 1)) * innerW;
+    const x = (index) => margin.left + (index / Math.max(1, candles.length - 1)) * innerW - contentOffsetX;
     const points = usable.map(({ value, index }) => `${x(index).toFixed(2)},${y(value).toFixed(2)}`);
     const bottom = margin.top + innerH;
     line.setAttribute("d", `M ${points.join(" L ")}`);
@@ -1327,6 +1331,7 @@
     if (source === "end" && end < start + minimumGap) end = start + minimumGap;
     state.timelineStart = Math.max(0, Math.min(100 - minimumGap, start));
     state.timelineEnd = Math.min(100, Math.max(minimumGap, end));
+    state.rightBlankRatio = 0;
     syncTimelineInputs();
     hideTooltip();
     renderChart();
@@ -1339,7 +1344,8 @@
 
     const rect = $("price-chart").getBoundingClientRect();
     const localX = (event.clientX - rect.left) / Math.max(1, rect.width) * chart.W;
-    const anchorRatio = (localX - chart.margin.left) /
+    const dataLocalX = Math.min(chart.W - chart.margin.right, localX + chart.contentOffsetX);
+    const anchorRatio = (dataLocalX - chart.margin.left) /
       Math.max(1, chart.W - chart.margin.left - chart.margin.right);
     const deltaMultiplier = event.deltaMode === 1
       ? 16
@@ -1363,6 +1369,7 @@
     );
     state.timelineStart = next.start;
     state.timelineEnd = next.end;
+    if (next.end < 99.999) state.rightBlankRatio = 0;
     syncTimelineInputs();
     hideTooltip();
     latestWheelPointer = { clientX: event.clientX, clientY: event.clientY };
@@ -1378,14 +1385,14 @@
 
   function beginChartPan(event) {
     const chart = $("price-chart")._chart;
-    const span = state.timelineEnd - state.timelineStart;
-    if (event.button !== 0 || !chart || state.candles.length < 2 || (span >= 99.999 && !getNextHistoryRange())) return;
+    if (event.button !== 0 || !chart || state.candles.length < 2) return;
     event.preventDefault();
     chartPanState = {
       pointerId: event.pointerId,
       startX: event.clientX,
       timelineStart: state.timelineStart,
-      timelineEnd: state.timelineEnd
+      timelineEnd: state.timelineEnd,
+      rightBlankRatio: state.rightBlankRatio
     };
     $("chart-wrap").setPointerCapture(event.pointerId);
     $("chart-wrap").classList.add("dragging");
@@ -1402,10 +1409,25 @@
       (chart.W - chart.margin.left - chart.margin.right) / Math.max(1, chart.W);
     const deltaX = event.clientX - chartPanState.startX;
     const span = chartPanState.timelineEnd - chartPanState.timelineStart;
+    const adjustsFutureSpace = chartPanState.rightBlankRatio > 0 ||
+      (chartPanState.timelineEnd >= 99.999 && deltaX < 0);
+    if (adjustsFutureSpace) {
+      state.rightBlankRatio = Math.max(0, Math.min(
+        MAX_RIGHT_BLANK_RATIO,
+        chartPanState.rightBlankRatio - deltaX / Math.max(1, plotWidth)
+      ));
+      hideTooltip();
+      if (panRenderFrame) return;
+      panRenderFrame = requestAnimationFrame(() => {
+        panRenderFrame = 0;
+        renderChart();
+      });
+      return;
+    }
+    state.rightBlankRatio = 0;
     const requestedShift = -deltaX / Math.max(1, plotWidth) * span;
     const requestedStart = chartPanState.timelineStart + requestedShift;
-    const requestedEnd = chartPanState.timelineEnd + requestedShift;
-    const reachesRangeBoundary = requestedStart < 0 || requestedEnd > 100 || span >= 99.999;
+    const reachesRangeBoundary = requestedStart < 0 || span >= 99.999;
     if (Math.abs(deltaX) >= PAN_EXPANSION_THRESHOLD && reachesRangeBoundary && getNextHistoryRange()) {
       endChartPan(event);
       void expandHistoryRange();
@@ -1510,6 +1532,7 @@
     const margin = { top: 14, right: 66, bottom: 31, left: 12 };
     const innerW = W - margin.left - margin.right;
     const innerH = H - margin.top - margin.bottom;
+    const contentOffsetX = state.rightBlankRatio * innerW;
     const axisTextScaleX = getSvgTextScaleX(svg, W, H);
     grid.innerHTML = "";
     candleLayer.innerHTML = "";
@@ -1528,15 +1551,17 @@
     }
     $("empty-state").style.display = "none";
 
+    const visibleStartIndex = Math.min(candles.length - 2, Math.max(0, Math.floor(state.rightBlankRatio * candles.length)));
+    const verticallyVisibleCandles = candles.slice(visibleStartIndex);
     let minRaw = Infinity;
     let maxRaw = -Infinity;
-    for (const candle of candles) {
+    for (const candle of verticallyVisibleCandles) {
       if (candle.low < minRaw) minRaw = candle.low;
       if (candle.high > maxRaw) maxRaw = candle.high;
     }
     const overlayValues = [];
-    if (state.showMa20) overlayValues.push(...view.ma20.filter(Number.isFinite));
-    if (state.showMa60) overlayValues.push(...view.ma60.filter(Number.isFinite));
+    if (state.showMa20) overlayValues.push(...view.ma20.slice(visibleStartIndex).filter(Number.isFinite));
+    if (state.showMa60) overlayValues.push(...view.ma60.slice(visibleStartIndex).filter(Number.isFinite));
     for (const value of overlayValues) {
       if (value < minRaw) minRaw = value;
       if (value > maxRaw) maxRaw = value;
@@ -1552,7 +1577,7 @@
     const intervalMs = INTERVALS[state.interval].ms;
     const tMin = candles[0].t;
     const tMax = candles[candles.length - 1].t + intervalMs;
-    const x = (time) => margin.left + ((time - tMin) / Math.max(1, tMax - tMin)) * innerW;
+    const x = (time) => margin.left + ((time - tMin) / Math.max(1, tMax - tMin)) * innerW - contentOffsetX;
     const y = (value) => margin.top + (1 - (value - yMin) / (yMax - yMin)) * innerH;
 
     let gridMarkup = "";
@@ -1564,11 +1589,11 @@
       gridMarkup += `<text class="axis-text" x="${labelX}" y="${py + 3}"${axisTextTransform(labelX, axisTextScaleX)}>${priceFormat.format(value)}</text>`;
     }
     for (let index = 0; index <= 4; index += 1) {
-      const candleIndex = Math.round((candles.length - 1) * index / 4);
-      const candle = candles[candleIndex];
-      const px = x(candle.t + intervalMs / 2);
+      const px = margin.left + innerW * index / 4;
+      const dataX = px + contentOffsetX;
+      const labelTime = tMin + ((dataX - margin.left) / innerW) * (tMax - tMin);
       const anchor = index === 0 ? "start" : index === 4 ? "end" : "middle";
-      gridMarkup += `<text class="axis-text" x="${px}" y="${H - 8}" text-anchor="${anchor}"${axisTextTransform(px, axisTextScaleX)}>${formatTime(candle.t, true)}</text>`;
+      gridMarkup += `<text class="axis-text" x="${px}" y="${H - 8}" text-anchor="${anchor}"${axisTextTransform(px, axisTextScaleX)}>${formatTime(labelTime, true)}</text>`;
     }
     grid.innerHTML = gridMarkup;
 
@@ -1616,6 +1641,7 @@
       yMax,
       tMin,
       tMax,
+      contentOffsetX,
       intervalMs
     };
     renderRsi(candles, view.rsi);
@@ -1631,12 +1657,13 @@
       chart.margin.left,
       Math.min(chart.W - chart.margin.right, (event.clientX - rect.left) / rect.width * chart.W)
     );
+    const dataLocalX = Math.min(chart.W - chart.margin.right, localX + chart.contentOffsetX);
     const localY = Math.max(
       chart.margin.top,
       Math.min(chart.H - chart.margin.bottom, (event.clientY - rect.top) / rect.height * chart.H)
     );
     const targetTime = chart.tMin +
-      ((localX - chart.margin.left) / (chart.W - chart.margin.left - chart.margin.right)) *
+      ((dataLocalX - chart.margin.left) / (chart.W - chart.margin.left - chart.margin.right)) *
       (chart.tMax - chart.tMin);
     let low = 0;
     let high = chart.candles.length - 1;
