@@ -465,7 +465,8 @@
     const range = RANGES[state.range];
     const limited = state.historyLimited ? ` · 数据量保护：最近${MAX_HISTORY_CANDLES.toLocaleString("en-US")}根` : "";
     $("chart-subtitle").textContent = `${range.label} · ${INTERVALS[state.interval].label} · ${state.symbol}${limited}`;
-    $("chart-note").textContent = `数据来自 Binance Futures 公开接口；${INTERVALS[state.interval].label}，红色上涨，绿色下跌；成交量、MACD与RSI附图同步主图，滚轮以最右侧K线为锚点缩放，支持左键拖动和触边自动扩展时间范围。`;
+    $("chart-note").textContent = `数据来自 Binance Futures 公开接口；${INTERVALS[state.interval].label}，币安配色为绿色上涨、红色下跌；成交量、MACD与RSI附图同步主图，滚轮以鼠标位置为中心缩放，支持左键拖动和触边自动扩展时间范围。`;
+    $("chart-ohlc-symbol").textContent = `${state.symbol} · ${INTERVALS[state.interval].label} · Binance`;
   }
 
   function updateRangeButtons() {
@@ -1940,11 +1941,11 @@
     });
     grid.innerHTML = gridMarkup;
     const slot = innerW / candles.length;
-    const width = Math.max(1.2, Math.min(8, slot * 0.7));
+    const width = Math.max(1.1, Math.min(22, slot * 0.72));
     bars.innerHTML = candles.map((candle, index) => {
       const top = y(candle.volume);
       const height = Math.max(1, margin.bottomY - top);
-      const fill = candle.close >= candle.open ? "#ff6b70" : "#37d59a";
+      const fill = candle.close >= candle.open ? "#2ebd85" : "#f6465d";
       return `<rect x="${(x(index) - width / 2).toFixed(2)}" y="${top.toFixed(2)}" width="${width.toFixed(2)}" height="${height.toFixed(2)}" fill="${fill}" opacity=".72"></rect>`;
     }).join("");
     const latest = candles[candles.length - 1];
@@ -1990,14 +1991,14 @@
     grid.innerHTML = gridMarkup;
     const zeroY = y(0);
     const slot = innerW / candles.length;
-    const width = Math.max(1.2, Math.min(8, slot * 0.68));
+    const width = Math.max(1.1, Math.min(22, slot * 0.72));
     bars.innerHTML = macd.histogram.map((value, index) => {
       if (!Number.isFinite(value)) return "";
       const previous = macd.histogram[index - 1];
       const stronger = !Number.isFinite(previous) || Math.abs(value) >= Math.abs(previous);
       const fill = value >= 0
-        ? stronger ? "#37d59a" : "#9debd1"
-        : stronger ? "#ff6b70" : "#ffc1c3";
+        ? stronger ? "#2ebd85" : "#8bd8bd"
+        : stronger ? "#f6465d" : "#f5a1ab";
       const py = y(value);
       return `<rect x="${(x(index) - width / 2).toFixed(2)}" y="${Math.min(py, zeroY).toFixed(2)}" width="${width.toFixed(2)}" height="${Math.max(1, Math.abs(zeroY - py)).toFixed(2)}" fill="${fill}"></rect>`;
     }).join("");
@@ -2203,7 +2204,11 @@
     if (!chart || state.candles.length < 2 || !Number.isFinite(event.deltaY) || event.deltaY === 0) return;
     event.preventDefault();
 
-    const anchorRatio = 1;
+    const rect = $("price-chart").getBoundingClientRect();
+    const plotLeft = rect.left + chart.margin.left / chart.W * rect.width;
+    const plotRight = rect.right - chart.margin.right / chart.W * rect.width;
+    const pointerRatio = (event.clientX - plotLeft) / Math.max(1, plotRight - plotLeft);
+    const anchorRatio = Math.max(0, Math.min(1, pointerRatio + state.rightBlankRatio));
     const deltaMultiplier = event.deltaMode === 1
       ? 16
       : event.deltaMode === 2
@@ -2226,7 +2231,6 @@
     );
     state.timelineStart = next.start;
     state.timelineEnd = next.end;
-    if (next.end < 99.999) state.rightBlankRatio = 0;
     syncTimelineInputs();
     hideTooltip();
     latestWheelPointer = { clientX: event.clientX, clientY: event.clientY };
@@ -2378,6 +2382,23 @@
     tooltip.style.top = `${clampTooltip(top, TOOLTIP_EDGE_GAP, bounds.height - tooltipHeight - TOOLTIP_EDGE_GAP)}px`;
   }
 
+  function updateChartOhlc(candle) {
+    $("chart-ohlc-symbol").textContent = `${state.symbol} · ${INTERVALS[state.interval].label} · Binance`;
+    if (!candle) {
+      ["chart-ohlc-open", "chart-ohlc-high", "chart-ohlc-low", "chart-ohlc-close", "chart-ohlc-change"]
+        .forEach((id) => $(id).textContent = "—");
+      $("chart-ohlc-change").className = "";
+      return;
+    }
+    $("chart-ohlc-open").textContent = priceFormat.format(candle.open);
+    $("chart-ohlc-high").textContent = priceFormat.format(candle.high);
+    $("chart-ohlc-low").textContent = priceFormat.format(candle.low);
+    $("chart-ohlc-close").textContent = priceFormat.format(candle.close);
+    const change = (candle.close / candle.open - 1) * 100;
+    $("chart-ohlc-change").textContent = `${signed(change)}%`;
+    $("chart-ohlc-change").className = change >= 0 ? "up" : "down";
+  }
+
   function renderChart() {
     const svg = $("price-chart");
     const grid = $("grid-layer");
@@ -2401,6 +2422,9 @@
       $("stat-count").textContent = "0 根";
       $("ma20-line").setAttribute("d", "");
       $("ma60-line").setAttribute("d", "");
+      $("latest-price-line").setAttribute("visibility", "hidden");
+      $("latest-price-label").style.display = "none";
+      updateChartOhlc(null);
       svg._chart = null;
       renderVolume([]);
       renderMacd([], { dif: [], signal: [], histogram: [] });
@@ -2458,7 +2482,7 @@
     grid.innerHTML = gridMarkup;
 
     const slot = innerW / candles.length;
-    const bodyWidth = Math.max(1.4, Math.min(8, slot * 0.68));
+    const bodyWidth = Math.max(1.1, Math.min(22, slot * 0.72));
     let candleMarkup = "";
     for (const candle of candles) {
       const center = x(candle.t + intervalMs / 2);
@@ -2482,7 +2506,22 @@
     renderMovingAverage("ma20-line", candles, view.ma20, state.showMa20, x, y, intervalMs);
     renderMovingAverage("ma60-line", candles, view.ma60, state.showMa60, x, y, intervalMs);
 
-    $("stat-last").textContent = `${priceFormat.format(candles[candles.length - 1].close)} USDT`;
+    const latest = candles[candles.length - 1];
+    const latestY = y(latest.close);
+    const latestIsUp = latest.close >= latest.open;
+    const latestLine = $("latest-price-line");
+    latestLine.setAttribute("y1", latestY);
+    latestLine.setAttribute("y2", latestY);
+    latestLine.setAttribute("visibility", "visible");
+    latestLine.setAttribute("class", `latest-price-line${latestIsUp ? "" : " down"}`);
+    const latestLabel = $("latest-price-label");
+    latestLabel.textContent = priceFormat.format(latest.close);
+    latestLabel.style.top = `${latestY / H * 100}%`;
+    latestLabel.style.display = "block";
+    latestLabel.className = `latest-price-label${latestIsUp ? "" : " down"}`;
+    updateChartOhlc(latest);
+
+    $("stat-last").textContent = `${priceFormat.format(latest.close)} USDT`;
     $("stat-max").textContent = `${priceFormat.format(maxRaw)} USDT`;
     $("stat-min").textContent = `${priceFormat.format(minRaw)} USDT`;
     $("stat-count").textContent = `${candles.length} 根`;
@@ -2542,6 +2581,7 @@
       if (previousDistance < currentDistance) index = low - 1;
     }
     const candle = chart.candles[index];
+    updateChartOhlc(candle);
     const pointerInPriceChart = event.clientY >= rect.top && event.clientY <= rect.bottom;
     const priceRatio = (localY - chart.margin.top) /
       (chart.H - chart.margin.top - chart.margin.bottom);
@@ -2633,11 +2673,13 @@
     $("volume-hover-layer").setAttribute("visibility", "hidden");
     $("macd-hover-layer").setAttribute("visibility", "hidden");
     $("rsi-hover-layer").setAttribute("visibility", "hidden");
+    const chart = $("price-chart")._chart;
+    if (chart?.candles?.length) updateChartOhlc(chart.candles[chart.candles.length - 1]);
   }
 
   function updateIntervalButtons() {
     $("interval-group").innerHTML = CHART_INTERVALS.map((interval) =>
-      `<button class="chart-button${interval === state.interval ? " active" : ""}" data-interval="${interval}" type="button">${INTERVALS[interval].short}</button>`
+      `<button class="chart-button${interval === state.interval ? " active" : ""}" data-interval="${interval}" type="button" aria-pressed="${interval === state.interval}">${INTERVALS[interval].short}</button>`
     ).join("");
     $("interval-group").querySelectorAll("[data-interval]").forEach((button) => {
       button.addEventListener("click", () => {
