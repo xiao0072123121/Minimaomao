@@ -592,39 +592,65 @@
       font-variant-numeric: tabular-nums;
     }
 
-    .chart-wrap {
+    .chart-stage {
       position: relative;
-      height: 710px;
       cursor: grab;
       touch-action: none;
       user-select: none;
     }
 
-    .chart-wrap.dragging { cursor: grabbing; }
+    .chart-stage.dragging { cursor: grabbing; }
 
-    .rsi-panel {
-      margin-top: 12px;
-      padding-top: 12px;
-      border-top: 1px solid var(--border);
+    .chart-wrap {
+      position: relative;
+      height: 710px;
     }
 
-    .rsi-heading {
+    .indicator-panel {
+      position: relative;
+      margin-top: 0;
+      border-top: 1px solid var(--border);
+      background: rgba(255, 255, 255, .006);
+    }
+
+    .indicator-heading {
+      position: absolute;
+      top: 8px;
+      left: 12px;
+      z-index: 2;
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      margin: 0 0 7px;
+      gap: 9px;
+      margin: 0;
       color: var(--muted);
-      font-size: 12px;
+      font-size: 11px;
+      line-height: 1;
+      pointer-events: none;
     }
 
-    .rsi-heading b { color: var(--text); font-weight: 600; }
-    .rsi-wrap { height: 122px; }
-    #rsi-chart { width: 100%; height: 100%; display: block; overflow: visible; }
-    .rsi-line { fill: none; stroke: var(--gold); stroke-width: 2; vector-effect: non-scaling-stroke; }
-    .rsi-fill { fill: url(#rsi-gradient); opacity: .34; }
-    .rsi-zone { fill: rgba(240, 185, 77, .045); }
-    .rsi-hover-line { stroke: rgba(255, 255, 255, .24); stroke-width: 1; stroke-dasharray: 3 3; }
-    .rsi-hover-point { fill: var(--gold); stroke: var(--bg); stroke-width: 2; }
+    .indicator-heading b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+    .indicator-heading .positive { color: var(--green); }
+    .indicator-heading .negative { color: var(--red); }
+    .indicator-heading .dif-value { color: #3d9cff; }
+    .indicator-heading .dea-value { color: #ff9f43; }
+    .indicator-heading .rsi-value { color: #a97be8; }
+    .volume-wrap { height: 148px; }
+    .macd-wrap { height: 190px; }
+    .rsi-wrap { height: 160px; }
+    .indicator-svg { width: 100%; height: 100%; display: block; overflow: visible; }
+    .indicator-grid { stroke: rgba(255, 255, 255, .06); stroke-width: 1; vector-effect: non-scaling-stroke; }
+    .indicator-zero { stroke: rgba(255, 255, 255, .16); stroke-width: 1; vector-effect: non-scaling-stroke; }
+    .indicator-guide { stroke: rgba(169, 123, 232, .45); stroke-width: 1; stroke-dasharray: 4 4; vector-effect: non-scaling-stroke; }
+    .macd-line { fill: none; stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+    .macd-dif-line { stroke: #3d9cff; }
+    .macd-dea-line { stroke: #ff9f43; }
+    .rsi-line { fill: none; stroke: #a97be8; stroke-width: 1.7; vector-effect: non-scaling-stroke; }
+    .rsi-zone { fill: rgba(169, 123, 232, .09); }
+    .indicator-hover-line { stroke: #8791a0; stroke-width: 1; stroke-dasharray: 3 3; opacity: .72; vector-effect: non-scaling-stroke; }
+    .indicator-hover-point { stroke: var(--bg); stroke-width: 1.5; }
+    .rsi-hover-point { fill: #a97be8; }
+    .macd-dif-point { fill: #3d9cff; }
+    .macd-dea-point { fill: #ff9f43; }
 
     .timeline-panel {
       margin-top: 12px;
@@ -792,6 +818,9 @@
     .tooltip-row b { font-weight: 600; font-variant-numeric: tabular-nums; }
     #tooltip-ma20 { color: var(--ma20); }
     #tooltip-ma60 { color: var(--ma60); }
+    #tooltip-macd { color: var(--text); }
+    #tooltip-macd-lines { color: #8dc1ff; }
+    #tooltip-rsi { color: #c9a7f3; }
 
     .empty-state {
       position: absolute;
@@ -1071,8 +1100,9 @@
         <span>K线 <b id="stat-count">—</b></span>
       </div>
 
-      <div id="chart-wrap" class="chart-wrap" title="滚轮以最右侧K线为锚点缩放；按住鼠标左键可左右拖动">
-        <svg id="price-chart" viewBox="0 0 1000 710" preserveAspectRatio="none" role="img" aria-label="Binance 合约价格K线图">
+      <div id="chart-stage" class="chart-stage" title="滚轮以最右侧K线为锚点缩放；按住鼠标左键可左右拖动">
+        <div id="chart-wrap" class="chart-wrap">
+          <svg id="price-chart" viewBox="0 0 1000 710" preserveAspectRatio="none" role="img" aria-label="Binance 合约价格K线图">
           <defs><clipPath id="price-plot-clip"><rect x="12" y="14" width="922" height="665"></rect></clipPath></defs>
           <g id="grid-layer"></g>
           <g id="candle-layer" clip-path="url(#price-plot-clip)"></g>
@@ -1085,9 +1115,9 @@
             <line id="hover-horizontal-line" class="hover-horizontal-line" x1="12" x2="934"></line>
             <circle id="hover-point" class="hover-point" r="2.5"></circle>
           </g>
-        </svg>
-        <div id="hover-price-label" class="hover-price-label" aria-hidden="true"></div>
-        <div id="tooltip" class="tooltip">
+          </svg>
+          <div id="hover-price-label" class="hover-price-label" aria-hidden="true"></div>
+          <div id="tooltip" class="tooltip">
           <div id="tooltip-time" class="tooltip-time"></div>
           <div class="tooltip-row"><span>开</span><b id="tooltip-open"></b></div>
           <div class="tooltip-row"><span>高</span><b id="tooltip-high"></b></div>
@@ -1096,24 +1126,58 @@
           <div class="tooltip-row"><span>涨跌</span><b id="tooltip-change"></b></div>
           <div id="tooltip-ma20-row" class="tooltip-row"><span>MA20</span><b id="tooltip-ma20"></b></div>
           <div id="tooltip-ma60-row" class="tooltip-row"><span>MA60</span><b id="tooltip-ma60"></b></div>
-          <div class="tooltip-row"><span>RSI</span><b id="tooltip-rsi"></b></div>
+            <div class="tooltip-row"><span>成交量</span><b id="tooltip-volume"></b></div>
+            <div class="tooltip-row"><span>MACD</span><b id="tooltip-macd"></b></div>
+            <div class="tooltip-row"><span>DIF / DEA</span><b id="tooltip-macd-lines"></b></div>
+            <div class="tooltip-row"><span>RSI</span><b id="tooltip-rsi"></b></div>
+          </div>
+          <div id="empty-state" class="empty-state">正在加载历史行情…</div>
         </div>
-        <div id="empty-state" class="empty-state">正在加载历史行情…</div>
-      </div>
 
-      <div class="rsi-panel" aria-label="RSI 相对强弱指标">
-        <div class="rsi-heading"><span>RSI (14)</span><b id="rsi-current">—</b></div>
-        <div class="rsi-wrap">
-          <svg id="rsi-chart" viewBox="0 0 1000 122" preserveAspectRatio="none" role="img" aria-label="RSI 相对强弱指标附图">
-            <defs><linearGradient id="rsi-gradient" x1="0" x2="0" y1="0" y2="1"><stop stop-color="#f0b94d" stop-opacity=".56"/><stop offset="1" stop-color="#f0b94d" stop-opacity="0"/></linearGradient><clipPath id="rsi-plot-clip"><rect x="12" y="8" width="922" height="104"></rect></clipPath></defs>
-            <g id="rsi-grid-layer"></g>
-            <path id="rsi-area" class="rsi-fill" clip-path="url(#rsi-plot-clip)"></path>
-            <path id="rsi-line" class="rsi-line" clip-path="url(#rsi-plot-clip)"></path>
-            <g id="rsi-hover-layer" visibility="hidden">
-              <line id="rsi-hover-line" class="rsi-hover-line" y1="8" y2="112"></line>
-              <circle id="rsi-hover-point" class="rsi-hover-point" r="4"></circle>
-            </g>
-          </svg>
+        <div class="indicator-panel" aria-label="成交量指标">
+          <div class="indicator-heading"><span>成交量 (Volume)</span><b id="volume-current">—</b></div>
+          <div class="volume-wrap">
+            <svg id="volume-chart" class="indicator-svg" viewBox="0 0 1000 148" preserveAspectRatio="none" role="img" aria-label="成交量附图">
+              <defs><clipPath id="volume-plot-clip"><rect x="12" y="20" width="922" height="120"></rect></clipPath></defs>
+              <g id="volume-grid-layer"></g>
+              <g id="volume-bar-layer" clip-path="url(#volume-plot-clip)"></g>
+              <g id="volume-hover-layer" visibility="hidden"><line id="volume-hover-line" class="indicator-hover-line" y1="20" y2="140"></line></g>
+            </svg>
+          </div>
+        </div>
+
+        <div class="indicator-panel" aria-label="MACD 指标">
+          <div class="indicator-heading"><span>MACD (12, 26, 9)</span><b id="macd-hist-current">—</b><b id="macd-dif-current" class="dif-value">—</b><b id="macd-dea-current" class="dea-value">—</b></div>
+          <div class="macd-wrap">
+            <svg id="macd-chart" class="indicator-svg" viewBox="0 0 1000 190" preserveAspectRatio="none" role="img" aria-label="MACD 附图">
+              <defs><clipPath id="macd-plot-clip"><rect x="12" y="22" width="922" height="160"></rect></clipPath></defs>
+              <g id="macd-grid-layer"></g>
+              <g id="macd-hist-layer" clip-path="url(#macd-plot-clip)"></g>
+              <path id="macd-dif-line" class="macd-line macd-dif-line" clip-path="url(#macd-plot-clip)"></path>
+              <path id="macd-dea-line" class="macd-line macd-dea-line" clip-path="url(#macd-plot-clip)"></path>
+              <g id="macd-hover-layer" visibility="hidden">
+                <line id="macd-hover-line" class="indicator-hover-line" y1="22" y2="182"></line>
+                <circle id="macd-dif-point" class="indicator-hover-point macd-dif-point" r="3"></circle>
+                <circle id="macd-dea-point" class="indicator-hover-point macd-dea-point" r="3"></circle>
+              </g>
+            </svg>
+          </div>
+        </div>
+
+        <div class="indicator-panel" aria-label="RSI 相对强弱指标">
+          <div class="indicator-heading"><span>RSI (14)</span><b id="rsi-current" class="rsi-value">—</b></div>
+          <div class="rsi-wrap">
+            <svg id="rsi-chart" class="indicator-svg" viewBox="0 0 1000 160" preserveAspectRatio="none" role="img" aria-label="RSI 相对强弱指标附图">
+              <defs><clipPath id="rsi-plot-clip"><rect x="12" y="20" width="922" height="132"></rect></clipPath></defs>
+              <g id="rsi-grid-layer"></g>
+              <path id="rsi-zone" class="rsi-zone" clip-path="url(#rsi-plot-clip)"></path>
+              <path id="rsi-line" class="rsi-line" clip-path="url(#rsi-plot-clip)"></path>
+              <g id="rsi-hover-layer" visibility="hidden">
+                <line id="rsi-hover-line" class="indicator-hover-line" y1="20" y2="152"></line>
+                <circle id="rsi-hover-point" class="indicator-hover-point rsi-hover-point" r="3.5"></circle>
+              </g>
+            </svg>
+          </div>
         </div>
       </div>
 

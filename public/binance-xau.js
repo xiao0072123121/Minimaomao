@@ -465,7 +465,7 @@
     const range = RANGES[state.range];
     const limited = state.historyLimited ? ` · 数据量保护：最近${MAX_HISTORY_CANDLES.toLocaleString("en-US")}根` : "";
     $("chart-subtitle").textContent = `${range.label} · ${INTERVALS[state.interval].label} · ${state.symbol}${limited}`;
-    $("chart-note").textContent = `数据来自 Binance Futures 公开接口；${INTERVALS[state.interval].label}，红色上涨，绿色下跌；滚轮以最右侧K线为锚点缩放，主图支持左键拖动和触边自动扩展时间范围。`;
+    $("chart-note").textContent = `数据来自 Binance Futures 公开接口；${INTERVALS[state.interval].label}，红色上涨，绿色下跌；成交量、MACD与RSI附图同步主图，滚轮以最右侧K线为锚点缩放，支持左键拖动和触边自动扩展时间范围。`;
   }
 
   function updateRangeButtons() {
@@ -668,7 +668,7 @@
     return output;
   }
 
-  function calculateMacd(candles) {
+  function calculateMacdSeries(candles) {
     const closes = candles.map((candle) => candle.close);
     const fast = calculateEmaSeries(closes, 12);
     const slow = calculateEmaSeries(closes, 26);
@@ -679,24 +679,34 @@
     );
     const firstDif = dif.findIndex(Number.isFinite);
     const signal = Array(closes.length).fill(null);
-    if (firstDif < 0 || closes.length - firstDif < 9) return null;
-    let dea = dif.slice(firstDif, firstDif + 9).reduce((sum, value) => sum + value, 0) / 9;
-    signal[firstDif + 8] = dea;
-    const alpha = 2 / 10;
-    for (let index = firstDif + 9; index < dif.length; index += 1) {
-      dea = dif[index] * alpha + dea * (1 - alpha);
-      signal[index] = dea;
+    if (firstDif >= 0 && closes.length - firstDif >= 9) {
+      let dea = dif.slice(firstDif, firstDif + 9).reduce((sum, value) => sum + value, 0) / 9;
+      signal[firstDif + 8] = dea;
+      const alpha = 2 / 10;
+      for (let index = firstDif + 9; index < dif.length; index += 1) {
+        dea = dif[index] * alpha + dea * (1 - alpha);
+        signal[index] = dea;
+      }
     }
+    const histogram = dif.map((value, index) =>
+      Number.isFinite(value) && Number.isFinite(signal[index]) ? value - signal[index] : null
+    );
+    return { dif, signal, histogram };
+  }
+
+  function calculateMacd(candles) {
+    const series = calculateMacdSeries(candles);
+    const closes = candles.map((candle) => candle.close);
     const lastIndex = closes.length - 1;
     const previousIndex = lastIndex - 1;
-    if (!Number.isFinite(signal[previousIndex]) || !Number.isFinite(signal[lastIndex])) return null;
+    if (!Number.isFinite(series.signal[previousIndex]) || !Number.isFinite(series.signal[lastIndex])) return null;
     return {
-      dif: dif[lastIndex],
-      signal: signal[lastIndex],
-      histogram: dif[lastIndex] - signal[lastIndex],
-      previousDif: dif[previousIndex],
-      previousSignal: signal[previousIndex],
-      previousHistogram: dif[previousIndex] - signal[previousIndex]
+      dif: series.dif[lastIndex],
+      signal: series.signal[lastIndex],
+      histogram: series.histogram[lastIndex],
+      previousDif: series.dif[previousIndex],
+      previousSignal: series.signal[previousIndex],
+      previousHistogram: series.histogram[previousIndex]
     };
   }
 
@@ -1879,59 +1889,203 @@
     $("analysis-status").textContent = `${failed ? `${failed}个周期延迟 · ` : ""}已收盘K线同口径计算 · 实时价仅展示 · 置信度非胜率 · ${formatTime(Date.now())}`;
   }
 
+  function indicatorX(index, count, margin, innerW) {
+    return margin.left + ((index + 0.5) / Math.max(1, count)) * innerW - state.rightBlankRatio * innerW;
+  }
+
+  function indicatorVerticalGrid(margin, W, innerW) {
+    let markup = "";
+    for (let index = 0; index <= 4; index += 1) {
+      const px = margin.left + innerW * index / 4;
+      markup += `<line class="indicator-grid" x1="${px}" x2="${px}" y1="${margin.top}" y2="${margin.bottomY}"></line>`;
+    }
+    return markup;
+  }
+
+  function latestFiniteIndex(values) {
+    for (let index = values.length - 1; index >= 0; index -= 1) {
+      if (Number.isFinite(values[index])) return index;
+    }
+    return -1;
+  }
+
+  function renderVolume(candles) {
+    const svg = $("volume-chart");
+    const grid = $("volume-grid-layer");
+    const bars = $("volume-bar-layer");
+    const current = $("volume-current");
+    const W = 1000;
+    const H = 148;
+    const margin = { top: 20, right: 66, bottom: 8, left: 12, bottomY: 140 };
+    const innerW = W - margin.left - margin.right;
+    const innerH = margin.bottomY - margin.top;
+    const axisTextScaleX = getSvgTextScaleX(svg, W, H);
+    grid.innerHTML = "";
+    bars.innerHTML = "";
+    if (candles.length < 2) {
+      current.textContent = "—";
+      current.className = "";
+      svg._chart = null;
+      return;
+    }
+    const maxVolume = Math.max(...candles.map((candle) => candle.volume), 1) * 1.08;
+    const y = (value) => margin.top + (1 - value / maxVolume) * innerH;
+    const x = (index) => indicatorX(index, candles.length, margin, innerW);
+    let gridMarkup = indicatorVerticalGrid(margin, W, innerW);
+    [maxVolume, maxVolume / 2, 0].forEach((value) => {
+      const py = y(value);
+      gridMarkup += `<line class="indicator-grid" x1="${margin.left}" x2="${W - margin.right}" y1="${py}" y2="${py}"></line>`;
+      const labelX = W - margin.right + 9;
+      gridMarkup += `<text class="axis-text" x="${labelX}" y="${py + 3}"${axisTextTransform(labelX, axisTextScaleX)}>${volumeFormat.format(value)}</text>`;
+    });
+    grid.innerHTML = gridMarkup;
+    const slot = innerW / candles.length;
+    const width = Math.max(1.2, Math.min(8, slot * 0.7));
+    bars.innerHTML = candles.map((candle, index) => {
+      const top = y(candle.volume);
+      const height = Math.max(1, margin.bottomY - top);
+      const fill = candle.close >= candle.open ? "#ff6b70" : "#37d59a";
+      return `<rect x="${(x(index) - width / 2).toFixed(2)}" y="${top.toFixed(2)}" width="${width.toFixed(2)}" height="${height.toFixed(2)}" fill="${fill}" opacity=".72"></rect>`;
+    }).join("");
+    const latest = candles[candles.length - 1];
+    current.textContent = volumeFormat.format(latest.volume);
+    current.className = latest.close >= latest.open ? "positive" : "negative";
+    svg._chart = { candles, x, y, W, H, margin };
+  }
+
+  function renderMacd(candles, macd) {
+    const svg = $("macd-chart");
+    const grid = $("macd-grid-layer");
+    const bars = $("macd-hist-layer");
+    const difLine = $("macd-dif-line");
+    const deaLine = $("macd-dea-line");
+    const W = 1000;
+    const H = 190;
+    const margin = { top: 22, right: 66, bottom: 8, left: 12, bottomY: 182 };
+    const innerW = W - margin.left - margin.right;
+    const innerH = margin.bottomY - margin.top;
+    const axisTextScaleX = getSvgTextScaleX(svg, W, H);
+    const values = [...macd.dif, ...macd.signal, ...macd.histogram].filter(Number.isFinite);
+    grid.innerHTML = "";
+    bars.innerHTML = "";
+    if (candles.length < 2 || !values.length) {
+      difLine.setAttribute("d", "");
+      deaLine.setAttribute("d", "");
+      ["macd-hist-current", "macd-dif-current", "macd-dea-current"].forEach((id) => $(id).textContent = "—");
+      svg._chart = null;
+      return;
+    }
+    const extent = Math.max(...values.map(Math.abs), 0.0001) * 1.16;
+    const yMin = -extent;
+    const yMax = extent;
+    const y = (value) => margin.top + (1 - (value - yMin) / (yMax - yMin)) * innerH;
+    const x = (index) => indicatorX(index, candles.length, margin, innerW);
+    let gridMarkup = indicatorVerticalGrid(margin, W, innerW);
+    [yMax, 0, yMin].forEach((value) => {
+      const py = y(value);
+      gridMarkup += `<line class="${value === 0 ? "indicator-zero" : "indicator-grid"}" x1="${margin.left}" x2="${W - margin.right}" y1="${py}" y2="${py}"></line>`;
+      const labelX = W - margin.right + 9;
+      gridMarkup += `<text class="axis-text" x="${labelX}" y="${py + 3}"${axisTextTransform(labelX, axisTextScaleX)}>${value.toFixed(2)}</text>`;
+    });
+    grid.innerHTML = gridMarkup;
+    const zeroY = y(0);
+    const slot = innerW / candles.length;
+    const width = Math.max(1.2, Math.min(8, slot * 0.68));
+    bars.innerHTML = macd.histogram.map((value, index) => {
+      if (!Number.isFinite(value)) return "";
+      const previous = macd.histogram[index - 1];
+      const stronger = !Number.isFinite(previous) || Math.abs(value) >= Math.abs(previous);
+      const fill = value >= 0
+        ? stronger ? "#37d59a" : "#9debd1"
+        : stronger ? "#ff6b70" : "#ffc1c3";
+      const py = y(value);
+      return `<rect x="${(x(index) - width / 2).toFixed(2)}" y="${Math.min(py, zeroY).toFixed(2)}" width="${width.toFixed(2)}" height="${Math.max(1, Math.abs(zeroY - py)).toFixed(2)}" fill="${fill}"></rect>`;
+    }).join("");
+    const linePath = (series) => {
+      let started = false;
+      return series.map((value, index) => {
+        if (!Number.isFinite(value)) return "";
+        const command = started ? "L" : "M";
+        started = true;
+        return `${command} ${x(index).toFixed(2)},${y(value).toFixed(2)}`;
+      }).filter(Boolean).join(" ");
+    };
+    difLine.setAttribute("d", linePath(macd.dif));
+    deaLine.setAttribute("d", linePath(macd.signal));
+    const lastIndex = latestFiniteIndex(macd.histogram);
+    const histogram = lastIndex >= 0 ? macd.histogram[lastIndex] : null;
+    $("macd-hist-current").textContent = Number.isFinite(histogram) ? histogram.toFixed(2) : "—";
+    $("macd-hist-current").className = Number.isFinite(histogram) ? histogram >= 0 ? "positive" : "negative" : "";
+    $("macd-dif-current").textContent = lastIndex >= 0 ? `DIF ${macd.dif[lastIndex].toFixed(2)}` : "—";
+    $("macd-dea-current").textContent = lastIndex >= 0 ? `DEA ${macd.signal[lastIndex].toFixed(2)}` : "—";
+    svg._chart = { macd, x, y, W, H, margin };
+  }
+
   function renderRsi(candles, rsi = calculateRsi(candles)) {
     const svg = $("rsi-chart");
     const grid = $("rsi-grid-layer");
     const line = $("rsi-line");
-    const area = $("rsi-area");
+    const zone = $("rsi-zone");
     const current = $("rsi-current");
     const W = 1000;
-    const H = 122;
-    const margin = { top: 8, right: 66, bottom: 10, left: 12 };
+    const H = 160;
+    const margin = { top: 20, right: 66, bottom: 8, left: 12, bottomY: 152 };
     const innerW = W - margin.left - margin.right;
-    const innerH = H - margin.top - margin.bottom;
-    const contentOffsetX = state.rightBlankRatio * innerW;
+    const innerH = margin.bottomY - margin.top;
     const axisTextScaleX = getSvgTextScaleX(svg, W, H);
     const y = (value) => margin.top + (100 - value) / 100 * innerH;
-    let gridMarkup = "";
+    let gridMarkup = indicatorVerticalGrid(margin, W, innerW);
     [70, 50, 30].forEach((value) => {
       const py = y(value);
-      gridMarkup += `<line class="chart-grid" x1="${margin.left}" x2="${W - margin.right}" y1="${py}" y2="${py}"></line>`;
+      gridMarkup += `<line class="indicator-guide" x1="${margin.left}" x2="${W - margin.right}" y1="${py}" y2="${py}"></line>`;
       const labelX = W - margin.right + 9;
       gridMarkup += `<text class="axis-text" x="${labelX}" y="${py + 3}"${axisTextTransform(labelX, axisTextScaleX)}>${value}</text>`;
     });
     grid.innerHTML = gridMarkup;
-    const usable = rsi.map((value, index) => value === null ? null : { value, index }).filter(Boolean);
+    zone.setAttribute("d", `M ${margin.left},${y(70)} H ${W - margin.right} V ${y(30)} H ${margin.left} Z`);
+    const usable = rsi.map((value, index) => Number.isFinite(value) ? { value, index } : null).filter(Boolean);
     if (!usable.length) {
       line.setAttribute("d", "");
-      area.setAttribute("d", "");
       current.textContent = "—";
       svg._chart = null;
       return;
     }
-    const x = (index) => margin.left + (index / Math.max(1, candles.length - 1)) * innerW - contentOffsetX;
-    const points = usable.map(({ value, index }) => `${x(index).toFixed(2)},${y(value).toFixed(2)}`);
-    const bottom = margin.top + innerH;
-    line.setAttribute("d", `M ${points.join(" L ")}`);
-    area.setAttribute("d", `M ${x(usable[0].index).toFixed(2)},${bottom} L ${points.join(" L ")} L ${x(usable[usable.length - 1].index).toFixed(2)},${bottom} Z`);
+    const x = (index) => indicatorX(index, candles.length, margin, innerW);
+    line.setAttribute("d", usable.map(({ value, index }, pointIndex) =>
+      `${pointIndex ? "L" : "M"} ${x(index).toFixed(2)},${y(value).toFixed(2)}`
+    ).join(" "));
     current.textContent = usable[usable.length - 1].value.toFixed(2);
     svg._chart = { rsi, x, y, W, H, margin };
   }
 
   function getTimelineWindow() {
     const count = state.candles.length;
-    if (!count) return { startIndex: 0, endIndex: -1, candles: [], rsi: [], ma20: [], ma60: [] };
+    if (!count) return {
+      startIndex: 0,
+      endIndex: -1,
+      candles: [],
+      rsi: [],
+      ma20: [],
+      ma60: [],
+      macd: { dif: [], signal: [], histogram: [] }
+    };
     const { startIndex, endIndex } = getTimelineIndexBounds(count);
     const fullRsi = calculateRsi(state.candles);
     const fullMa20 = calculateSmaSeries(state.candles, 20);
     const fullMa60 = calculateSmaSeries(state.candles, 60);
+    const fullMacd = calculateMacdSeries(state.candles);
     return {
       startIndex,
       endIndex,
       candles: state.candles.slice(startIndex, endIndex + 1),
       rsi: fullRsi.slice(startIndex, endIndex + 1),
       ma20: fullMa20.slice(startIndex, endIndex + 1),
-      ma60: fullMa60.slice(startIndex, endIndex + 1)
+      ma60: fullMa60.slice(startIndex, endIndex + 1),
+      macd: {
+        dif: fullMacd.dif.slice(startIndex, endIndex + 1),
+        signal: fullMacd.signal.slice(startIndex, endIndex + 1),
+        histogram: fullMacd.histogram.slice(startIndex, endIndex + 1)
+      }
     };
   }
 
@@ -2097,8 +2251,8 @@
       timelineEnd: state.timelineEnd,
       rightBlankRatio: state.rightBlankRatio
     };
-    $("chart-wrap").setPointerCapture(event.pointerId);
-    $("chart-wrap").classList.add("dragging");
+    $("chart-stage").setPointerCapture(event.pointerId);
+    $("chart-stage").classList.add("dragging");
     hideTooltip();
   }
 
@@ -2156,7 +2310,7 @@
 
   function endChartPan(event) {
     if (!chartPanState || event.pointerId !== chartPanState.pointerId) return;
-    const chartWrap = $("chart-wrap");
+    const chartWrap = $("chart-stage");
     chartPanState = null;
     chartWrap.classList.remove("dragging");
     if (chartWrap.hasPointerCapture(event.pointerId)) chartWrap.releasePointerCapture(event.pointerId);
@@ -2248,6 +2402,8 @@
       $("ma20-line").setAttribute("d", "");
       $("ma60-line").setAttribute("d", "");
       svg._chart = null;
+      renderVolume([]);
+      renderMacd([], { dif: [], signal: [], histogram: [] });
       renderRsi([]);
       renderTimeline();
       return;
@@ -2296,6 +2452,7 @@
       const dataX = px + contentOffsetX;
       const labelTime = tMin + ((dataX - margin.left) / innerW) * (tMax - tMin);
       const anchor = index === 0 ? "start" : index === 4 ? "end" : "middle";
+      gridMarkup += `<line class="chart-grid" x1="${px}" x2="${px}" y1="${margin.top}" y2="${H - margin.bottom}"></line>`;
       gridMarkup += `<text class="axis-text" x="${px}" y="${H - 8}" text-anchor="${anchor}"${axisTextTransform(px, axisTextScaleX)}>${formatTime(labelTime, true)}</text>`;
     }
     grid.innerHTML = gridMarkup;
@@ -2333,6 +2490,7 @@
     svg._chart = {
       candles,
       rsi: view.rsi,
+      macd: view.macd,
       ma20: view.ma20,
       ma60: view.ma60,
       x,
@@ -2347,6 +2505,8 @@
       contentOffsetX,
       intervalMs
     };
+    renderVolume(candles);
+    renderMacd(candles, view.macd);
     renderRsi(candles, view.rsi);
     renderTimeline();
   }
@@ -2382,6 +2542,7 @@
       if (previousDistance < currentDistance) index = low - 1;
     }
     const candle = chart.candles[index];
+    const pointerInPriceChart = event.clientY >= rect.top && event.clientY <= rect.bottom;
     const priceRatio = (localY - chart.margin.top) /
       (chart.H - chart.margin.top - chart.margin.bottom);
     const pointerPrice = chart.yMax - priceRatio * (chart.yMax - chart.yMin);
@@ -2391,16 +2552,45 @@
     $("hover-horizontal-line").setAttribute("y2", localY);
     $("hover-point").setAttribute("cx", localX);
     $("hover-point").setAttribute("cy", localY);
+    $("hover-horizontal-line").style.display = pointerInPriceChart ? "block" : "none";
+    $("hover-point").style.display = pointerInPriceChart ? "block" : "none";
     $("hover-layer").setAttribute("visibility", "visible");
     const priceLabel = $("hover-price-label");
     priceLabel.textContent = priceFormat.format(pointerPrice);
     priceLabel.style.top = `${localY / chart.H * 100}%`;
-    priceLabel.classList.add("visible");
+    priceLabel.classList.toggle("visible", pointerInPriceChart);
 
     const rsiValue = chart.rsi[index];
+    const macdValue = chart.macd.histogram[index];
+    const difValue = chart.macd.dif[index];
+    const deaValue = chart.macd.signal[index];
+    const volumeChart = $("volume-chart")._chart;
+    if (volumeChart) {
+      const volumeX = localX;
+      $("volume-hover-line").setAttribute("x1", volumeX);
+      $("volume-hover-line").setAttribute("x2", volumeX);
+      $("volume-hover-layer").setAttribute("visibility", "visible");
+    }
+    const macdChart = $("macd-chart")._chart;
+    if (macdChart) {
+      const macdX = localX;
+      $("macd-hover-line").setAttribute("x1", macdX);
+      $("macd-hover-line").setAttribute("x2", macdX);
+      [["macd-dif-point", difValue], ["macd-dea-point", deaValue]].forEach(([id, value]) => {
+        const point = $(id);
+        if (Number.isFinite(value)) {
+          point.setAttribute("cx", macdX);
+          point.setAttribute("cy", macdChart.y(value));
+          point.style.display = "block";
+        } else {
+          point.style.display = "none";
+        }
+      });
+      $("macd-hover-layer").setAttribute("visibility", "visible");
+    }
     const rsiChart = $("rsi-chart")._chart;
     if (rsiChart) {
-      const rsiX = rsiChart.x(index);
+      const rsiX = localX;
       $("rsi-hover-line").setAttribute("x1", rsiX);
       $("rsi-hover-line").setAttribute("x2", rsiX);
       if (Number.isFinite(rsiValue)) {
@@ -2426,6 +2616,11 @@
     $("tooltip-ma60-row").style.display = state.showMa60 && Number.isFinite(ma60) ? "flex" : "none";
     $("tooltip-ma20").textContent = Number.isFinite(ma20) ? priceFormat.format(ma20) : "—";
     $("tooltip-ma60").textContent = Number.isFinite(ma60) ? priceFormat.format(ma60) : "—";
+    $("tooltip-volume").textContent = volumeFormat.format(candle.volume);
+    $("tooltip-macd").textContent = Number.isFinite(macdValue) ? macdValue.toFixed(2) : "—";
+    $("tooltip-macd-lines").textContent = Number.isFinite(difValue) && Number.isFinite(deaValue)
+      ? `${difValue.toFixed(2)} / ${deaValue.toFixed(2)}`
+      : "—";
     $("tooltip-rsi").textContent = Number.isFinite(rsiValue) ? rsiValue.toFixed(2) : "—";
     positionTooltipAwayFromPointer(event, tooltip);
     tooltip.classList.add("visible");
@@ -2435,6 +2630,8 @@
     $("tooltip").classList.remove("visible");
     $("hover-price-label").classList.remove("visible");
     $("hover-layer").setAttribute("visibility", "hidden");
+    $("volume-hover-layer").setAttribute("visibility", "hidden");
+    $("macd-hover-layer").setAttribute("visibility", "hidden");
     $("rsi-hover-layer").setAttribute("visibility", "hidden");
   }
 
@@ -2466,14 +2663,14 @@
   $("ma20-toggle").addEventListener("click", () => toggleMovingAverage(20));
   $("ma60-toggle").addEventListener("click", () => toggleMovingAverage(60));
 
-  $("chart-wrap").addEventListener("pointermove", showTooltip, { passive: true });
-  $("chart-wrap").addEventListener("pointerleave", hideTooltip);
-  $("chart-wrap").addEventListener("pointerdown", beginChartPan);
-  $("chart-wrap").addEventListener("pointermove", moveChartPan, { passive: false });
-  $("chart-wrap").addEventListener("pointerup", endChartPan);
-  $("chart-wrap").addEventListener("pointercancel", endChartPan);
-  $("chart-wrap").addEventListener("lostpointercapture", endChartPan);
-  $("chart-wrap").addEventListener("wheel", zoomChartWithWheel, { passive: false });
+  $("chart-stage").addEventListener("pointermove", showTooltip, { passive: true });
+  $("chart-stage").addEventListener("pointerleave", hideTooltip);
+  $("chart-stage").addEventListener("pointerdown", beginChartPan);
+  $("chart-stage").addEventListener("pointermove", moveChartPan, { passive: false });
+  $("chart-stage").addEventListener("pointerup", endChartPan);
+  $("chart-stage").addEventListener("pointercancel", endChartPan);
+  $("chart-stage").addEventListener("lostpointercapture", endChartPan);
+  $("chart-stage").addEventListener("wheel", zoomChartWithWheel, { passive: false });
   $("timeline-start").addEventListener("input", () => updateTimeline("start"));
   $("timeline-end").addEventListener("input", () => updateTimeline("end"));
   window.addEventListener("resize", () => {
