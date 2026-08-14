@@ -1,8 +1,11 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "muti-monitor",
-  "compatibility_date": "2026-08-15",
+  "main": "./src/worker.js",
+  "compatibility_date": "2026-08-14",
   "assets": {
-    "directory": "./public/"
+    "directory": "./public/",
+    "binding": "ASSETS",
+    "run_worker_first": true
   }
 }

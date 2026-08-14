@@ -12,7 +12,7 @@ Binance 多标的行情与技术分析网页，支持：
 
 ## Cloudflare Workers 部署
 
-本项目是纯静态网页，不需要构建步骤。
+本项目使用一个轻量 Worker 做密码校验，并通过 Workers Static Assets 提供网页，不需要构建步骤。
 
 - Worker 名称：`muti-monitor`
 - 生产分支：`main`
@@ -20,11 +20,21 @@ Binance 多标的行情与技术分析网页，支持：
 - Deploy command：`npx wrangler deploy`
 - Root directory：留空（使用仓库根目录）
 
-`wrangler.jsonc` 会将 `public/` 目录作为 Workers Static Assets 发布。
+`wrangler.jsonc` 会让所有请求先进入 `src/worker.js` 完成密码校验，再从 `public/` 提供静态资源。
 
 ## 隐私
 
-仓库中不包含 GitHub 部署私钥、Cloudflare 凭据或账户信息。上线后请使用 Cloudflare Access 限制访问者；`robots.txt` 不能代替访问控制。
+仓库中不包含 GitHub 部署私钥、Cloudflare 凭据、访问密码或账户信息。Worker 采用 HTTP Basic Authentication，并对所有静态资源强制校验。
+
+在 Cloudflare Worker 的 `Settings` > `Variables and Secrets` 中添加：
+
+- Type：`Secret`
+- Name：`ACCESS_PASSWORD`
+- Value：自行设置至少 12 个字符的强密码
+
+默认用户名是 `monitor`。如需修改，可以另加一个文本变量 `ACCESS_USERNAME`。密码未配置或少于 12 个字符时，Worker 会返回 `503`，不会公开网页。
+
+请勿将真实密码写入 `wrangler.jsonc`、GitHub 仓库、构建变量或聊天消息。
 
 ## 数据来源
 
