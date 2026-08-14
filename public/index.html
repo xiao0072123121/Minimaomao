@@ -20,11 +20,6 @@
       --candle-flat: #aab4c3;
       --ma20: #4d8dff;
       --ma60: #ffb020;
-      --tv-bg: #161a1e;
-      --tv-grid: #2b3139;
-      --tv-up: #2ebd85;
-      --tv-down: #f6465d;
-      --tv-yellow: #f0b90b;
       --shadow: 0 20px 55px rgba(0, 0, 0, 0.28);
       --font-sans: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
@@ -529,7 +524,7 @@
       flex-direction: column;
       align-items: flex-start;
       gap: 14px;
-      margin-bottom: 0;
+      margin-bottom: 18px;
     }
 
     .chart-title h2 { margin: 0 0 5px; font-size: 16px; font-weight: 700; }
@@ -540,18 +535,17 @@
       align-items: center;
       justify-content: flex-start;
       width: 100%;
-      min-height: 46px;
-      padding: 0 10px;
-      border: 1px solid var(--tv-grid);
-      border-radius: 8px 8px 0 0;
-      background: #181c22;
+      padding: 6px 8px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.018);
       gap: 0;
       flex-wrap: wrap;
     }
 
-    .control-block { display: flex; align-items: center; gap: 5px; min-height: 45px; padding: 0 9px; }
-    .control-block + .control-block { border-left: 1px solid var(--tv-grid); }
-    .control-label { flex: 0 0 auto; color: #707a8a; font-size: 11px; font-weight: 600; }
+    .control-block { display: flex; align-items: center; gap: 5px; padding: 0 8px; }
+    .control-block + .control-block { border-left: 1px solid var(--border); }
+    .control-label { flex: 0 0 auto; color: #7fa4dc; font-size: 11px; font-weight: 600; }
 
     .button-group {
       display: inline-flex;
@@ -562,13 +556,11 @@
     }
 
     .chart-button {
-      position: relative;
       min-width: 40px;
-      min-height: 44px;
       padding: 6px 9px;
       border: 0;
-      border-radius: 0;
-      color: #848e9c;
+      border-radius: 6px;
+      color: var(--muted);
       background: transparent;
       cursor: pointer;
       font-size: 12px;
@@ -576,21 +568,8 @@
       white-space: nowrap;
     }
 
-    .chart-button:hover { color: #eaecef; }
-    .chart-button.active { color: #eaecef; background: transparent; box-shadow: none; }
-    .chart-button.active::after {
-      position: absolute;
-      right: 8px;
-      bottom: 0;
-      left: 8px;
-      height: 2px;
-      border-radius: 2px 2px 0 0;
-      background: var(--tv-yellow);
-      content: "";
-    }
-    .ma-toggle { min-height: 32px; margin: 6px 2px; border-radius: 5px; }
-    .ma-toggle.active { padding-right: 10px; padding-left: 10px; background: #2b3139; }
-    .ma-toggle.active::after { display: none; }
+    .chart-button:hover { color: var(--text); }
+    .chart-button.active { color: #fff; background: #2864c8; box-shadow: inset 0 0 0 1px rgba(118, 170, 255, .2); }
 
     .ma-toggle { display: inline-flex; align-items: center; gap: 6px; }
     .ma-swatch { width: 13px; height: 2px; border-radius: 2px; opacity: .4; }
@@ -601,12 +580,8 @@
     .chart-stats {
       display: flex;
       gap: 22px;
-      margin-bottom: 0;
-      padding: 9px 12px;
-      border-right: 1px solid var(--tv-grid);
-      border-left: 1px solid var(--tv-grid);
-      color: #848e9c;
-      background: var(--tv-bg);
+      margin-bottom: 8px;
+      color: var(--muted);
       font-size: 12px;
     }
 
@@ -619,10 +594,6 @@
 
     .chart-stage {
       position: relative;
-      overflow: hidden;
-      border: 1px solid var(--tv-grid);
-      border-radius: 0 0 8px 8px;
-      background: var(--tv-bg);
       cursor: grab;
       touch-action: none;
       user-select: none;
@@ -638,8 +609,8 @@
     .indicator-panel {
       position: relative;
       margin-top: 0;
-      border-top: 1px solid var(--tv-grid);
-      background: var(--tv-bg);
+      border-top: 1px solid var(--border);
+      background: rgba(255, 255, 255, .006);
     }
 
     .indicator-heading {
@@ -658,8 +629,8 @@
     }
 
     .indicator-heading b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
-    .indicator-heading .positive { color: var(--tv-up); }
-    .indicator-heading .negative { color: var(--tv-down); }
+    .indicator-heading .positive { color: var(--green); }
+    .indicator-heading .negative { color: var(--red); }
     .indicator-heading .dif-value { color: #3d9cff; }
     .indicator-heading .dea-value { color: #ff9f43; }
     .indicator-heading .rsi-value { color: #a97be8; }
@@ -667,8 +638,8 @@
     .macd-wrap { height: 190px; }
     .rsi-wrap { height: 160px; }
     .indicator-svg { width: 100%; height: 100%; display: block; overflow: visible; }
-    .indicator-grid { stroke: var(--tv-grid); stroke-width: 1; vector-effect: non-scaling-stroke; }
-    .indicator-zero { stroke: rgba(132, 142, 156, .38); stroke-width: 1; vector-effect: non-scaling-stroke; }
+    .indicator-grid { stroke: rgba(255, 255, 255, .06); stroke-width: 1; vector-effect: non-scaling-stroke; }
+    .indicator-zero { stroke: rgba(255, 255, 255, .16); stroke-width: 1; vector-effect: non-scaling-stroke; }
     .indicator-guide { stroke: rgba(169, 123, 232, .45); stroke-width: 1; stroke-dasharray: 4 4; vector-effect: non-scaling-stroke; }
     .macd-line { fill: none; stroke-width: 1.6; vector-effect: non-scaling-stroke; }
     .macd-dif-line { stroke: #3d9cff; }
@@ -770,7 +741,7 @@
       overflow: visible;
     }
 
-    .chart-grid { stroke: var(--tv-grid); stroke-width: 1; }
+    .chart-grid { stroke: rgba(255, 255, 255, 0.065); stroke-width: 1; }
     .axis-text {
       fill: var(--muted);
       font-family: var(--font-sans);
@@ -780,10 +751,10 @@
     }
     .candle-wick { stroke-width: 1.2; vector-effect: non-scaling-stroke; }
     .candle-body { stroke-width: 1; vector-effect: non-scaling-stroke; }
-    .candle-up .candle-wick, .candle-up .candle-body { stroke: var(--tv-up); }
-    .candle-up .candle-body { fill: var(--tv-up); }
-    .candle-down .candle-wick, .candle-down .candle-body { stroke: var(--tv-down); }
-    .candle-down .candle-body { fill: var(--tv-down); }
+    .candle-up .candle-wick, .candle-up .candle-body { stroke: var(--red); }
+    .candle-up .candle-body { fill: var(--red); }
+    .candle-down .candle-wick, .candle-down .candle-body { stroke: var(--green); }
+    .candle-down .candle-body { fill: var(--green); }
     .candle-flat .candle-wick, .candle-flat .candle-body { stroke: var(--candle-flat); }
     .candle-flat .candle-body { fill: var(--candle-flat); }
     .ma-line { fill: none; stroke-width: 1.8; vector-effect: non-scaling-stroke; }
@@ -798,48 +769,6 @@
       vector-effect: non-scaling-stroke;
     }
     .hover-point { fill: #8791a0; stroke: none; }
-
-    .chart-ohlc {
-      position: absolute;
-      top: 10px;
-      left: 13px;
-      z-index: 2;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      color: #848e9c;
-      font-size: 11px;
-      font-variant-numeric: tabular-nums;
-      pointer-events: none;
-    }
-    .chart-ohlc strong { color: #b7bdc6; font-weight: 600; }
-    .chart-ohlc .up { color: var(--tv-up); }
-    .chart-ohlc .down { color: var(--tv-down); }
-
-    .latest-price-line {
-      stroke: var(--tv-up);
-      stroke-width: 1;
-      stroke-dasharray: 2 2;
-      opacity: .72;
-      vector-effect: non-scaling-stroke;
-    }
-    .latest-price-line.down { stroke: var(--tv-down); }
-    .latest-price-label {
-      position: absolute;
-      right: 2px;
-      z-index: 3;
-      padding: 3px 7px;
-      border-radius: 3px;
-      color: #fff;
-      background: var(--tv-up);
-      font-size: 11px;
-      font-weight: 700;
-      font-variant-numeric: tabular-nums;
-      line-height: 1.25;
-      transform: translateY(-50%);
-      pointer-events: none;
-    }
-    .latest-price-label.down { background: var(--tv-down); }
 
     .hover-price-label {
       position: absolute;
@@ -961,7 +890,6 @@
       .button-group::-webkit-scrollbar { display: none; }
       .chart-stats { gap: 12px; flex-wrap: wrap; }
       .chart-wrap { height: 642px; }
-      .chart-ohlc span { display: none; }
       .footnote { flex-direction: column; }
     }
   </style>
@@ -1172,16 +1100,8 @@
         <span>K线 <b id="stat-count">—</b></span>
       </div>
 
-      <div id="chart-stage" class="chart-stage" title="滚轮以鼠标位置为中心缩放；按住鼠标左键可左右拖动">
+      <div id="chart-stage" class="chart-stage" title="滚轮以最右侧K线为锚点缩放；按住鼠标左键可左右拖动">
         <div id="chart-wrap" class="chart-wrap">
-          <div id="chart-ohlc" class="chart-ohlc">
-            <strong id="chart-ohlc-symbol">XAUUSDT · 1小时 · Binance</strong>
-            <span>开 <b id="chart-ohlc-open">—</b></span>
-            <span>高 <b id="chart-ohlc-high">—</b></span>
-            <span>低 <b id="chart-ohlc-low">—</b></span>
-            <span>收 <b id="chart-ohlc-close">—</b></span>
-            <b id="chart-ohlc-change">—</b>
-          </div>
           <svg id="price-chart" viewBox="0 0 1000 710" preserveAspectRatio="none" role="img" aria-label="Binance 合约价格K线图">
           <defs><clipPath id="price-plot-clip"><rect x="12" y="14" width="922" height="665"></rect></clipPath></defs>
           <g id="grid-layer"></g>
@@ -1190,14 +1110,12 @@
             <path id="ma20-line" class="ma-line ma20-line"></path>
             <path id="ma60-line" class="ma-line ma60-line"></path>
           </g>
-          <g clip-path="url(#price-plot-clip)"><line id="latest-price-line" class="latest-price-line" x1="12" x2="934"></line></g>
           <g id="hover-layer" visibility="hidden">
             <line id="hover-line" class="hover-line" y1="12" y2="678"></line>
             <line id="hover-horizontal-line" class="hover-horizontal-line" x1="12" x2="934"></line>
             <circle id="hover-point" class="hover-point" r="2.5"></circle>
           </g>
           </svg>
-          <div id="latest-price-label" class="latest-price-label">—</div>
           <div id="hover-price-label" class="hover-price-label" aria-hidden="true"></div>
           <div id="tooltip" class="tooltip">
           <div id="tooltip-time" class="tooltip-time"></div>
@@ -1278,7 +1196,7 @@
       </div>
 
       <div class="footnote">
-        <span id="chart-note">数据来自 Binance Futures 公开接口；K线采用币安配色，绿色上涨、红色下跌。</span>
+        <span id="chart-note">数据来自 Binance Futures 公开接口；红色上涨，绿色下跌。</span>
         <span id="last-updated">尚未更新</span>
       </div>
     </section>
