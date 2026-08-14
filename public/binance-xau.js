@@ -32,6 +32,17 @@
   const RANGE_EXPANSION_COOLDOWN = 800;
   const PAN_EXPANSION_THRESHOLD = 24;
   const MAX_RIGHT_BLANK_RATIO = 0.22;
+  const STRATEGY_FILTERS = {
+    estimatedRoundTripCostRate: 0.0014,
+    intradayMinimumBaseScore: 55,
+    intradayMinimumScoreEdge: 8,
+    intradayMinimumRawRewardRisk: 2,
+    intradayMinimumCostAdjustedRewardRisk: 1.1,
+    intradayMaximumCostToRisk: 0.45,
+    positionMinimumBaseScore: 55,
+    positionMinimumScoreEdge: 10,
+    positionMinimumExecutionScore: 85
+  };
 
   const RANGES = {
     "5d": { label: "5日", start: (end) => end - 5 * DAY },
@@ -1792,66 +1803,93 @@
   function calculateIntradayLevels(bias, entry, h1, m15) {
     const isLong = bias === "bullish";
     const atr = Math.max(m15.atr, entry * 0.00035);
-    const entryPadding = Math.max(atr * 0.12, entry * 0.00008);
-    const entryLow = isLong ? entry - entryPadding : entry - entryPadding * 0.35;
-    const entryHigh = isLong ? entry + entryPadding * 0.35 : entry + entryPadding;
+    const triggerBuffer = Math.max(atr * 0.05, entry * 0.00003);
+    const signalTrigger = m15.priceAction.signalDirection === (isLong ? 1 : -1)
+      ? isLong
+        ? m15.priceAction.signalBarHigh + triggerBuffer
+        : m15.priceAction.signalBarLow - triggerBuffer
+      : entry;
+    const triggerEntry = isLong ? Math.max(entry, signalTrigger) : Math.min(entry, signalTrigger);
+    const entryPadding = Math.max(atr * 0.08, entry * 0.00006);
+    const entryLow = isLong ? triggerEntry - entryPadding * 0.15 : triggerEntry - entryPadding;
+    const entryHigh = isLong ? triggerEntry + entryPadding : triggerEntry + entryPadding * 0.15;
     const supports = [
       m15.priceAction.setupBias === 1 ? m15.priceAction.signalBarLow : null,
       m15.support,
       h1.support
     ]
-      .filter((value) => Number.isFinite(value) && value < entry)
+      .filter((value) => Number.isFinite(value) && value < triggerEntry)
       .sort((a, b) => b - a);
     const resistances = [
       m15.priceAction.setupBias === -1 ? m15.priceAction.signalBarHigh : null,
       m15.resistance,
       h1.resistance
     ]
-      .filter((value) => Number.isFinite(value) && value > entry)
+      .filter((value) => Number.isFinite(value) && value > triggerEntry)
       .sort((a, b) => a - b);
     let stopLoss;
     let takeProfit;
     if (isLong) {
       const stopAnchor = supports[0];
+      const minimumRisk = Math.max(atr * 1.05, h1.atr * 0.32, triggerEntry * 0.0012);
       stopLoss = Number.isFinite(stopAnchor)
-        ? Math.min(stopAnchor - atr * 0.2, entry - atr * 0.75)
-        : entry - atr;
-      const risk = Math.max(atr * 0.25, entry - stopLoss);
+        ? Math.min(stopAnchor - atr * 0.2, triggerEntry - minimumRisk)
+        : triggerEntry - minimumRisk;
+      const risk = Math.max(atr * 0.35, triggerEntry - stopLoss);
       const measuredTarget = [m15.priceAction.measuredMoveTarget, h1.priceAction.measuredMoveTarget]
-        .find((value) => Number.isFinite(value) && value > entry);
-      takeProfit = resistances[0] || measuredTarget || entry + risk * 1.5;
+        .find((value) => Number.isFinite(value) && value > triggerEntry);
+      const projectedFirst = triggerEntry + risk * STRATEGY_FILTERS.intradayMinimumRawRewardRisk;
+      takeProfit = Math.max(resistances[0] || measuredTarget || projectedFirst, projectedFirst);
       const secondResistance = resistances.find((value) => value > takeProfit + atr * 0.2);
-      const target = Math.max(secondResistance || 0, entry + risk * 2);
+      const target = Math.max(secondResistance || 0, triggerEntry + risk * 3);
       return {
         entryLow,
         entryHigh,
         stopLoss,
         takeProfit,
         target,
-        rewardRisk1: Math.max(0, takeProfit - entry) / risk,
-        rewardRisk2: Math.max(0, target - entry) / risk,
+        rewardRisk1: Math.max(0, takeProfit - triggerEntry) / risk,
+        rewardRisk2: Math.max(0, target - triggerEntry) / risk,
         risk
       };
     }
     const stopAnchor = resistances[0];
+    const minimumRisk = Math.max(atr * 1.05, h1.atr * 0.32, triggerEntry * 0.0012);
     stopLoss = Number.isFinite(stopAnchor)
-      ? Math.max(stopAnchor + atr * 0.2, entry + atr * 0.75)
-      : entry + atr;
-    const risk = Math.max(atr * 0.25, stopLoss - entry);
+      ? Math.max(stopAnchor + atr * 0.2, triggerEntry + minimumRisk)
+      : triggerEntry + minimumRisk;
+    const risk = Math.max(atr * 0.35, stopLoss - triggerEntry);
     const measuredTarget = [m15.priceAction.measuredMoveTarget, h1.priceAction.measuredMoveTarget]
-      .find((value) => Number.isFinite(value) && value < entry);
-    takeProfit = supports[0] || measuredTarget || entry - risk * 1.5;
+      .find((value) => Number.isFinite(value) && value < triggerEntry);
+    const projectedFirst = triggerEntry - risk * STRATEGY_FILTERS.intradayMinimumRawRewardRisk;
+    takeProfit = Math.min(supports[0] || measuredTarget || projectedFirst, projectedFirst);
     const secondSupport = supports.find((value) => value < takeProfit - atr * 0.2);
-    const target = Math.min(Number.isFinite(secondSupport) ? secondSupport : Infinity, entry - risk * 2);
+    const target = Math.min(Number.isFinite(secondSupport) ? secondSupport : Infinity, triggerEntry - risk * 3);
     return {
       entryLow,
       entryHigh,
       stopLoss,
       takeProfit,
       target,
-      rewardRisk1: Math.max(0, entry - takeProfit) / risk,
-      rewardRisk2: Math.max(0, entry - target) / risk,
+      rewardRisk1: Math.max(0, triggerEntry - takeProfit) / risk,
+      rewardRisk2: Math.max(0, triggerEntry - target) / risk,
       risk
+    };
+  }
+
+  function evaluateExecutionQuality(levels, bias) {
+    const entry = (levels.entryLow + levels.entryHigh) / 2;
+    const riskRate = Math.abs(entry - levels.stopLoss) / entry;
+    const rewardRate = Math.abs(levels.takeProfit - entry) / entry;
+    const costRate = STRATEGY_FILTERS.estimatedRoundTripCostRate;
+    const costToRisk = costRate / Math.max(riskRate, 0.000001);
+    const costAdjustedRewardRisk = Math.max(0, rewardRate - costRate) /
+      Math.max(0.000001, riskRate + costRate);
+    return {
+      costRate,
+      costToRisk,
+      costAdjustedRewardRisk,
+      label: `${bias === "bullish" ? "多头" : "空头"}预估往返成本约${(costRate * 100).toFixed(2)}%，成本调整后盈亏比1:${costAdjustedRewardRisk.toFixed(2)}`
     };
   }
 
@@ -1891,8 +1929,10 @@
     const m15Signal = m15.opportunity.bias;
     const candidateSign = candidateBias === "bullish" ? 1 : -1;
     const directionName = candidateBias === "bullish" ? "做多" : "做空";
-    const m15PriceActionTrigger = (m15.priceAction.setupReady && m15.priceAction.setupBias === candidateSign) ||
-      (m15.priceAction.alwaysIn === candidateSign && m15.priceAction.signalDirection === candidateSign);
+    const m15PriceActionTrigger = m15.priceAction.signalDirection === candidateSign && (
+      (m15.priceAction.setupReady && m15.priceAction.setupBias === candidateSign) ||
+      m15.priceAction.alwaysIn === candidateSign
+    );
     const stateSummary = `H4 ${h4?.marketState.label || "数据不足"}，H1 ${h1.marketState.label}，M15 ${m15.marketState.label}；价格行为/结构基础多${baseLongScore}、空${baseShortScore}，量能调整后多${longScore}、空${shortScore}（候选方向调整${signed(volumeAdjustment, 0)}）。价格行为：H1 ${h1.priceAction.regime}，M15 ${m15.priceAction.setupLabel}。量能：H1 ${h1.volume?.label || "中性"}，M15 ${m15.volume?.label || "中性"}。`;
     const waitForCandidate = (reason, trigger) => ({
       ...emptyIntradayStrategy(reason),
@@ -1912,10 +1952,11 @@
           : `等待M15转为多方并确认突破压力 ${h1.resistanceZone}。`
       );
     }
-    if (baseCompositeScore < 48 || scoreEdge < 6) {
+    if (baseCompositeScore < STRATEGY_FILTERS.intradayMinimumBaseScore ||
+        scoreEdge < STRATEGY_FILTERS.intradayMinimumScoreEdge) {
       return waitForCandidate(
         `${stateSummary} 多空优势不足，暂不强行选择方向。`,
-        "等待H1与M15同向，且多空综合分差扩大到6分以上。"
+        `等待H1与M15同向，基础分达到${STRATEGY_FILTERS.intradayMinimumBaseScore}分，且多空分差扩大到${STRATEGY_FILTERS.intradayMinimumScoreEdge}分以上。`
       );
     }
     if (h1Signal !== "neutral" && h1Signal !== candidateBias) {
@@ -1960,13 +2001,31 @@
     const entry = Number.isFinite(entryPrice) ? entryPrice : m15.price;
     const levels = calculateIntradayLevels(candidateBias, entry, h1, m15);
     const priority = intradayPriority(candidateBias, compositeScore, h4, h1, m15);
+    const executionQuality = evaluateExecutionQuality(levels, candidateBias);
     const structuralNote = candidateBias === "bullish"
       ? `止损设置在最近有效支撑下方，止盈参考上方压力。`
       : `止损设置在最近有效压力上方，止盈参考下方支撑。`;
     const trigger = candidateBias === "bullish"
       ? `执行条件：${m15.priceAction.setupLabel}；价格进入参考区后，触发K线高点被突破且未跌破 ${m15.supportZone}。跌破信号K线低点或止损位则失效。`
       : `执行条件：${m15.priceAction.setupLabel}；价格进入参考区后，触发K线低点被跌破且未突破 ${m15.resistanceZone}。突破信号K线高点或止损位则失效。`;
-    if (levels.rewardRisk1 < 1.2) {
+    if (priority.code !== "A") {
+      return {
+        bias: "neutral",
+        candidateBias,
+        actionable: false,
+        directionLabel: `观察 · 候选${directionName}`,
+        priority: `${priority.label} · 不执行`,
+        score: compositeScore,
+        longScore,
+        shortScore,
+        ...levels,
+        summary: `${stateSummary} 当前仅达到${priority.code}级观察条件；长窗口回测显示非A级信号未提供稳定正贡献，因此保留方向提示但不生成执行信号。`,
+        trigger: `等待条件升级为A级，并由M15出现新的同向价格行为触发。${structuralNote}`
+      };
+    }
+    if (levels.rewardRisk1 < STRATEGY_FILTERS.intradayMinimumRawRewardRisk ||
+        executionQuality.costAdjustedRewardRisk < STRATEGY_FILTERS.intradayMinimumCostAdjustedRewardRisk ||
+        executionQuality.costToRisk > STRATEGY_FILTERS.intradayMaximumCostToRisk) {
       return {
         bias: "neutral",
         candidateBias,
@@ -1977,8 +2036,8 @@
         longScore,
         shortScore,
         ...levels,
-        summary: `${stateSummary} 候选${directionName}的较近止盈位盈亏比仅1:${levels.rewardRisk1.toFixed(2)}，低于1:1.20执行门槛。`,
-        trigger: `等待价格改善或目标空间扩大后再评估。${structuralNote}`
+        summary: `${stateSummary} 候选${directionName}未通过成本保护：原始盈亏比1:${levels.rewardRisk1.toFixed(2)}，${executionQuality.label}，成本/风险=${executionQuality.costToRisk.toFixed(2)}。`,
+        trigger: `等待入场价格改善、止损结构更清晰或目标空间扩大后再评估。${structuralNote}`
       };
     }
     const climaxDowngrade = (h1.priceAction.climaxRisk || m15.priceAction.climaxRisk) && priority.rank > 1;
@@ -1987,6 +2046,21 @@
       : levels.rewardRisk1 < 1.5 && priority.rank > 1
       ? priority.code === "A" ? "B · 盈亏比降级" : "C · 盈亏比一般"
       : priority.label;
+    if (rrPriority.startsWith("C")) {
+      return {
+        bias: "neutral",
+        candidateBias,
+        actionable: false,
+        directionLabel: `观察 · 候选${directionName}`,
+        priority: `${rrPriority} · 不执行`,
+        score: compositeScore,
+        longScore,
+        shortScore,
+        ...levels,
+        summary: `${stateSummary} 信号因高潮风险或成本后的盈亏比降为C级，保留观察但不执行。`,
+        trigger: `等待新的A级价格行为触发。${structuralNote}`
+      };
+    }
     return {
       bias: candidateBias,
       candidateBias,
@@ -1997,7 +2071,7 @@
       longScore,
       shortScore,
       ...levels,
-      summary: `${stateSummary} ${directionName}条件领先。${structuralNote}`,
+      summary: `${stateSummary} ${directionName}条件领先，且通过成本保护（${executionQuality.label}）。${structuralNote}`,
       trigger
     };
   }
@@ -2208,10 +2282,11 @@
         "等待H4与H1已收盘K线重新形成同向机会。"
       );
     }
-    if (baseCompositeScore < 52 || scoreEdge < 8) {
+    if (baseCompositeScore < STRATEGY_FILTERS.positionMinimumBaseScore ||
+        scoreEdge < STRATEGY_FILTERS.positionMinimumScoreEdge) {
       return waitForCandidate(
         `${stateSummary} 高周期多空优势不足，暂不建立中长线仓位。`,
-        "等待H4/H1综合分达到52分以上，且多空分差扩大到8分以上。"
+        `等待H4/H1综合分达到${STRATEGY_FILTERS.positionMinimumBaseScore}分以上，且多空分差扩大到${STRATEGY_FILTERS.positionMinimumScoreEdge}分以上。`
       );
     }
     if (d1Bias !== "neutral" && d1Bias !== candidateBias) {
@@ -2270,6 +2345,12 @@
         `等待H4形成${candidateSign > 0 ? "Always In Long或多头突破跟随" : "Always In Short或空头突破跟随"}，再由H1寻找入场信号。`
       );
     }
+    if (compositeScore < STRATEGY_FILTERS.positionMinimumExecutionScore) {
+      return waitForCandidate(
+        `${stateSummary} 中长线策略要求更高方向确定性，当前${directionName}评分${compositeScore}，低于${STRATEGY_FILTERS.positionMinimumExecutionScore}分执行门槛。`,
+        `等待D1/H4/H1继续同向，并将策略评分提升至${STRATEGY_FILTERS.positionMinimumExecutionScore}分以上。`
+      );
+    }
 
     const entry = Number.isFinite(livePrice) ? livePrice : h1.price;
     const levels = calculatePositionLevels(candidateBias, entry, d1, h4, h1);
@@ -2283,6 +2364,36 @@
     const priorityLabel = (d1.priceAction.climaxRisk || h4.priceAction.climaxRisk) && priority.rank > 1
       ? "C · 高潮后谨慎"
       : priority.label;
+    if (priority.code !== "A" || priorityLabel.startsWith("C")) {
+      return {
+        bias: "neutral",
+        candidateBias,
+        actionable: false,
+        directionLabel: `观察 · 候选${directionName}`,
+        priority: `${priorityLabel} · 不执行`,
+        score: compositeScore,
+        longScore,
+        shortScore,
+        ...levels,
+        summary: `${stateSummary} 当前仅达到${priority.code}级观察条件；长窗口回测显示非A级中长线信号未提供稳定正贡献，因此保留方向提示但不生成执行信号。`,
+        trigger: `等待策略升级为A级，并由H1形成同向价格行为信号后再评估。${structuralNote}`
+      };
+    }
+    if (m15 && m15.opportunity.bias !== "neutral" && m15.opportunity.bias !== candidateBias) {
+      return {
+        bias: "neutral",
+        candidateBias,
+        actionable: false,
+        directionLabel: `观望 · 候选${directionName}`,
+        priority: "等待 · M15择时反向",
+        score: compositeScore,
+        longScore,
+        shortScore,
+        ...levels,
+        summary: `${stateSummary} 高周期方向虽成立，但M15当前与候选方向相反，暂缓入场。`,
+        trigger: `等待M15转为${candidateBias === "bullish" ? "多方" : "空方"}或回到中性，再执行H1触发。`
+      };
+    }
     return {
       bias: candidateBias,
       candidateBias,
