@@ -1502,6 +1502,8 @@
       margin,
       W,
       H,
+      yMin,
+      yMax,
       tMin,
       tMax,
       intervalMs
@@ -1518,6 +1520,10 @@
     const localX = Math.max(
       chart.margin.left,
       Math.min(chart.W - chart.margin.right, (event.clientX - rect.left) / rect.width * chart.W)
+    );
+    const localY = Math.max(
+      chart.margin.top,
+      Math.min(chart.H - chart.margin.bottom, (event.clientY - rect.top) / rect.height * chart.H)
     );
     const targetTime = chart.tMin +
       ((localX - chart.margin.left) / (chart.W - chart.margin.left - chart.margin.right)) *
@@ -1536,18 +1542,19 @@
       if (previousDistance < currentDistance) index = low - 1;
     }
     const candle = chart.candles[index];
-    const px = chart.x(candle.t + chart.intervalMs / 2);
-    const py = chart.y(candle.close);
-    $("hover-line").setAttribute("x1", px);
-    $("hover-line").setAttribute("x2", px);
-    $("hover-horizontal-line").setAttribute("y1", py);
-    $("hover-horizontal-line").setAttribute("y2", py);
-    $("hover-point").setAttribute("cx", px);
-    $("hover-point").setAttribute("cy", py);
+    const priceRatio = (localY - chart.margin.top) /
+      (chart.H - chart.margin.top - chart.margin.bottom);
+    const pointerPrice = chart.yMax - priceRatio * (chart.yMax - chart.yMin);
+    $("hover-line").setAttribute("x1", localX);
+    $("hover-line").setAttribute("x2", localX);
+    $("hover-horizontal-line").setAttribute("y1", localY);
+    $("hover-horizontal-line").setAttribute("y2", localY);
+    $("hover-point").setAttribute("cx", localX);
+    $("hover-point").setAttribute("cy", localY);
     $("hover-layer").setAttribute("visibility", "visible");
     const priceLabel = $("hover-price-label");
-    priceLabel.textContent = priceFormat.format(candle.close);
-    priceLabel.style.top = `${py / chart.H * 100}%`;
+    priceLabel.textContent = priceFormat.format(pointerPrice);
+    priceLabel.style.top = `${localY / chart.H * 100}%`;
     priceLabel.classList.add("visible");
 
     const rsiValue = chart.rsi[index];

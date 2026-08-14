@@ -646,9 +646,15 @@
     .ma-line { fill: none; stroke-width: 1.65; vector-effect: non-scaling-stroke; }
     .ma20-line { stroke: #5c9dff; }
     .ma60-line { stroke: #b98cff; }
-    .hover-line { stroke: rgba(255, 255, 255, 0.18); stroke-width: 1; stroke-dasharray: 3 3; }
-    .hover-horizontal-line { stroke: var(--gold); stroke-width: 1.2; stroke-dasharray: 8 9; opacity: .9; vector-effect: non-scaling-stroke; }
-    .hover-point { fill: var(--gold); stroke: var(--bg); stroke-width: 2; }
+    .hover-line,
+    .hover-horizontal-line {
+      stroke: #8791a0;
+      stroke-width: 1;
+      stroke-dasharray: 3 3;
+      opacity: .72;
+      vector-effect: non-scaling-stroke;
+    }
+    .hover-point { fill: #8791a0; stroke: none; }
 
     .hover-price-label {
       position: absolute;
@@ -656,10 +662,10 @@
       left: 4px;
       z-index: 2;
       padding: 3px 7px;
-      border: 1px solid rgba(240, 185, 77, .55);
+      border: 1px solid rgba(255, 255, 255, .08);
       border-radius: 5px;
-      color: var(--gold);
-      background: rgba(9, 17, 26, .96);
+      color: #f1f3f5;
+      background: #566070;
       box-shadow: 0 4px 14px rgba(0, 0, 0, .28);
       font-size: 11px;
       font-weight: 700;
@@ -925,7 +931,7 @@
           <g id="hover-layer" visibility="hidden">
             <line id="hover-line" class="hover-line" y1="12" y2="678"></line>
             <line id="hover-horizontal-line" class="hover-horizontal-line" x1="12" x2="934"></line>
-            <circle id="hover-point" class="hover-point" r="4.5"></circle>
+            <circle id="hover-point" class="hover-point" r="2.5"></circle>
           </g>
         </svg>
         <div id="hover-price-label" class="hover-price-label" aria-hidden="true"></div>
