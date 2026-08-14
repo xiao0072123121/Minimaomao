@@ -101,6 +101,8 @@
   const $ = (id) => document.getElementById(id);
   let wheelRenderFrame = 0;
   let latestWheelPointer = null;
+  let panRenderFrame = 0;
+  let chartPanState = null;
   const priceFormat = new Intl.NumberFormat("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2
@@ -440,7 +442,7 @@
     const range = RANGES[state.range];
     const limited = state.historyLimited ? ` · 数据量保护：最近${MAX_HISTORY_CANDLES.toLocaleString("en-US")}根` : "";
     $("chart-subtitle").textContent = `${range.label} · ${INTERVALS[state.interval].label} · ${state.symbol}${limited}`;
-    $("chart-note").textContent = `数据来自 Binance Futures 公开接口；${INTERVALS[state.interval].label}，红色上涨，绿色下跌；主图支持滚轮缩放。`;
+    $("chart-note").textContent = `数据来自 Binance Futures 公开接口；${INTERVALS[state.interval].label}，红色上涨，绿色下跌；主图支持滚轮缩放和按住左键拖动。`;
   }
 
   async function loadHistory() {
@@ -1172,6 +1174,16 @@
     };
   }
 
+  function calculatePanWindow(start, end, deltaX, plotWidth) {
+    const span = Math.max(0, Math.min(100, end - start));
+    if (!Number.isFinite(deltaX) || !Number.isFinite(plotWidth) || plotWidth <= 0 || span >= 100) {
+      return { start, end };
+    }
+    const shift = -deltaX / plotWidth * span;
+    const nextStart = Math.max(0, Math.min(100 - span, start + shift));
+    return { start: nextStart, end: nextStart + span };
+  }
+
   function renderTimeline() {
     const candles = state.candles;
     const line = $("timeline-line");
@@ -1258,6 +1270,58 @@
     });
   }
 
+  function beginChartPan(event) {
+    const chart = $("price-chart")._chart;
+    const span = state.timelineEnd - state.timelineStart;
+    if (event.button !== 0 || !chart || state.candles.length < 2 || span >= 100) return;
+    event.preventDefault();
+    chartPanState = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      timelineStart: state.timelineStart,
+      timelineEnd: state.timelineEnd
+    };
+    $("chart-wrap").setPointerCapture(event.pointerId);
+    $("chart-wrap").classList.add("dragging");
+    hideTooltip();
+  }
+
+  function moveChartPan(event) {
+    if (!chartPanState || event.pointerId !== chartPanState.pointerId) return;
+    event.preventDefault();
+    const chart = $("price-chart")._chart;
+    if (!chart) return;
+    const rect = $("price-chart").getBoundingClientRect();
+    const plotWidth = rect.width *
+      (chart.W - chart.margin.left - chart.margin.right) / Math.max(1, chart.W);
+    const deltaX = event.clientX - chartPanState.startX;
+    const next = calculatePanWindow(
+      chartPanState.timelineStart,
+      chartPanState.timelineEnd,
+      deltaX,
+      plotWidth
+    );
+    state.timelineStart = next.start;
+    state.timelineEnd = next.end;
+    syncTimelineInputs();
+    hideTooltip();
+
+    if (panRenderFrame) return;
+    panRenderFrame = requestAnimationFrame(() => {
+      panRenderFrame = 0;
+      renderChart();
+    });
+  }
+
+  function endChartPan(event) {
+    if (!chartPanState || event.pointerId !== chartPanState.pointerId) return;
+    const chartWrap = $("chart-wrap");
+    chartPanState = null;
+    chartWrap.classList.remove("dragging");
+    if (chartWrap.hasPointerCapture(event.pointerId)) chartWrap.releasePointerCapture(event.pointerId);
+    hideTooltip();
+  }
+
   function toggleMovingAverage(period) {
     const key = period === 20 ? "showMa20" : "showMa60";
     const button = $(period === 20 ? "ma20-toggle" : "ma60-toggle");
@@ -1275,7 +1339,7 @@
     const view = getTimelineWindow();
     const candles = view.candles;
     const W = 1000;
-    const H = 315;
+    const H = 473;
     const margin = { top: 14, right: 66, bottom: 31, left: 12 };
     const innerW = W - margin.left - margin.right;
     const innerH = H - margin.top - margin.bottom;
@@ -1388,6 +1452,7 @@
   }
 
   function showTooltip(event) {
+    if (chartPanState) return;
     const chart = $("price-chart")._chart;
     if (!chart) return;
     const rect = $("price-chart").getBoundingClientRect();
@@ -1492,6 +1557,11 @@
 
   $("chart-wrap").addEventListener("pointermove", showTooltip, { passive: true });
   $("chart-wrap").addEventListener("pointerleave", hideTooltip);
+  $("chart-wrap").addEventListener("pointerdown", beginChartPan);
+  $("chart-wrap").addEventListener("pointermove", moveChartPan, { passive: false });
+  $("chart-wrap").addEventListener("pointerup", endChartPan);
+  $("chart-wrap").addEventListener("pointercancel", endChartPan);
+  $("chart-wrap").addEventListener("lostpointercapture", endChartPan);
   $("chart-wrap").addEventListener("wheel", zoomChartWithWheel, { passive: false });
   $("timeline-start").addEventListener("input", () => updateTimeline("start"));
   $("timeline-end").addEventListener("input", () => updateTimeline("end"));

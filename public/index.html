@@ -496,7 +496,15 @@
       font-variant-numeric: tabular-nums;
     }
 
-    .chart-wrap { position: relative; height: 315px; touch-action: none; }
+    .chart-wrap {
+      position: relative;
+      height: 473px;
+      cursor: grab;
+      touch-action: none;
+      user-select: none;
+    }
+
+    .chart-wrap.dragging { cursor: grabbing; }
 
     .rsi-panel {
       margin-top: 12px;
@@ -707,7 +715,7 @@
       .button-group { max-width: calc(100% - 55px); overflow-x: auto; scrollbar-width: none; }
       .button-group::-webkit-scrollbar { display: none; }
       .chart-stats { gap: 12px; flex-wrap: wrap; }
-      .chart-wrap { height: 285px; }
+      .chart-wrap { height: 428px; }
       .footnote { flex-direction: column; }
     }
   </style>
@@ -866,8 +874,8 @@
         <span>K线 <b id="stat-count">—</b></span>
       </div>
 
-      <div id="chart-wrap" class="chart-wrap" title="在主图内滚动鼠标滚轮可缩放K线">
-        <svg id="price-chart" viewBox="0 0 1000 315" preserveAspectRatio="none" role="img" aria-label="Binance 合约价格K线图">
+      <div id="chart-wrap" class="chart-wrap" title="滚轮缩放K线；按住鼠标左键可左右拖动">
+        <svg id="price-chart" viewBox="0 0 1000 473" preserveAspectRatio="none" role="img" aria-label="Binance 合约价格K线图">
           <g id="grid-layer"></g>
           <g id="candle-layer"></g>
           <g id="ma-layer">
@@ -875,7 +883,7 @@
             <path id="ma60-line" class="ma-line ma60-line"></path>
           </g>
           <g id="hover-layer" visibility="hidden">
-            <line id="hover-line" class="hover-line" y1="12" y2="283"></line>
+            <line id="hover-line" class="hover-line" y1="12" y2="441"></line>
             <circle id="hover-point" class="hover-point" r="4.5"></circle>
           </g>
         </svg>
