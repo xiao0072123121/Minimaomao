@@ -17,6 +17,9 @@
       --gold-soft: rgba(240, 185, 77, 0.13);
       --green: #37d59a;
       --red: #ff6b70;
+      --candle-flat: #aab4c3;
+      --ma20: #4d8dff;
+      --ma60: #ffb020;
       --shadow: 0 20px 55px rgba(0, 0, 0, 0.28);
       --font-sans: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
@@ -486,8 +489,8 @@
     .ma-toggle { display: inline-flex; align-items: center; gap: 6px; }
     .ma-swatch { width: 13px; height: 2px; border-radius: 2px; opacity: .4; }
     .chart-button.active .ma-swatch { opacity: 1; }
-    .ma20-swatch { background: #5c9dff; }
-    .ma60-swatch { background: #b98cff; }
+    .ma20-swatch { background: var(--ma20); }
+    .ma60-swatch { background: var(--ma60); }
 
     .chart-stats {
       display: flex;
@@ -641,11 +644,11 @@
     .candle-up .candle-body { fill: var(--red); }
     .candle-down .candle-wick, .candle-down .candle-body { stroke: var(--green); }
     .candle-down .candle-body { fill: var(--green); }
-    .candle-flat .candle-wick, .candle-flat .candle-body { stroke: var(--gold); }
-    .candle-flat .candle-body { fill: var(--gold); }
-    .ma-line { fill: none; stroke-width: 1.65; vector-effect: non-scaling-stroke; }
-    .ma20-line { stroke: #5c9dff; }
-    .ma60-line { stroke: #b98cff; }
+    .candle-flat .candle-wick, .candle-flat .candle-body { stroke: var(--candle-flat); }
+    .candle-flat .candle-body { fill: var(--candle-flat); }
+    .ma-line { fill: none; stroke-width: 1.8; vector-effect: non-scaling-stroke; }
+    .ma20-line { stroke: var(--ma20); }
+    .ma60-line { stroke: var(--ma60); }
     .hover-line,
     .hover-horizontal-line {
       stroke: #8791a0;
@@ -702,6 +705,8 @@
     .tooltip-time { margin-bottom: 6px; color: var(--muted); font-size: 11px; }
     .tooltip-row { display: flex; justify-content: space-between; gap: 14px; margin-top: 3px; font-size: 12px; }
     .tooltip-row b { font-weight: 600; font-variant-numeric: tabular-nums; }
+    #tooltip-ma20 { color: var(--ma20); }
+    #tooltip-ma60 { color: var(--ma60); }
 
     .empty-state {
       position: absolute;
