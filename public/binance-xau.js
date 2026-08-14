@@ -29,6 +29,8 @@
   const TOOLTIP_HORIZONTAL_GAP = 64;
   const TOOLTIP_VERTICAL_GAP = 32;
   const TOOLTIP_EDGE_GAP = 12;
+  const RANGE_EXPANSION_COOLDOWN = 800;
+  const PAN_EXPANSION_THRESHOLD = 24;
 
   const RANGES = {
     "5d": { label: "5日", start: (end) => end - 5 * DAY },
@@ -69,6 +71,7 @@
       start: () => Date.UTC(2019, 0, 1)
     }
   };
+  const RANGE_ORDER = ["5d", "1mo", "3mo", "6mo", "1y", "all"];
 
   const ANALYSIS_FRAMES = {
     h4: { label: "H4", interval: "4h", lookback: 45 },
@@ -98,7 +101,9 @@
     analysisRenderTimer: null,
     socket: null,
     socketGeneration: 0,
-    reconnectTimer: null
+    reconnectTimer: null,
+    rangeExpansionPending: false,
+    lastRangeExpansionAt: 0
   };
 
   const $ = (id) => document.getElementById(id);
@@ -446,7 +451,37 @@
     const range = RANGES[state.range];
     const limited = state.historyLimited ? ` · 数据量保护：最近${MAX_HISTORY_CANDLES.toLocaleString("en-US")}根` : "";
     $("chart-subtitle").textContent = `${range.label} · ${INTERVALS[state.interval].label} · ${state.symbol}${limited}`;
-    $("chart-note").textContent = `数据来自 Binance Futures 公开接口；${INTERVALS[state.interval].label}，红色上涨，绿色下跌；主图支持滚轮缩放和按住左键拖动。`;
+    $("chart-note").textContent = `数据来自 Binance Futures 公开接口；${INTERVALS[state.interval].label}，红色上涨，绿色下跌；主图支持滚轮缩放、左键拖动和触边自动扩展时间范围。`;
+  }
+
+  function updateRangeButtons() {
+    document.querySelectorAll("[data-range]").forEach((button) => {
+      button.classList.toggle("active", button.dataset.range === state.range);
+    });
+  }
+
+  function getNextHistoryRange() {
+    const index = RANGE_ORDER.indexOf(state.range);
+    return index >= 0 && index < RANGE_ORDER.length - 1 ? RANGE_ORDER[index + 1] : null;
+  }
+
+  async function expandHistoryRange() {
+    const nextRange = getNextHistoryRange();
+    const now = Date.now();
+    if (!nextRange || state.rangeExpansionPending || now - state.lastRangeExpansionAt < RANGE_EXPANSION_COOLDOWN) {
+      return false;
+    }
+    state.rangeExpansionPending = true;
+    state.lastRangeExpansionAt = now;
+    state.range = nextRange;
+    updateRangeButtons();
+    hideTooltip();
+    try {
+      await loadHistory();
+    } finally {
+      state.rangeExpansionPending = false;
+    }
+    return true;
   }
 
   async function loadHistory() {
@@ -1253,6 +1288,12 @@
         ? Math.max(1, window.innerHeight)
         : 1;
     const normalizedDelta = Math.max(-240, Math.min(240, event.deltaY * deltaMultiplier));
+    const currentSpan = state.timelineEnd - state.timelineStart;
+    if (normalizedDelta > 0 && currentSpan >= 99.999 && getNextHistoryRange()) {
+      latestWheelPointer = null;
+      void expandHistoryRange();
+      return;
+    }
     const scale = Math.exp(normalizedDelta * WHEEL_ZOOM_SENSITIVITY);
     const next = calculateZoomWindow(
       state.timelineStart,
@@ -1279,7 +1320,7 @@
   function beginChartPan(event) {
     const chart = $("price-chart")._chart;
     const span = state.timelineEnd - state.timelineStart;
-    if (event.button !== 0 || !chart || state.candles.length < 2 || span >= 100) return;
+    if (event.button !== 0 || !chart || state.candles.length < 2 || (span >= 99.999 && !getNextHistoryRange())) return;
     event.preventDefault();
     chartPanState = {
       pointerId: event.pointerId,
@@ -1301,6 +1342,16 @@
     const plotWidth = rect.width *
       (chart.W - chart.margin.left - chart.margin.right) / Math.max(1, chart.W);
     const deltaX = event.clientX - chartPanState.startX;
+    const span = chartPanState.timelineEnd - chartPanState.timelineStart;
+    const requestedShift = -deltaX / Math.max(1, plotWidth) * span;
+    const requestedStart = chartPanState.timelineStart + requestedShift;
+    const requestedEnd = chartPanState.timelineEnd + requestedShift;
+    const reachesRangeBoundary = requestedStart < 0 || requestedEnd > 100 || span >= 99.999;
+    if (Math.abs(deltaX) >= PAN_EXPANSION_THRESHOLD && reachesRangeBoundary && getNextHistoryRange()) {
+      endChartPan(event);
+      void expandHistoryRange();
+      return;
+    }
     const next = calculatePanWindow(
       chartPanState.timelineStart,
       chartPanState.timelineEnd,
@@ -1575,17 +1626,17 @@
 
     const tooltip = $("tooltip");
     $("tooltip-time").textContent = `${formatTime(candle.t, true)} · ${INTERVALS[state.interval].label}`;
-    $("tooltip-open").textContent = `${priceFormat.format(candle.open)} USDT`;
-    $("tooltip-high").textContent = `${priceFormat.format(candle.high)} USDT`;
-    $("tooltip-low").textContent = `${priceFormat.format(candle.low)} USDT`;
-    $("tooltip-close").textContent = `${priceFormat.format(candle.close)} USDT`;
+    $("tooltip-open").textContent = priceFormat.format(candle.open);
+    $("tooltip-high").textContent = priceFormat.format(candle.high);
+    $("tooltip-low").textContent = priceFormat.format(candle.low);
+    $("tooltip-close").textContent = priceFormat.format(candle.close);
     $("tooltip-change").textContent = `${signed((candle.close / candle.open - 1) * 100)}%`;
     const ma20 = chart.ma20[index];
     const ma60 = chart.ma60[index];
     $("tooltip-ma20-row").style.display = state.showMa20 && Number.isFinite(ma20) ? "flex" : "none";
     $("tooltip-ma60-row").style.display = state.showMa60 && Number.isFinite(ma60) ? "flex" : "none";
-    $("tooltip-ma20").textContent = Number.isFinite(ma20) ? `${priceFormat.format(ma20)} USDT` : "—";
-    $("tooltip-ma60").textContent = Number.isFinite(ma60) ? `${priceFormat.format(ma60)} USDT` : "—";
+    $("tooltip-ma20").textContent = Number.isFinite(ma20) ? priceFormat.format(ma20) : "—";
+    $("tooltip-ma60").textContent = Number.isFinite(ma60) ? priceFormat.format(ma60) : "—";
     $("tooltip-rsi").textContent = Number.isFinite(rsiValue) ? rsiValue.toFixed(2) : "—";
     positionTooltipAwayFromPointer(event, tooltip);
     tooltip.classList.add("visible");
@@ -1613,9 +1664,8 @@
 
   document.querySelectorAll("[data-range]").forEach((button) => {
     button.addEventListener("click", () => {
-      document.querySelectorAll("[data-range]").forEach((item) => item.classList.remove("active"));
-      button.classList.add("active");
       state.range = button.dataset.range;
+      updateRangeButtons();
       loadHistory();
     });
   });
