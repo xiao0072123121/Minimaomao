@@ -1357,8 +1357,8 @@
     const priority = intradayPriority(candidateBias, compositeScore, h4, h1, m15);
     const directionName = candidateBias === "bullish" ? "做多" : "做空";
     const structuralNote = candidateBias === "bullish"
-      ? `止损设置在最近有效支撑下方，第一目标参考上方压力。`
-      : `止损设置在最近有效压力上方，第一目标参考下方支撑。`;
+      ? `止损设置在最近有效支撑下方，止盈参考上方压力。`
+      : `止损设置在最近有效压力上方，止盈参考下方支撑。`;
     const trigger = candidateBias === "bullish"
       ? `执行条件：价格进入参考区后，M15保持多方机会且未跌破 ${m15.supportZone}；跌破止损位则策略失效。`
       : `执行条件：价格进入参考区后，M15保持空方机会且未突破 ${m15.resistanceZone}；突破止损位则策略失效。`;
@@ -1373,7 +1373,7 @@
         longScore,
         shortScore,
         ...levels,
-        summary: `${stateSummary} 候选${directionName}的第一目标盈亏比仅1:${levels.rewardRisk1.toFixed(2)}，低于1:1.20执行门槛。`,
+        summary: `${stateSummary} 候选${directionName}的较近止盈位盈亏比仅1:${levels.rewardRisk1.toFixed(2)}，低于1:1.20执行门槛。`,
         trigger: `等待价格改善或目标空间扩大后再评估。${structuralNote}`
       };
     }
@@ -1416,10 +1416,12 @@
       ? `${strategyPrice(strategy.entryLow)}–${strategyPrice(strategy.entryHigh)}`
       : "—";
     $("strategy-stop").textContent = strategyPrice(strategy.stopLoss);
-    $("strategy-take-profit").textContent = strategyPrice(strategy.takeProfit);
-    $("strategy-target").textContent = strategyPrice(strategy.target);
+    const takeProfitValues = [strategy.takeProfit, strategy.target]
+      .filter(Number.isFinite)
+      .map(strategyPrice);
+    $("strategy-take-profit").textContent = takeProfitValues.length ? takeProfitValues.join(" / ") : "—";
     $("strategy-rr").textContent = Number.isFinite(strategy.rewardRisk1) && Number.isFinite(strategy.rewardRisk2)
-      ? `1:${strategy.rewardRisk1.toFixed(2)} · 1:${strategy.rewardRisk2.toFixed(2)}`
+      ? `1:${strategy.rewardRisk1.toFixed(2)} / 1:${strategy.rewardRisk2.toFixed(2)}`
       : "—";
     $("strategy-summary").textContent = strategy.summary;
     $("strategy-trigger").textContent = strategy.trigger;
