@@ -454,7 +454,7 @@
     const range = RANGES[state.range];
     const limited = state.historyLimited ? ` · 数据量保护：最近${MAX_HISTORY_CANDLES.toLocaleString("en-US")}根` : "";
     $("chart-subtitle").textContent = `${range.label} · ${INTERVALS[state.interval].label} · ${state.symbol}${limited}`;
-    $("chart-note").textContent = `数据来自 Binance Futures 公开接口；${INTERVALS[state.interval].label}，红色上涨，绿色下跌；主图支持滚轮缩放、左键拖动和触边自动扩展时间范围。`;
+    $("chart-note").textContent = `数据来自 Binance Futures 公开接口；${INTERVALS[state.interval].label}，红色上涨，绿色下跌；滚轮以最右侧K线为锚点缩放，主图支持左键拖动和触边自动扩展时间范围。`;
   }
 
   function updateRangeButtons() {
@@ -1342,11 +1342,7 @@
     if (!chart || state.candles.length < 2 || !Number.isFinite(event.deltaY) || event.deltaY === 0) return;
     event.preventDefault();
 
-    const rect = $("price-chart").getBoundingClientRect();
-    const localX = (event.clientX - rect.left) / Math.max(1, rect.width) * chart.W;
-    const dataLocalX = Math.min(chart.W - chart.margin.right, localX + chart.contentOffsetX);
-    const anchorRatio = (dataLocalX - chart.margin.left) /
-      Math.max(1, chart.W - chart.margin.left - chart.margin.right);
+    const anchorRatio = 1;
     const deltaMultiplier = event.deltaMode === 1
       ? 16
       : event.deltaMode === 2
