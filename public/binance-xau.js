@@ -255,7 +255,7 @@
       $(`${key}-setup-score`).textContent = "—";
       $(`${key}-confidence`).textContent = "—";
       $(`${key}-structure`).textContent = `等待${ANALYSIS_FRAMES[key].label} K线…`;
-      [`${key}-opportunity`, `${key}-rsi`, `${key}-macd`, `${key}-levels`].forEach((id) => $(id).textContent = "—");
+      [`${key}-opportunity`, `${key}-rsi`, `${key}-macd`, `${key}-volume`, `${key}-levels`].forEach((id) => $(id).textContent = "—");
       $(`${key}-conclusion`).textContent = "正在生成动态判断…";
     }
     renderIntradayStrategy({});
@@ -909,6 +909,97 @@
     return Math.round(clamp(38 + agreement * 34 + Math.min(80, Math.abs(directionScore)) * 0.25 - boundaryPenalty, 25, 95));
   }
 
+  function analyzeVolume(candles, atr, period = 20) {
+    const last = candles[candles.length - 1];
+    const previous = candles[candles.length - 2];
+    const baseline = candles.slice(-(period + 1), -1)
+      .map((candle) => candle.volume)
+      .filter((volume) => Number.isFinite(volume) && volume > 0);
+    if (!last || !previous || baseline.length < period || !Number.isFinite(last.volume) || last.volume < 0) {
+      return {
+        available: false,
+        ratio: null,
+        label: "量能数据不足",
+        longAdjustment: 0,
+        shortAdjustment: 0,
+        breakoutDirection: 0,
+        priceDirection: 0
+      };
+    }
+    const average = baseline.reduce((sum, volume) => sum + volume, 0) / baseline.length;
+    if (!Number.isFinite(average) || average <= 0) {
+      return {
+        available: false,
+        ratio: null,
+        label: "量能基准无效",
+        longAdjustment: 0,
+        shortAdjustment: 0,
+        breakoutDirection: 0,
+        priceDirection: 0
+      };
+    }
+    const ratio = last.volume / average;
+    const breakoutWindow = candles.slice(-11, -1);
+    const previousHigh = Math.max(...breakoutWindow.map((candle) => candle.high));
+    const previousLow = Math.min(...breakoutWindow.map((candle) => candle.low));
+    const breakoutDirection = last.close > previousHigh ? 1 : last.close < previousLow ? -1 : 0;
+    const priceChange = last.close - previous.close;
+    const priceDirection = priceChange > atr * 0.05 ? 1 : priceChange < -atr * 0.05 ? -1 : 0;
+    const activeDirection = breakoutDirection || priceDirection;
+    let adjustment = 0;
+    let label = "量能中性";
+    if (ratio >= 1.8) {
+      adjustment = breakoutDirection ? 8 : activeDirection ? 6 : 0;
+      label = breakoutDirection
+        ? `显著放量${breakoutDirection > 0 ? "突破" : "跌破"}`
+        : activeDirection
+          ? `显著放量${activeDirection > 0 ? "上行" : "下行"}`
+          : "显著放量，方向未确认";
+    } else if (ratio >= 1.35) {
+      adjustment = breakoutDirection ? 6 : activeDirection ? 4 : 0;
+      label = breakoutDirection
+        ? `放量${breakoutDirection > 0 ? "突破" : "跌破"}`
+        : activeDirection
+          ? `放量${activeDirection > 0 ? "上行" : "下行"}`
+          : "放量整理";
+    } else if (ratio >= 1.1) {
+      adjustment = activeDirection ? 2 : 0;
+      label = activeDirection ? `温和放量${activeDirection > 0 ? "上行" : "下行"}` : "温和放量整理";
+    } else if (ratio <= 0.65 && breakoutDirection) {
+      adjustment = -4;
+      label = `缩量${breakoutDirection > 0 ? "突破" : "跌破"}，量能未确认`;
+    } else if (ratio <= 0.7) {
+      label = "缩量运行，暂不确认方向";
+    }
+    let longAdjustment = 0;
+    let shortAdjustment = 0;
+    if (activeDirection > 0) {
+      longAdjustment = adjustment;
+      if (adjustment > 0) shortAdjustment = -Math.min(3, Math.ceil(adjustment / 2));
+    } else if (activeDirection < 0) {
+      shortAdjustment = adjustment;
+      if (adjustment > 0) longAdjustment = -Math.min(3, Math.ceil(adjustment / 2));
+    }
+    return {
+      available: true,
+      current: last.volume,
+      average,
+      ratio,
+      label,
+      longAdjustment,
+      shortAdjustment,
+      breakoutDirection,
+      priceDirection
+    };
+  }
+
+  function describeVolume(volume) {
+    if (!volume?.available || !Number.isFinite(volume.ratio)) {
+      return "成交量数据不足，本周期按中性处理，不影响原有判断。";
+    }
+    return `量比=${volume.ratio.toFixed(2)}（最近已收盘K线/前20根均量），${volume.label}；多方条件${signed(volume.longAdjustment, 0)}，空方条件${signed(volume.shortAdjustment, 0)}。`;
+  }
+
   function calculateDirectionalSetup(result, sign) {
     const risk = sign > 0 ? result.price - result.support : result.resistance - result.price;
     const reward = sign > 0 ? result.resistance - result.price : result.price - result.support;
@@ -929,10 +1020,16 @@
     if ((sign > 0 && result.rsi >= 72) || (sign < 0 && result.rsi <= 28)) score -= 12;
     if (result.twoCloseDirection === sign) score += 10;
     else if (result.twoCloseDirection === -sign) score -= 14;
+    const baseScore = Math.round(clamp(score, 0, 100));
+    const volumeAdjustment = sign > 0
+      ? result.volume.longAdjustment
+      : result.volume.shortAdjustment;
     return {
       bias: sign > 0 ? "bullish" : "bearish",
       sign,
-      score: Math.round(clamp(score, 0, 100)),
+      score: Math.round(clamp(baseScore + volumeAdjustment, 0, 100)),
+      baseScore,
+      volumeAdjustment,
       rewardRisk
     };
   }
@@ -948,10 +1045,13 @@
   function chooseOpportunity(result) {
     const bullish = result.longSetup;
     const bearish = result.shortSetup;
-    const best = bullish.score >= bearish.score ? bullish : bearish;
-    const difference = Math.abs(bullish.score - bearish.score);
-    if (best.score < 45 || difference < 6) {
-      return { bias: "neutral", sign: 0, score: best.score, label: "双向等待", tone: "wait", difference };
+    const bullishBase = bullish.baseScore ?? bullish.score;
+    const bearishBase = bearish.baseScore ?? bearish.score;
+    const best = bullishBase >= bearishBase ? bullish : bearish;
+    const bestBaseScore = Math.max(bullishBase, bearishBase);
+    const difference = Math.abs(bullishBase - bearishBase);
+    if (bestBaseScore < 45 || difference < 6) {
+      return { bias: "neutral", sign: 0, score: best.score, baseScore: bestBaseScore, label: "双向等待", tone: "wait", difference };
     }
     const direction = best.bias === "bullish" ? "多方" : "空方";
     const hasPattern = best.bias === "bullish"
@@ -964,7 +1064,7 @@
         : hasPattern
           ? `${direction}观察`
           : `${direction}略占优`;
-    return { ...best, label, tone: setupTone(best, result), difference };
+    return { ...best, label, tone: setupTone(best, result), difference, baseScore: bestBaseScore };
   }
 
   function finalizeTradeOpportunities(result) {
@@ -1048,6 +1148,7 @@
     structure += ` ${slopeText}；${swing.label}。`;
     const nearThreshold = Math.max(atr * 0.65, price * 0.001);
     const priceAction = detectPriceAction(candles, levels, atr, ma20, ma60);
+    const volume = analyzeVolume(candles, atr);
     const result = {
       ...config,
       price,
@@ -1066,6 +1167,7 @@
       structure,
       swing,
       priceAction,
+      volume,
       support: levels.support,
       resistance: levels.resistance,
       supportZone: formatZone(levels.support, atr),
@@ -1079,9 +1181,9 @@
     result.marketState = classifyMarketState(result);
     result.longSetup = calculateDirectionalSetup(result, 1);
     result.shortSetup = calculateDirectionalSetup(result, -1);
-    result.longSetupScoreBase = result.longSetup.score;
-    result.shortSetupScoreBase = result.shortSetup.score;
-    result.confidenceScore = calculateConfidence(directionScore, [
+    result.longSetupScoreBase = result.longSetup.baseScore;
+    result.shortSetupScoreBase = result.shortSetup.baseScore;
+    const confidenceBase = calculateConfidence(directionScore, [
       priceComponent,
       spreadComponent,
       ma20SlopeComponent,
@@ -1090,6 +1192,13 @@
       closeComponent,
       momentumScore * 0.35
     ]);
+    const directionalVolumeAdjustment = directionScore >= 10
+      ? volume.longAdjustment
+      : directionScore <= -10
+        ? volume.shortAdjustment
+        : 0;
+    result.volumeConfidenceAdjustment = Math.round(clamp(directionalVolumeAdjustment * 0.75, -6, 6));
+    result.confidenceScore = Math.round(clamp(confidenceBase + result.volumeConfidenceAdjustment, 25, 95));
     result.confidence = confidenceMeta(result.confidenceScore);
     finalizeTradeOpportunities(result);
     return result;
@@ -1172,7 +1281,8 @@
       : result.priceAction.supportBounce
         ? `，识别到${result.priceAction.supportStrength}支撑区止跌反弹`
         : "";
-    return `${trend}、${momentum}，${confirmation}${pattern}`;
+    const volume = result.volume?.available ? `；量能为${result.volume.label}` : "；量能按中性处理";
+    return `${trend}、${momentum}，${confirmation}${pattern}${volume}`;
   }
 
   function setupSummary(result) {
@@ -1322,14 +1432,18 @@
   function buildIntradayStrategy(results, entryPrice) {
     const { h4, h1, m15 } = results;
     if (!h1 || !m15) return emptyIntradayStrategy();
+    const baseLongScore = Math.round((h1.longSetup.baseScore ?? h1.longSetup.score) * 0.6 + (m15.longSetup.baseScore ?? m15.longSetup.score) * 0.4);
+    const baseShortScore = Math.round((h1.shortSetup.baseScore ?? h1.shortSetup.score) * 0.6 + (m15.shortSetup.baseScore ?? m15.shortSetup.score) * 0.4);
     const longScore = Math.round(h1.longSetup.score * 0.6 + m15.longSetup.score * 0.4);
     const shortScore = Math.round(h1.shortSetup.score * 0.6 + m15.shortSetup.score * 0.4);
-    const candidateBias = longScore >= shortScore ? "bullish" : "bearish";
-    const compositeScore = Math.max(longScore, shortScore);
-    const scoreEdge = Math.abs(longScore - shortScore);
+    const candidateBias = baseLongScore >= baseShortScore ? "bullish" : "bearish";
+    const baseCompositeScore = Math.max(baseLongScore, baseShortScore);
+    const compositeScore = candidateBias === "bullish" ? longScore : shortScore;
+    const scoreEdge = Math.abs(baseLongScore - baseShortScore);
+    const volumeAdjustment = compositeScore - baseCompositeScore;
     const h1Signal = h1.opportunity.bias;
     const m15Signal = m15.opportunity.bias;
-    const stateSummary = `H4 ${h4?.marketState.label || "数据不足"}，H1 ${h1.marketState.label}，M15 ${m15.marketState.label}；多方综合${longScore}，空方综合${shortScore}。`;
+    const stateSummary = `H4 ${h4?.marketState.label || "数据不足"}，H1 ${h1.marketState.label}，M15 ${m15.marketState.label}；技术面基础多${baseLongScore}、空${baseShortScore}，量能调整后多${longScore}、空${shortScore}（候选方向调整${signed(volumeAdjustment, 0)}）。量能：H1 ${h1.volume?.label || "中性"}，M15 ${m15.volume?.label || "中性"}。`;
 
     if (h1Signal !== "neutral" && m15Signal !== "neutral" && h1Signal !== m15Signal) {
       return {
@@ -1341,7 +1455,7 @@
           : `等待M15转为多方并确认突破压力 ${h1.resistanceZone}。`
       };
     }
-    if (compositeScore < 48 || scoreEdge < 6) {
+    if (baseCompositeScore < 48 || scoreEdge < 6) {
       return {
         ...emptyIntradayStrategy(`${stateSummary} 多空优势不足，暂不强行选择方向。`),
         longScore,
@@ -1549,11 +1663,15 @@
   function buildPositionStrategy(results, livePrice) {
     const { d1, h4, h1, m15 } = results;
     if (!d1 || !h4 || !h1) return emptyPositionStrategy();
+    const baseLongScore = Math.round((h4.longSetup.baseScore ?? h4.longSetup.score) * 0.7 + (h1.longSetup.baseScore ?? h1.longSetup.score) * 0.3);
+    const baseShortScore = Math.round((h4.shortSetup.baseScore ?? h4.shortSetup.score) * 0.7 + (h1.shortSetup.baseScore ?? h1.shortSetup.score) * 0.3);
     const longScore = Math.round(h4.longSetup.score * 0.7 + h1.longSetup.score * 0.3);
     const shortScore = Math.round(h4.shortSetup.score * 0.7 + h1.shortSetup.score * 0.3);
-    const candidateBias = longScore >= shortScore ? "bullish" : "bearish";
-    const compositeScore = Math.max(longScore, shortScore);
-    const scoreEdge = Math.abs(longScore - shortScore);
+    const candidateBias = baseLongScore >= baseShortScore ? "bullish" : "bearish";
+    const baseCompositeScore = Math.max(baseLongScore, baseShortScore);
+    const compositeScore = candidateBias === "bullish" ? longScore : shortScore;
+    const scoreEdge = Math.abs(baseLongScore - baseShortScore);
+    const volumeAdjustment = compositeScore - baseCompositeScore;
     const h4Signal = h4.opportunity.bias;
     const h1Signal = h1.opportunity.bias;
     const d1Bias = d1.marketState?.bias || d1.bias;
@@ -1567,7 +1685,7 @@
         : m15.opportunity.bias === "neutral"
           ? "M15尚未给出入场时机"
           : "M15入场时机反向";
-    const stateSummary = `D1 ${d1.marketState.label}，H4 ${h4.marketState.label}，H1 ${h1.marketState.label}；中长线多方综合${longScore}，空方综合${shortScore}；${timingText}。`;
+    const stateSummary = `D1 ${d1.marketState.label}，H4 ${h4.marketState.label}，H1 ${h1.marketState.label}；技术面基础多${baseLongScore}、空${baseShortScore}，量能调整后多${longScore}、空${shortScore}（候选方向调整${signed(volumeAdjustment, 0)}）；${timingText}。高周期量能：D1 ${d1.volume?.label || "中性"}，H4 ${h4.volume?.label || "中性"}，H1 ${h1.volume?.label || "中性"}。`;
 
     if (h4Signal !== "neutral" && h1Signal !== "neutral" && h4Signal !== h1Signal) {
       return {
@@ -1577,7 +1695,7 @@
         trigger: "等待H4与H1已收盘K线重新形成同向机会。"
       };
     }
-    if (compositeScore < 52 || scoreEdge < 8) {
+    if (baseCompositeScore < 52 || scoreEdge < 8) {
       return {
         ...emptyPositionStrategy(`${stateSummary} 高周期多空优势不足，暂不建立中长线仓位。`),
         longScore,
@@ -1686,6 +1804,7 @@
     $(`${key}-opportunity`).textContent = opportunityDetail(result);
     $(`${key}-rsi`).textContent = describeRsi(result.rsi);
     $(`${key}-macd`).textContent = describeMacd(result.macd);
+    $(`${key}-volume`).textContent = describeVolume(result.volume);
     $(`${key}-levels`).textContent = `支撑 ${result.analysisSupportZone}；压力 ${result.analysisResistanceZone}；ATR(14)=${analysisPriceFormat.format(result.atr)}。`;
     $(`${key}-conclusion`).textContent = conclusion;
   }
@@ -1696,7 +1815,7 @@
     $(`${key}-direction-score`).textContent = "—";
     $(`${key}-setup-score`).textContent = "—";
     $(`${key}-confidence`).textContent = "—";
-    [`${key}-structure`, `${key}-opportunity`, `${key}-rsi`, `${key}-macd`, `${key}-levels`].forEach((id) => $(id).textContent = "—");
+    [`${key}-structure`, `${key}-opportunity`, `${key}-rsi`, `${key}-macd`, `${key}-volume`, `${key}-levels`].forEach((id) => $(id).textContent = "—");
     $(`${key}-conclusion`).textContent = message;
   }
 
