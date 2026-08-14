@@ -460,6 +460,62 @@
     });
   }
 
+  function getTimelineIndexBounds(count = state.candles.length) {
+    if (!count) return { startIndex: 0, endIndex: -1 };
+    const startIndex = Math.max(0, Math.min(count - 1, Math.floor(state.timelineStart / 100 * (count - 1))));
+    const endIndex = Math.max(startIndex, Math.min(count - 1, Math.ceil(state.timelineEnd / 100 * (count - 1))));
+    return { startIndex, endIndex };
+  }
+
+  function captureChartViewport() {
+    const count = state.candles.length;
+    if (count < 2) return null;
+    const { startIndex, endIndex } = getTimelineIndexBounds(count);
+    return {
+      visibleCount: endIndex - startIndex + 1,
+      endTime: state.candles[endIndex].t,
+      followLatest: endIndex >= count - 2
+    };
+  }
+
+  function findNearestCandleIndex(candles, targetTime) {
+    let low = 0;
+    let high = candles.length - 1;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (candles[middle].t < targetTime) low = middle + 1;
+      else high = middle;
+    }
+    if (low === 0) return 0;
+    return Math.abs(candles[low].t - targetTime) < Math.abs(candles[low - 1].t - targetTime)
+      ? low
+      : low - 1;
+  }
+
+  function restoreChartViewport(viewport) {
+    const count = state.candles.length;
+    if (!viewport || count < 2) {
+      state.timelineStart = 0;
+      state.timelineEnd = 100;
+      syncTimelineInputs();
+      return;
+    }
+    const visibleCount = Math.max(2, Math.min(count, Math.round(viewport.visibleCount)));
+    let endIndex = viewport.followLatest
+      ? count - 1
+      : findNearestCandleIndex(state.candles, viewport.endTime);
+    let startIndex = endIndex - visibleCount + 1;
+    if (startIndex < 0) {
+      startIndex = 0;
+      endIndex = Math.min(count - 1, visibleCount - 1);
+    }
+    const denominator = count - 1;
+    const epsilon = 0.000001;
+    state.timelineStart = startIndex === 0 ? 0 : startIndex / denominator * 100 + epsilon;
+    state.timelineEnd = endIndex === count - 1 ? 100 : endIndex / denominator * 100 - epsilon;
+    syncTimelineInputs();
+  }
+
   function getNextHistoryRange() {
     const index = RANGE_ORDER.indexOf(state.range);
     return index >= 0 && index < RANGE_ORDER.length - 1 ? RANGE_ORDER[index + 1] : null;
@@ -485,6 +541,7 @@
   }
 
   async function loadHistory() {
+    const viewport = captureChartViewport();
     const token = ++state.loadToken;
     const symbol = state.symbol;
     const range = RANGES[state.range];
@@ -512,6 +569,7 @@
       const cached = await cachePromise;
       if (cached && token === state.loadToken && symbol === state.symbol && interval === state.interval) {
         state.candles = cached.candles;
+        restoreChartViewport(viewport);
         renderChart();
         $("chart-subtitle").textContent = `${range.label} · ${INTERVALS[interval].label} · ${symbol} · 本地缓存，正在同步${state.historyLimited ? ` · 最近${MAX_HISTORY_CANDLES.toLocaleString("en-US")}根` : ""}`;
       }
@@ -520,6 +578,7 @@
       const candles = networkResult.candles;
       if (token !== state.loadToken || symbol !== state.symbol) return;
       state.candles = candles;
+      restoreChartViewport(viewport);
       renderChart();
       writeCandleCache(cacheKey, candles);
       setError("");
@@ -1150,8 +1209,7 @@
   function getTimelineWindow() {
     const count = state.candles.length;
     if (!count) return { startIndex: 0, endIndex: -1, candles: [], rsi: [], ma20: [], ma60: [] };
-    const startIndex = Math.max(0, Math.min(count - 1, Math.floor(state.timelineStart / 100 * (count - 1))));
-    const endIndex = Math.max(startIndex, Math.min(count - 1, Math.ceil(state.timelineEnd / 100 * (count - 1))));
+    const { startIndex, endIndex } = getTimelineIndexBounds(count);
     const fullRsi = calculateRsi(state.candles);
     const fullMa20 = calculateSmaSeries(state.candles, 20);
     const fullMa60 = calculateSmaSeries(state.candles, 60);
