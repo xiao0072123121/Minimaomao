@@ -118,6 +118,9 @@
     minimumFractionDigits: 2,
     maximumFractionDigits: 2
   });
+  const analysisPriceFormat = new Intl.NumberFormat("en-US", {
+    maximumFractionDigits: 0
+  });
   const volumeFormat = new Intl.NumberFormat("en-US", {
     maximumFractionDigits: 0,
     notation: "compact"
@@ -745,6 +748,11 @@
     return `${priceFormat.format(level - halfWidth)}–${priceFormat.format(level + halfWidth)}`;
   }
 
+  function formatAnalysisZone(level, atr) {
+    const halfWidth = Math.max(atr * 0.18, level * 0.00025);
+    return `${analysisPriceFormat.format(level - halfWidth)}–${analysisPriceFormat.format(level + halfWidth)}`;
+  }
+
   function describeRsi(value) {
     const number = value.toFixed(2);
     if (value >= 70) return `RSI=${number}，进入超买区，趋势虽强但需防范高位回落。`;
@@ -1017,17 +1025,17 @@
     const direction = directionMeta(directionTier);
     let structure;
     if (ma20 >= ma60 && price >= ma20) {
-      structure = `最近收盘 ${priceFormat.format(price)} 位于MA20(${priceFormat.format(ma20)})和MA60(${priceFormat.format(ma60)})上方，均线保持多头排列。`;
+      structure = `最近收盘 ${analysisPriceFormat.format(price)} 位于MA20(${analysisPriceFormat.format(ma20)})和MA60(${analysisPriceFormat.format(ma60)})上方，均线保持多头排列。`;
     } else if (ma20 >= ma60 && price >= ma60) {
-      structure = `最近收盘 ${priceFormat.format(price)} 跌至MA20(${priceFormat.format(ma20)})下方但仍守住MA60(${priceFormat.format(ma60)})，属于多头结构中的调整。`;
+      structure = `最近收盘 ${analysisPriceFormat.format(price)} 跌至MA20(${analysisPriceFormat.format(ma20)})下方但仍守住MA60(${analysisPriceFormat.format(ma60)})，属于多头结构中的调整。`;
     } else if (ma20 >= ma60) {
-      structure = `最近收盘 ${priceFormat.format(price)} 已跌破MA20(${priceFormat.format(ma20)})和MA60(${priceFormat.format(ma60)})，原多头排列仍在但结构明显转弱。`;
+      structure = `最近收盘 ${analysisPriceFormat.format(price)} 已跌破MA20(${analysisPriceFormat.format(ma20)})和MA60(${analysisPriceFormat.format(ma60)})，原多头排列仍在但结构明显转弱。`;
     } else if (price <= ma20) {
-      structure = `最近收盘 ${priceFormat.format(price)} 位于MA20(${priceFormat.format(ma20)})下方，且MA20低于MA60(${priceFormat.format(ma60)})，空头结构占优。`;
+      structure = `最近收盘 ${analysisPriceFormat.format(price)} 位于MA20(${analysisPriceFormat.format(ma20)})下方，且MA20低于MA60(${analysisPriceFormat.format(ma60)})，空头结构占优。`;
     } else if (price <= ma60) {
-      structure = `最近收盘 ${priceFormat.format(price)} 反弹至MA20(${priceFormat.format(ma20)})上方，但仍受MA60(${priceFormat.format(ma60)})压制，暂按弱势反弹处理。`;
+      structure = `最近收盘 ${analysisPriceFormat.format(price)} 反弹至MA20(${analysisPriceFormat.format(ma20)})上方，但仍受MA60(${analysisPriceFormat.format(ma60)})压制，暂按弱势反弹处理。`;
     } else {
-      structure = `最近收盘 ${priceFormat.format(price)} 已站上MA20(${priceFormat.format(ma20)})和MA60(${priceFormat.format(ma60)})，但MA20尚未上穿MA60，反弹转强但多头排列仍待确认。`;
+      structure = `最近收盘 ${analysisPriceFormat.format(price)} 已站上MA20(${analysisPriceFormat.format(ma20)})和MA60(${analysisPriceFormat.format(ma60)})，但MA20尚未上穿MA60，反弹转强但多头排列仍待确认。`;
     }
     const slopeThreshold = atr * 0.06;
     const slopeText = `MA20${ma20Slope > slopeThreshold ? "上行" : ma20Slope < -slopeThreshold ? "下行" : "走平"}、MA60${ma60Slope > slopeThreshold ? "上行" : ma60Slope < -slopeThreshold ? "下行" : "走平"}`;
@@ -1056,6 +1064,8 @@
       resistance: levels.resistance,
       supportZone: formatZone(levels.support, atr),
       resistanceZone: formatZone(levels.resistance, atr),
+      analysisSupportZone: formatAnalysisZone(levels.support, atr),
+      analysisResistanceZone: formatAnalysisZone(levels.resistance, atr),
       nearSupport: Math.abs(price - levels.support) <= nearThreshold,
       nearResistance: Math.abs(levels.resistance - price) <= nearThreshold,
       lastClosedAt: last.closeTime
@@ -1080,9 +1090,9 @@
   }
 
   function proximityText(result) {
-    if (result.nearResistance) return `当前临近压力区 ${result.resistanceZone}，多方不宜追价，空方仍需等待转弱确认。`;
-    if (result.nearSupport) return `当前正在测试支撑区 ${result.supportZone}，空方不宜追价，等待企稳或有效跌破。`;
-    return `关注支撑 ${result.supportZone} 与压力 ${result.resistanceZone}。`;
+    if (result.nearResistance) return `当前临近压力区 ${result.analysisResistanceZone}，多方不宜追价，空方仍需等待转弱确认。`;
+    if (result.nearSupport) return `当前正在测试支撑区 ${result.analysisSupportZone}，空方不宜追价，等待企稳或有效跌破。`;
+    return `关注支撑 ${result.analysisSupportZone} 与压力 ${result.analysisResistanceZone}。`;
   }
 
   function applyMultiFrameContext(results) {
@@ -1186,10 +1196,10 @@
     const confirmation = opportunity.bias === "bullish"
       ? result.twoCloseDirection === 1
         ? "最近两根收盘已完成多方确认。"
-        : `仍需关注能否有效突破压力 ${result.resistanceZone}。`
+        : `仍需关注能否有效突破压力 ${result.analysisResistanceZone}。`
       : result.twoCloseDirection === -1
         ? "最近两根收盘已完成空方确认。"
-        : `仍需关注能否有效跌破支撑 ${result.supportZone}。`;
+        : `仍需关注能否有效跌破支撑 ${result.analysisSupportZone}。`;
     return `${opportunity.label}：多方 ${result.longSetup.score}，空方 ${result.shortSetup.score}；${direction}条件领先。${confirmation}`;
   }
 
@@ -1437,7 +1447,7 @@
     $(`${key}-opportunity`).textContent = opportunityDetail(result);
     $(`${key}-rsi`).textContent = describeRsi(result.rsi);
     $(`${key}-macd`).textContent = describeMacd(result.macd);
-    $(`${key}-levels`).textContent = `支撑 ${result.supportZone}；压力 ${result.resistanceZone}；ATR(14)=${priceFormat.format(result.atr)}。`;
+    $(`${key}-levels`).textContent = `支撑 ${result.analysisSupportZone}；压力 ${result.analysisResistanceZone}；ATR(14)=${analysisPriceFormat.format(result.atr)}。`;
     $(`${key}-conclusion`).textContent = conclusion;
   }
 
