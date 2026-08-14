@@ -18,7 +18,7 @@ Binance 多标的行情与技术分析网页，支持：
 - 生产分支：`main`
 - Build command：留空
 - Deploy command：`npx wrangler deploy`
-- Root directory：`/`
+- Root directory：留空（使用仓库根目录）
 
 `wrangler.jsonc` 会将 `public/` 目录作为 Workers Static Assets 发布。
 
