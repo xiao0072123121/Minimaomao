@@ -14,18 +14,18 @@
   };
 
   const INTERVALS = {
-    "1m": { label: "1分钟", short: "1分", ms: 60 * 1000 },
     "5m": { label: "5分钟", short: "5分", ms: 5 * 60 * 1000 },
     "15m": { label: "15分钟", short: "15分", ms: 15 * 60 * 1000 },
-    "30m": { label: "30分钟", short: "30分", ms: 30 * 60 * 1000 },
     "1h": { label: "1小时", short: "1小时", ms: 60 * 60 * 1000 },
     "4h": { label: "4小时", short: "4小时", ms: 4 * 60 * 60 * 1000 },
-    "1d": { label: "日线", short: "日线", ms: DAY },
-    "1w": { label: "周线", short: "周线", ms: 7 * DAY },
-    "1M": { label: "月线", short: "月线", ms: 30 * DAY }
+    "1d": { label: "日线", short: "日线", ms: DAY }
   };
 
-  const CHART_INTERVALS = ["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1M"];
+  const CHART_INTERVALS = ["5m", "15m", "1h", "4h", "1d"];
+  const MIN_VISIBLE_CANDLES = 12;
+  const MIN_TIMELINE_PERCENT = 0.1;
+  const MAX_MINIMUM_GAP = 40;
+  const WHEEL_ZOOM_SENSITIVITY = 0.0018;
 
   const RANGES = {
     "5d": { label: "5日", start: (end) => end - 5 * DAY },
@@ -99,6 +99,8 @@
   };
 
   const $ = (id) => document.getElementById(id);
+  let wheelRenderFrame = 0;
+  let latestWheelPointer = null;
   const priceFormat = new Intl.NumberFormat("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2
@@ -438,7 +440,7 @@
     const range = RANGES[state.range];
     const limited = state.historyLimited ? ` · 数据量保护：最近${MAX_HISTORY_CANDLES.toLocaleString("en-US")}根` : "";
     $("chart-subtitle").textContent = `${range.label} · ${INTERVALS[state.interval].label} · ${state.symbol}${limited}`;
-    $("chart-note").textContent = `数据来自 Binance Futures 公开接口；${INTERVALS[state.interval].label}，红色上涨，绿色下跌。`;
+    $("chart-note").textContent = `数据来自 Binance Futures 公开接口；${INTERVALS[state.interval].label}，红色上涨，绿色下跌；主图支持滚轮缩放。`;
   }
 
   async function loadHistory() {
@@ -1141,6 +1143,35 @@
     $("timeline-end").value = String(state.timelineEnd);
   }
 
+  function getMinimumTimelineGap() {
+    const intervals = Math.max(1, state.candles.length - 1);
+    const candleGap = 100 * Math.min(MIN_VISIBLE_CANDLES, intervals) / intervals;
+    return Math.min(MAX_MINIMUM_GAP, Math.max(MIN_TIMELINE_PERCENT, candleGap));
+  }
+
+  function calculateZoomWindow(start, end, anchorRatio, scale, minimumGap) {
+    const currentSpan = Math.max(minimumGap, end - start);
+    const nextSpan = Math.max(minimumGap, Math.min(100, currentSpan * scale));
+    if (nextSpan >= 100) return { start: 0, end: 100 };
+
+    const anchor = Math.max(0, Math.min(1, anchorRatio));
+    const anchorPosition = start + currentSpan * anchor;
+    let nextStart = anchorPosition - nextSpan * anchor;
+    let nextEnd = nextStart + nextSpan;
+    if (nextStart < 0) {
+      nextEnd -= nextStart;
+      nextStart = 0;
+    }
+    if (nextEnd > 100) {
+      nextStart -= nextEnd - 100;
+      nextEnd = 100;
+    }
+    return {
+      start: Math.max(0, nextStart),
+      end: Math.min(100, nextEnd)
+    };
+  }
+
   function renderTimeline() {
     const candles = state.candles;
     const line = $("timeline-line");
@@ -1175,8 +1206,7 @@
   }
 
   function updateTimeline(source) {
-    const count = state.candles.length;
-    const minimumGap = count > 1 ? Math.min(40, Math.max(2, 1000 / (count - 1))) : 2;
+    const minimumGap = getMinimumTimelineGap();
     const startInput = $("timeline-start");
     const endInput = $("timeline-end");
     let start = Number(startInput.value);
@@ -1188,6 +1218,44 @@
     syncTimelineInputs();
     hideTooltip();
     renderChart();
+  }
+
+  function zoomChartWithWheel(event) {
+    const chart = $("price-chart")._chart;
+    if (!chart || state.candles.length < 2 || !Number.isFinite(event.deltaY) || event.deltaY === 0) return;
+    event.preventDefault();
+
+    const rect = $("price-chart").getBoundingClientRect();
+    const localX = (event.clientX - rect.left) / Math.max(1, rect.width) * chart.W;
+    const anchorRatio = (localX - chart.margin.left) /
+      Math.max(1, chart.W - chart.margin.left - chart.margin.right);
+    const deltaMultiplier = event.deltaMode === 1
+      ? 16
+      : event.deltaMode === 2
+        ? Math.max(1, window.innerHeight)
+        : 1;
+    const normalizedDelta = Math.max(-240, Math.min(240, event.deltaY * deltaMultiplier));
+    const scale = Math.exp(normalizedDelta * WHEEL_ZOOM_SENSITIVITY);
+    const next = calculateZoomWindow(
+      state.timelineStart,
+      state.timelineEnd,
+      anchorRatio,
+      scale,
+      getMinimumTimelineGap()
+    );
+    state.timelineStart = next.start;
+    state.timelineEnd = next.end;
+    syncTimelineInputs();
+    hideTooltip();
+    latestWheelPointer = { clientX: event.clientX, clientY: event.clientY };
+
+    if (wheelRenderFrame) return;
+    wheelRenderFrame = requestAnimationFrame(() => {
+      wheelRenderFrame = 0;
+      renderChart();
+      if (latestWheelPointer) showTooltip(latestWheelPointer);
+      latestWheelPointer = null;
+    });
   }
 
   function toggleMovingAverage(period) {
@@ -1424,6 +1492,7 @@
 
   $("chart-wrap").addEventListener("pointermove", showTooltip, { passive: true });
   $("chart-wrap").addEventListener("pointerleave", hideTooltip);
+  $("chart-wrap").addEventListener("wheel", zoomChartWithWheel, { passive: false });
   $("timeline-start").addEventListener("input", () => updateTimeline("start"));
   $("timeline-end").addEventListener("input", () => updateTimeline("end"));
 

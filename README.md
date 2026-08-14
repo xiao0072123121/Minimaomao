@@ -5,9 +5,10 @@ Binance 多标的行情与技术分析网页，支持：
 - XAUUSDT、SNDKUSDT、SKHYNIXUSDT 切换
 - H4 / H1 / M15 动态趋势判断
 - MA、MACD、RSI、支撑与压力分析
-- 1 分钟至月线周期、5 日至全部时间范围
+- 5分钟、15分钟、1小时、4小时和日线周期，5日至全部时间范围
 - MA20 / MA60 显示开关
 - K 线、RSI 联动悬停和可视时间轴
+- 主K线图以鼠标位置为中心进行滚轮缩放
 - 浏览器 IndexedDB K 线缓存
 
 ## Cloudflare Workers 部署
