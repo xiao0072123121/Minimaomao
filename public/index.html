@@ -651,8 +651,11 @@
 
     .tooltip {
       position: absolute;
+      top: 0;
+      left: 0;
       z-index: 3;
       min-width: 160px;
+      max-width: calc(100% - 24px);
       padding: 10px 11px;
       border: 1px solid var(--border);
       border-radius: 10px;
@@ -661,7 +664,6 @@
       box-shadow: 0 12px 30px rgba(0, 0, 0, .32);
       pointer-events: none;
       opacity: 0;
-      transform: translate(-50%, calc(-100% - 12px));
       transition: opacity .12s ease;
       backdrop-filter: blur(10px);
     }

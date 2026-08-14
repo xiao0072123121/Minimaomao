@@ -26,6 +26,9 @@
   const MIN_TIMELINE_PERCENT = 0.1;
   const MAX_MINIMUM_GAP = 40;
   const WHEEL_ZOOM_SENSITIVITY = 0.0018;
+  const TOOLTIP_HORIZONTAL_GAP = 64;
+  const TOOLTIP_VERTICAL_GAP = 32;
+  const TOOLTIP_EDGE_GAP = 12;
 
   const RANGES = {
     "5d": { label: "5日", start: (end) => end - 5 * DAY },
@@ -1348,6 +1351,44 @@
     return ` transform="translate(${x} 0) scale(${scaleX.toFixed(4)} 1) translate(${-x} 0)"`;
   }
 
+  function clampTooltip(value, minimum, maximum) {
+    return Math.max(minimum, Math.min(Math.max(minimum, maximum), value));
+  }
+
+  function positionTooltipAwayFromPointer(event, tooltip) {
+    const chartWrap = $("chart-wrap");
+    const bounds = chartWrap.getBoundingClientRect();
+    const pointerX = clampTooltip(event.clientX - bounds.left, 0, bounds.width);
+    const pointerY = clampTooltip(event.clientY - bounds.top, 0, bounds.height);
+    const tooltipWidth = tooltip.offsetWidth;
+    const tooltipHeight = tooltip.offsetHeight;
+    const rightPosition = pointerX + TOOLTIP_HORIZONTAL_GAP;
+    const leftPosition = pointerX - tooltipWidth - TOOLTIP_HORIZONTAL_GAP;
+    const belowPosition = pointerY + TOOLTIP_VERTICAL_GAP;
+    const abovePosition = pointerY - tooltipHeight - TOOLTIP_VERTICAL_GAP;
+    const canFitRight = rightPosition + tooltipWidth <= bounds.width - TOOLTIP_EDGE_GAP;
+    const canFitLeft = leftPosition >= TOOLTIP_EDGE_GAP;
+    const canFitBelow = belowPosition + tooltipHeight <= bounds.height - TOOLTIP_EDGE_GAP;
+    const canFitAbove = abovePosition >= TOOLTIP_EDGE_GAP;
+
+    let left;
+    if (pointerX <= bounds.width / 2 && canFitRight) left = rightPosition;
+    else if (pointerX > bounds.width / 2 && canFitLeft) left = leftPosition;
+    else if (canFitRight) left = rightPosition;
+    else if (canFitLeft) left = leftPosition;
+    else left = pointerX <= bounds.width / 2 ? bounds.width - tooltipWidth - TOOLTIP_EDGE_GAP : TOOLTIP_EDGE_GAP;
+
+    let top;
+    if (pointerY <= bounds.height / 2 && canFitBelow) top = belowPosition;
+    else if (pointerY > bounds.height / 2 && canFitAbove) top = abovePosition;
+    else if (canFitBelow) top = belowPosition;
+    else if (canFitAbove) top = abovePosition;
+    else top = pointerY <= bounds.height / 2 ? bounds.height - tooltipHeight - TOOLTIP_EDGE_GAP : TOOLTIP_EDGE_GAP;
+
+    tooltip.style.left = `${clampTooltip(left, TOOLTIP_EDGE_GAP, bounds.width - tooltipWidth - TOOLTIP_EDGE_GAP)}px`;
+    tooltip.style.top = `${clampTooltip(top, TOOLTIP_EDGE_GAP, bounds.height - tooltipHeight - TOOLTIP_EDGE_GAP)}px`;
+  }
+
   function renderChart() {
     const svg = $("price-chart");
     const grid = $("grid-layer");
@@ -1520,8 +1561,6 @@
     }
 
     const tooltip = $("tooltip");
-    tooltip.style.left = `${px / chart.W * 100}%`;
-    tooltip.style.top = `${py / chart.H * 100}%`;
     $("tooltip-time").textContent = `${formatTime(candle.t, true)} · ${INTERVALS[state.interval].label}`;
     $("tooltip-open").textContent = `${priceFormat.format(candle.open)} USDT`;
     $("tooltip-high").textContent = `${priceFormat.format(candle.high)} USDT`;
@@ -1535,6 +1574,7 @@
     $("tooltip-ma20").textContent = Number.isFinite(ma20) ? `${priceFormat.format(ma20)} USDT` : "—";
     $("tooltip-ma60").textContent = Number.isFinite(ma60) ? `${priceFormat.format(ma60)} USDT` : "—";
     $("tooltip-rsi").textContent = Number.isFinite(rsiValue) ? rsiValue.toFixed(2) : "—";
+    positionTooltipAwayFromPointer(event, tooltip);
     tooltip.classList.add("visible");
   }
 
