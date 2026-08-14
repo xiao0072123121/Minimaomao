@@ -533,15 +533,16 @@
     updateRangeButtons();
     hideTooltip();
     try {
-      await loadHistory();
+      await loadHistory({ anchorLatest: true });
     } finally {
       state.rangeExpansionPending = false;
     }
     return true;
   }
 
-  async function loadHistory() {
+  async function loadHistory({ anchorLatest = false } = {}) {
     const viewport = captureChartViewport();
+    if (viewport && anchorLatest) viewport.followLatest = true;
     const token = ++state.loadToken;
     const symbol = state.symbol;
     const range = RANGES[state.range];
@@ -1715,7 +1716,7 @@
       button.addEventListener("click", () => {
         state.interval = button.dataset.interval;
         updateIntervalButtons();
-        loadHistory();
+        loadHistory({ anchorLatest: true });
       });
     });
   }
@@ -1724,7 +1725,7 @@
     button.addEventListener("click", () => {
       state.range = button.dataset.range;
       updateRangeButtons();
-      loadHistory();
+      loadHistory({ anchorLatest: true });
     });
   });
 
