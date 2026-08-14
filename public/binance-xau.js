@@ -99,6 +99,7 @@
     loadToken: 0,
     analysisLoadToken: 0,
     analysisFrames: {},
+    analysisResults: {},
     directionStates: {},
     socket: null,
     socketGeneration: 0,
@@ -230,6 +231,7 @@
     state.candles = [];
     state.historyLimited = false;
     state.analysisFrames = {};
+    state.analysisResults = {};
     state.directionStates = {};
     state.timelineStart = 0;
     state.timelineEnd = 100;
@@ -251,6 +253,7 @@
       [`${key}-opportunity`, `${key}-rsi`, `${key}-macd`, `${key}-levels`].forEach((id) => $(id).textContent = "—");
       $(`${key}-conclusion`).textContent = "正在生成动态判断…";
     }
+    renderIntradayStrategy({});
     setError("");
     hideTooltip();
     setLiveStatus();
@@ -302,6 +305,9 @@
     setLiveStatus();
     if (state.quoteAt) {
       $("last-updated").textContent = `${state.wsOk ? "实时更新" : "报价可能延迟"} · ${formatTime(state.quoteAt)}`;
+    }
+    if (state.analysisResults.h1 && state.analysisResults.m15) {
+      renderIntradayStrategy(state.analysisResults);
     }
   }
 
@@ -1204,6 +1210,214 @@
     return conclusions;
   }
 
+  function emptyIntradayStrategy(reason = "等待H1与M15已收盘K线完成计算。") {
+    return {
+      bias: "neutral",
+      candidateBias: "neutral",
+      actionable: false,
+      directionLabel: "观望",
+      priority: "等待",
+      score: null,
+      longScore: null,
+      shortScore: null,
+      entryLow: null,
+      entryHigh: null,
+      stopLoss: null,
+      takeProfit: null,
+      target: null,
+      rewardRisk1: null,
+      rewardRisk2: null,
+      summary: reason,
+      trigger: "方向、位置与触发周期一致后再生成执行参数。"
+    };
+  }
+
+  function calculateIntradayLevels(bias, entry, h1, m15) {
+    const isLong = bias === "bullish";
+    const atr = Math.max(m15.atr, entry * 0.00035);
+    const entryPadding = Math.max(atr * 0.12, entry * 0.00008);
+    const entryLow = isLong ? entry - entryPadding : entry - entryPadding * 0.35;
+    const entryHigh = isLong ? entry + entryPadding * 0.35 : entry + entryPadding;
+    const supports = [m15.support, h1.support]
+      .filter((value) => Number.isFinite(value) && value < entry)
+      .sort((a, b) => b - a);
+    const resistances = [m15.resistance, h1.resistance]
+      .filter((value) => Number.isFinite(value) && value > entry)
+      .sort((a, b) => a - b);
+    let stopLoss;
+    let takeProfit;
+    if (isLong) {
+      const stopAnchor = supports[0];
+      stopLoss = Number.isFinite(stopAnchor)
+        ? Math.min(stopAnchor - atr * 0.2, entry - atr * 0.75)
+        : entry - atr;
+      const risk = Math.max(atr * 0.25, entry - stopLoss);
+      takeProfit = resistances[0] || entry + risk * 1.5;
+      const secondResistance = resistances.find((value) => value > takeProfit + atr * 0.2);
+      const target = Math.max(secondResistance || 0, entry + risk * 2);
+      return {
+        entryLow,
+        entryHigh,
+        stopLoss,
+        takeProfit,
+        target,
+        rewardRisk1: Math.max(0, takeProfit - entry) / risk,
+        rewardRisk2: Math.max(0, target - entry) / risk,
+        risk
+      };
+    }
+    const stopAnchor = resistances[0];
+    stopLoss = Number.isFinite(stopAnchor)
+      ? Math.max(stopAnchor + atr * 0.2, entry + atr * 0.75)
+      : entry + atr;
+    const risk = Math.max(atr * 0.25, stopLoss - entry);
+    takeProfit = supports[0] || entry - risk * 1.5;
+    const secondSupport = supports.find((value) => value < takeProfit - atr * 0.2);
+    const target = Math.min(Number.isFinite(secondSupport) ? secondSupport : Infinity, entry - risk * 2);
+    return {
+      entryLow,
+      entryHigh,
+      stopLoss,
+      takeProfit,
+      target,
+      rewardRisk1: Math.max(0, entry - takeProfit) / risk,
+      rewardRisk2: Math.max(0, entry - target) / risk,
+      risk
+    };
+  }
+
+  function intradayPriority(candidateBias, compositeScore, h4, h1, m15) {
+    const h1Aligned = h1.opportunity.bias === candidateBias;
+    const m15Aligned = m15.opportunity.bias === candidateBias;
+    const h4Aligned = h4?.bias === candidateBias;
+    const h4Opposed = Boolean(h4 && h4.bias !== "neutral" && h4.bias !== candidateBias);
+    if (h1Aligned && m15Aligned && h4Aligned && compositeScore >= 65) {
+      return { code: "A", label: "A · 顺势优先", rank: 3 };
+    }
+    if (h1Aligned && m15Aligned && !h4Opposed && compositeScore >= 55) {
+      return { code: "B", label: "B · 同周期共振", rank: 2 };
+    }
+    if (h1Aligned && m15Aligned && h4Opposed) {
+      return { code: "C", label: "C · 逆势谨慎", rank: 1 };
+    }
+    return { code: "C", label: "C · 等待强化", rank: 1 };
+  }
+
+  function buildIntradayStrategy(results, entryPrice) {
+    const { h4, h1, m15 } = results;
+    if (!h1 || !m15) return emptyIntradayStrategy();
+    const longScore = Math.round(h1.longSetup.score * 0.6 + m15.longSetup.score * 0.4);
+    const shortScore = Math.round(h1.shortSetup.score * 0.6 + m15.shortSetup.score * 0.4);
+    const candidateBias = longScore >= shortScore ? "bullish" : "bearish";
+    const compositeScore = Math.max(longScore, shortScore);
+    const scoreEdge = Math.abs(longScore - shortScore);
+    const h1Signal = h1.opportunity.bias;
+    const m15Signal = m15.opportunity.bias;
+    const stateSummary = `H4 ${h4?.marketState.label || "数据不足"}，H1 ${h1.marketState.label}，M15 ${m15.marketState.label}；多方综合${longScore}，空方综合${shortScore}。`;
+
+    if (h1Signal !== "neutral" && m15Signal !== "neutral" && h1Signal !== m15Signal) {
+      return {
+        ...emptyIntradayStrategy(`${stateSummary} H1与M15机会方向冲突，暂不执行。`),
+        longScore,
+        shortScore,
+        trigger: h1Signal === "bearish"
+          ? `等待M15转为空方并确认跌破支撑 ${h1.supportZone}。`
+          : `等待M15转为多方并确认突破压力 ${h1.resistanceZone}。`
+      };
+    }
+    if (compositeScore < 48 || scoreEdge < 6) {
+      return {
+        ...emptyIntradayStrategy(`${stateSummary} 多空优势不足，暂不强行选择方向。`),
+        longScore,
+        shortScore,
+        trigger: `等待H1与M15同向，且多空综合分差扩大到6分以上。`
+      };
+    }
+    if (h1Signal !== "neutral" && h1Signal !== candidateBias) {
+      return {
+        ...emptyIntradayStrategy(`${stateSummary} 综合分与H1主要机会方向不一致，暂不执行。`),
+        longScore,
+        shortScore,
+        trigger: "等待H1机会方向与M15触发方向重新一致。"
+      };
+    }
+
+    const entry = Number.isFinite(entryPrice) ? entryPrice : m15.price;
+    const levels = calculateIntradayLevels(candidateBias, entry, h1, m15);
+    const priority = intradayPriority(candidateBias, compositeScore, h4, h1, m15);
+    const directionName = candidateBias === "bullish" ? "做多" : "做空";
+    const structuralNote = candidateBias === "bullish"
+      ? `止损设置在最近有效支撑下方，第一止盈参考上方压力。`
+      : `止损设置在最近有效压力上方，第一止盈参考下方支撑。`;
+    const trigger = candidateBias === "bullish"
+      ? `执行条件：价格进入参考区后，M15保持多方机会且未跌破 ${m15.supportZone}；跌破止损位则策略失效。`
+      : `执行条件：价格进入参考区后，M15保持空方机会且未突破 ${m15.resistanceZone}；突破止损位则策略失效。`;
+    if (levels.rewardRisk1 < 1.2) {
+      return {
+        bias: "neutral",
+        candidateBias,
+        actionable: false,
+        directionLabel: `观望 · 候选${directionName}`,
+        priority: "等待 · 盈亏比不足",
+        score: compositeScore,
+        longScore,
+        shortScore,
+        ...levels,
+        summary: `${stateSummary} 候选${directionName}的第一目标盈亏比仅1:${levels.rewardRisk1.toFixed(2)}，低于1:1.20执行门槛。`,
+        trigger: `等待价格改善或目标空间扩大后再评估。${structuralNote}`
+      };
+    }
+    const rrPriority = levels.rewardRisk1 < 1.5 && priority.rank > 1
+      ? priority.code === "A" ? "B · 盈亏比降级" : "C · 盈亏比一般"
+      : priority.label;
+    return {
+      bias: candidateBias,
+      candidateBias,
+      actionable: true,
+      directionLabel: directionName,
+      priority: rrPriority,
+      score: compositeScore,
+      longScore,
+      shortScore,
+      ...levels,
+      summary: `${stateSummary} ${directionName}条件领先。${structuralNote}`,
+      trigger
+    };
+  }
+
+  function strategyPrice(value) {
+    return Number.isFinite(value) ? priceFormat.format(value) : "—";
+  }
+
+  function renderIntradayStrategy(results = state.analysisResults) {
+    const hasFrames = Boolean(results?.h1 && results?.m15);
+    const entryPrice = Number.isFinite(state.book?.mid) ? state.book.mid : results?.m15?.price;
+    const strategy = buildIntradayStrategy(results || {}, entryPrice);
+    const card = $("intraday-strategy");
+    card.dataset.bias = strategy.bias;
+    $("strategy-direction").textContent = strategy.directionLabel;
+    $("strategy-priority").textContent = strategy.priority;
+    $("strategy-score").textContent = Number.isFinite(strategy.score)
+      ? `${strategy.score} / 100`
+      : Number.isFinite(strategy.longScore) && Number.isFinite(strategy.shortScore)
+        ? `多${strategy.longScore} · 空${strategy.shortScore}`
+        : "—";
+    $("strategy-entry").textContent = Number.isFinite(strategy.entryLow) && Number.isFinite(strategy.entryHigh)
+      ? `${strategyPrice(strategy.entryLow)}–${strategyPrice(strategy.entryHigh)}`
+      : "—";
+    $("strategy-stop").textContent = strategyPrice(strategy.stopLoss);
+    $("strategy-take-profit").textContent = strategyPrice(strategy.takeProfit);
+    $("strategy-target").textContent = strategyPrice(strategy.target);
+    $("strategy-rr").textContent = Number.isFinite(strategy.rewardRisk1) && Number.isFinite(strategy.rewardRisk2)
+      ? `1:${strategy.rewardRisk1.toFixed(2)} · 1:${strategy.rewardRisk2.toFixed(2)}`
+      : "—";
+    $("strategy-summary").textContent = strategy.summary;
+    $("strategy-trigger").textContent = strategy.trigger;
+    $("strategy-status").textContent = hasFrames
+      ? `信号使用已收盘H1/M15，H4决定顺逆势；${Number.isFinite(state.book?.mid) ? "入场区随实时中间价更新" : "暂用M15最近收盘作为入场参考"} · ${formatTime(Date.now())}`
+      : "等待H1与M15已收盘K线…";
+  }
+
   function renderAnalysisCard(key, result, conclusion) {
     $(`${key}-card`).dataset.bias = result.marketState.bias;
     $(`${key}-state`).textContent = result.marketState.label;
@@ -1249,11 +1463,13 @@
       }
     }
     applyMultiFrameContext(results);
+    state.analysisResults = results;
     const conclusions = buildConclusions(results);
     for (const key of Object.keys(ANALYSIS_FRAMES)) {
       if (results[key]) renderAnalysisCard(key, results[key], conclusions[key]);
       else renderAnalysisUnavailable(key, errors[key] || "暂时无法生成判断，请稍后重试。");
     }
+    renderIntradayStrategy(results);
   }
 
   async function loadAnalysis() {
