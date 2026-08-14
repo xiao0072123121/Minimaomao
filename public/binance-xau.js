@@ -103,6 +103,7 @@
   let latestWheelPointer = null;
   let panRenderFrame = 0;
   let chartPanState = null;
+  let resizeRenderFrame = 0;
   const priceFormat = new Intl.NumberFormat("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2
@@ -1081,12 +1082,14 @@
     const margin = { top: 8, right: 66, bottom: 10, left: 12 };
     const innerW = W - margin.left - margin.right;
     const innerH = H - margin.top - margin.bottom;
+    const axisTextScaleX = getSvgTextScaleX(svg, W, H);
     const y = (value) => margin.top + (100 - value) / 100 * innerH;
     let gridMarkup = "";
     [70, 50, 30].forEach((value) => {
       const py = y(value);
       gridMarkup += `<line class="chart-grid" x1="${margin.left}" x2="${W - margin.right}" y1="${py}" y2="${py}"></line>`;
-      gridMarkup += `<text class="axis-text" x="${W - margin.right + 9}" y="${py + 3}">${value}</text>`;
+      const labelX = W - margin.right + 9;
+      gridMarkup += `<text class="axis-text" x="${labelX}" y="${py + 3}"${axisTextTransform(labelX, axisTextScaleX)}>${value}</text>`;
     });
     grid.innerHTML = gridMarkup;
     const usable = rsi.map((value, index) => value === null ? null : { value, index }).filter(Boolean);
@@ -1332,6 +1335,19 @@
     renderChart();
   }
 
+  function getSvgTextScaleX(svg, width, height) {
+    const rect = svg.getBoundingClientRect();
+    const scaleX = rect.width / Math.max(1, width);
+    const scaleY = rect.height / Math.max(1, height);
+    return scaleX > 0 && scaleY > 0 ? scaleY / scaleX : 1;
+  }
+
+  function axisTextTransform(anchorX, scaleX) {
+    if (!Number.isFinite(scaleX) || Math.abs(scaleX - 1) < 0.001) return "";
+    const x = Number(anchorX.toFixed(2));
+    return ` transform="translate(${x} 0) scale(${scaleX.toFixed(4)} 1) translate(${-x} 0)"`;
+  }
+
   function renderChart() {
     const svg = $("price-chart");
     const grid = $("grid-layer");
@@ -1339,10 +1355,11 @@
     const view = getTimelineWindow();
     const candles = view.candles;
     const W = 1000;
-    const H = 473;
+    const H = 710;
     const margin = { top: 14, right: 66, bottom: 31, left: 12 };
     const innerW = W - margin.left - margin.right;
     const innerH = H - margin.top - margin.bottom;
+    const axisTextScaleX = getSvgTextScaleX(svg, W, H);
     grid.innerHTML = "";
     candleLayer.innerHTML = "";
 
@@ -1392,14 +1409,15 @@
       const value = yMax - (index / 4) * (yMax - yMin);
       const py = margin.top + (index / 4) * innerH;
       gridMarkup += `<line class="chart-grid" x1="${margin.left}" x2="${W - margin.right}" y1="${py}" y2="${py}"></line>`;
-      gridMarkup += `<text class="axis-text" x="${W - margin.right + 9}" y="${py + 3}">${priceFormat.format(value)}</text>`;
+      const labelX = W - margin.right + 9;
+      gridMarkup += `<text class="axis-text" x="${labelX}" y="${py + 3}"${axisTextTransform(labelX, axisTextScaleX)}>${priceFormat.format(value)}</text>`;
     }
     for (let index = 0; index <= 4; index += 1) {
       const candleIndex = Math.round((candles.length - 1) * index / 4);
       const candle = candles[candleIndex];
       const px = x(candle.t + intervalMs / 2);
       const anchor = index === 0 ? "start" : index === 4 ? "end" : "middle";
-      gridMarkup += `<text class="axis-text" x="${px}" y="${H - 8}" text-anchor="${anchor}">${formatTime(candle.t, true)}</text>`;
+      gridMarkup += `<text class="axis-text" x="${px}" y="${H - 8}" text-anchor="${anchor}"${axisTextTransform(px, axisTextScaleX)}>${formatTime(candle.t, true)}</text>`;
     }
     grid.innerHTML = gridMarkup;
 
@@ -1565,6 +1583,14 @@
   $("chart-wrap").addEventListener("wheel", zoomChartWithWheel, { passive: false });
   $("timeline-start").addEventListener("input", () => updateTimeline("start"));
   $("timeline-end").addEventListener("input", () => updateTimeline("end"));
+  window.addEventListener("resize", () => {
+    if (resizeRenderFrame) return;
+    resizeRenderFrame = requestAnimationFrame(() => {
+      resizeRenderFrame = 0;
+      hideTooltip();
+      renderChart();
+    });
+  }, { passive: true });
 
   updateSymbolUI();
   updateIntervalButtons();
