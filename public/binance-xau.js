@@ -75,6 +75,7 @@
   const RANGE_ORDER = ["5d", "1mo", "3mo", "6mo", "1y", "all"];
 
   const ANALYSIS_FRAMES = {
+    d1: { label: "D1", interval: "1d", lookback: 120, hidden: true },
     h4: { label: "H4", interval: "4h", lookback: 45 },
     h1: { label: "H1", interval: "1h", lookback: 60 },
     m15: { label: "M15", interval: "15m", lookback: 80 }
@@ -245,8 +246,9 @@
     $("change-value").textContent = "—";
     $("change-value").classList.remove("positive", "negative");
     ["last-price", "day-high", "day-low", "day-volume"].forEach((id) => $(id).textContent = "—");
-    $("analysis-status").textContent = "正在读取 H4、H1、M15 已收盘K线…";
-    for (const key of Object.keys(ANALYSIS_FRAMES)) {
+    $("analysis-status").textContent = "正在读取 D1、H4、H1、M15 已收盘K线…";
+    for (const [key, config] of Object.entries(ANALYSIS_FRAMES)) {
+      if (config.hidden) continue;
       $(`${key}-card`).dataset.bias = "neutral";
       $(`${key}-state`).textContent = "计算中";
       $(`${key}-direction-score`).textContent = "—";
@@ -257,6 +259,7 @@
       $(`${key}-conclusion`).textContent = "正在生成动态判断…";
     }
     renderIntradayStrategy({});
+    renderPositionStrategy({});
     setError("");
     hideTooltip();
     setLiveStatus();
@@ -311,6 +314,9 @@
     }
     if (state.analysisResults.h1 && state.analysisResults.m15) {
       renderIntradayStrategy(state.analysisResults);
+    }
+    if (state.analysisResults.d1 && state.analysisResults.h4 && state.analysisResults.h1) {
+      renderPositionStrategy(state.analysisResults);
     }
   }
 
@@ -1430,6 +1436,237 @@
       : "等待H1与M15已收盘K线…";
   }
 
+  function emptyPositionStrategy(reason = "等待D1、H4与H1已收盘K线完成计算。") {
+    return {
+      bias: "neutral",
+      candidateBias: "neutral",
+      actionable: false,
+      directionLabel: "观望",
+      priority: "等待",
+      score: null,
+      longScore: null,
+      shortScore: null,
+      entryLow: null,
+      entryHigh: null,
+      stopLoss: null,
+      takeProfit: null,
+      target: null,
+      rewardRisk1: null,
+      rewardRisk2: null,
+      summary: reason,
+      trigger: "等待日线背景、H4结构与H1确认形成一致方向。"
+    };
+  }
+
+  function calculatePositionLevels(bias, livePrice, d1, h4, h1) {
+    const isLong = bias === "bullish";
+    const volatility = Math.max(h4.atr, h1.atr * 2, livePrice * 0.001);
+    const entryPadding = Math.max(h1.atr * 0.28, h4.atr * 0.1, livePrice * 0.0003);
+    const pullbackAnchor = isLong
+      ? Math.max(h1.support, h1.ma20)
+      : Math.min(h1.resistance, h1.ma20);
+    const entry = Number.isFinite(pullbackAnchor)
+      ? isLong ? Math.min(livePrice, pullbackAnchor) : Math.max(livePrice, pullbackAnchor)
+      : livePrice;
+    const entryLow = isLong ? entry - entryPadding : entry - entryPadding * 0.4;
+    const entryHigh = isLong ? entry + entryPadding * 0.4 : entry + entryPadding;
+    const supports = [h1.support, h4.support, d1.support]
+      .filter((value) => Number.isFinite(value) && value < entry)
+      .sort((a, b) => b - a);
+    const resistances = [h1.resistance, h4.resistance, d1.resistance]
+      .filter((value) => Number.isFinite(value) && value > entry)
+      .sort((a, b) => a - b);
+    if (isLong) {
+      const stopAnchor = Number.isFinite(h4.support) && h4.support < entry
+        ? h4.support
+        : supports[0];
+      const stopLoss = Number.isFinite(stopAnchor)
+        ? Math.min(stopAnchor - volatility * 0.25, entry - volatility * 0.9)
+        : entry - volatility * 1.1;
+      const risk = Math.max(volatility * 0.4, entry - stopLoss);
+      const projectedFirst = entry + risk * 2;
+      const takeProfit = Math.max(resistances[0] || projectedFirst, projectedFirst);
+      const fartherResistance = resistances.find((value) => value > takeProfit + volatility * 0.2);
+      const projectedSecond = entry + risk * 3;
+      const target = Math.max(fartherResistance || projectedSecond, projectedSecond);
+      return {
+        entryLow,
+        entryHigh,
+        stopLoss,
+        takeProfit,
+        target,
+        rewardRisk1: (takeProfit - entry) / risk,
+        rewardRisk2: (target - entry) / risk,
+        risk
+      };
+    }
+    const stopAnchor = Number.isFinite(h4.resistance) && h4.resistance > entry
+      ? h4.resistance
+      : resistances[0];
+    const stopLoss = Number.isFinite(stopAnchor)
+      ? Math.max(stopAnchor + volatility * 0.25, entry + volatility * 0.9)
+      : entry + volatility * 1.1;
+    const risk = Math.max(volatility * 0.4, stopLoss - entry);
+    const projectedFirst = entry - risk * 2;
+    const takeProfit = Math.min(supports[0] || projectedFirst, projectedFirst);
+    const fartherSupport = supports.find((value) => value < takeProfit - volatility * 0.2);
+    const projectedSecond = entry - risk * 3;
+    const target = Math.min(fartherSupport || projectedSecond, projectedSecond);
+    return {
+      entryLow,
+      entryHigh,
+      stopLoss,
+      takeProfit,
+      target,
+      rewardRisk1: (entry - takeProfit) / risk,
+      rewardRisk2: (entry - target) / risk,
+      risk
+    };
+  }
+
+  function positionPriority(candidateBias, compositeScore, d1, h4, h1) {
+    const d1Bias = d1.marketState?.bias || d1.bias;
+    const h4Bias = h4.marketState?.bias || h4.bias;
+    const h1Bias = h1.marketState?.bias || h1.bias;
+    const d1Aligned = d1Bias === candidateBias;
+    const h4Aligned = h4Bias === candidateBias && h4.opportunity.bias === candidateBias;
+    const h1Aligned = h1Bias === candidateBias && h1.opportunity.bias === candidateBias;
+    const d1Opposed = d1Bias !== "neutral" && d1Bias !== candidateBias;
+    const h1Opposed = (h1Bias !== "neutral" && h1Bias !== candidateBias) ||
+      (h1.opportunity.bias !== "neutral" && h1.opportunity.bias !== candidateBias);
+    if (d1Aligned && h4Aligned && h1Aligned && compositeScore >= 68) {
+      return { code: "A", label: "A · 多周期顺势", rank: 3 };
+    }
+    if (h4Aligned && h1Aligned && !d1Opposed && compositeScore >= 58) {
+      return { code: "B", label: "B · H4/H1共振", rank: 2 };
+    }
+    if (h4Aligned && !d1Opposed && !h1Opposed) {
+      return { code: "C", label: "C · 分批关注", rank: 1 };
+    }
+    return { code: "C", label: "C · 等待强化", rank: 1 };
+  }
+
+  function buildPositionStrategy(results, livePrice) {
+    const { d1, h4, h1, m15 } = results;
+    if (!d1 || !h4 || !h1) return emptyPositionStrategy();
+    const longScore = Math.round(h4.longSetup.score * 0.7 + h1.longSetup.score * 0.3);
+    const shortScore = Math.round(h4.shortSetup.score * 0.7 + h1.shortSetup.score * 0.3);
+    const candidateBias = longScore >= shortScore ? "bullish" : "bearish";
+    const compositeScore = Math.max(longScore, shortScore);
+    const scoreEdge = Math.abs(longScore - shortScore);
+    const h4Signal = h4.opportunity.bias;
+    const h1Signal = h1.opportunity.bias;
+    const d1Bias = d1.marketState?.bias || d1.bias;
+    const h4Bias = h4.marketState?.bias || h4.bias;
+    const h1Bias = h1.marketState?.bias || h1.bias;
+    const directionName = candidateBias === "bullish" ? "做多" : "做空";
+    const timingText = !m15
+      ? "M15数据不足"
+      : m15.opportunity.bias === candidateBias
+        ? "M15入场时机同向"
+        : m15.opportunity.bias === "neutral"
+          ? "M15尚未给出入场时机"
+          : "M15入场时机反向";
+    const stateSummary = `D1 ${d1.marketState.label}，H4 ${h4.marketState.label}，H1 ${h1.marketState.label}；中长线多方综合${longScore}，空方综合${shortScore}；${timingText}。`;
+
+    if (h4Signal !== "neutral" && h1Signal !== "neutral" && h4Signal !== h1Signal) {
+      return {
+        ...emptyPositionStrategy(`${stateSummary} H4与H1机会方向冲突，中长线暂不执行。`),
+        longScore,
+        shortScore,
+        trigger: "等待H4与H1已收盘K线重新形成同向机会。"
+      };
+    }
+    if (compositeScore < 52 || scoreEdge < 8) {
+      return {
+        ...emptyPositionStrategy(`${stateSummary} 高周期多空优势不足，暂不建立中长线仓位。`),
+        longScore,
+        shortScore,
+        trigger: "等待H4/H1综合分达到52分以上，且多空分差扩大到8分以上。"
+      };
+    }
+    if (d1Bias !== "neutral" && d1Bias !== candidateBias) {
+      return {
+        ...emptyPositionStrategy(`${stateSummary} 候选${directionName}与D1长期背景相反，暂不逆势建立中长线仓位。`),
+        longScore,
+        shortScore,
+        trigger: `等待D1转为${candidateBias === "bullish" ? "多方" : "空方"}，或H4/H1出现新的同向结构。`
+      };
+    }
+    if ((h4Bias !== "neutral" && h4Bias !== candidateBias) ||
+        (h1Bias !== "neutral" && h1Bias !== candidateBias)) {
+      return {
+        ...emptyPositionStrategy(`${stateSummary} 候选${directionName}尚未得到H4/H1最终行情状态确认，暂不执行。`),
+        longScore,
+        shortScore,
+        trigger: `等待H4与H1行情状态共同转为${candidateBias === "bullish" ? "偏多" : "偏空"}。`
+      };
+    }
+    if ((h4Signal !== "neutral" && h4Signal !== candidateBias) ||
+        (h1Signal !== "neutral" && h1Signal !== candidateBias)) {
+      return {
+        ...emptyPositionStrategy(`${stateSummary} 综合分与高周期机会方向不一致，暂不执行。`),
+        longScore,
+        shortScore,
+        trigger: "等待H4主方向与H1确认方向重新一致。"
+      };
+    }
+
+    const entry = Number.isFinite(livePrice) ? livePrice : h1.price;
+    const levels = calculatePositionLevels(candidateBias, entry, d1, h4, h1);
+    const priority = positionPriority(candidateBias, compositeScore, d1, h4, h1);
+    const structuralNote = candidateBias === "bullish"
+      ? "止损放在H4有效支撑下方，止盈按结构压力与至少2倍、3倍风险空间取较远值。"
+      : "止损放在H4有效压力上方，止盈按结构支撑与至少2倍、3倍风险空间取较远值。";
+    const trigger = candidateBias === "bullish"
+      ? `执行条件：D1保持非空、H4多方结构有效；价格进入参考区后等待H1转强，M15仅辅助择时。H4收盘跌破 ${h4.supportZone} 或触及止损则策略失效。`
+      : `执行条件：D1保持非多、H4空方结构有效；价格进入参考区后等待H1转弱，M15仅辅助择时。H4收盘突破 ${h4.resistanceZone} 或触及止损则策略失效。`;
+    return {
+      bias: candidateBias,
+      candidateBias,
+      actionable: true,
+      directionLabel: directionName,
+      priority: priority.label,
+      score: compositeScore,
+      longScore,
+      shortScore,
+      ...levels,
+      summary: `${stateSummary} ${directionName}条件领先。${structuralNote}`,
+      trigger
+    };
+  }
+
+  function renderPositionStrategy(results = state.analysisResults) {
+    const hasFrames = Boolean(results?.d1 && results?.h4 && results?.h1);
+    const livePrice = Number.isFinite(state.book?.mid) ? state.book.mid : results?.h1?.price;
+    const strategy = buildPositionStrategy(results || {}, livePrice);
+    const card = $("position-strategy");
+    card.dataset.bias = strategy.bias;
+    $("position-direction").textContent = strategy.directionLabel;
+    $("position-priority").textContent = strategy.priority;
+    $("position-score").textContent = Number.isFinite(strategy.score)
+      ? `${strategy.score} / 100`
+      : Number.isFinite(strategy.longScore) && Number.isFinite(strategy.shortScore)
+        ? `多${strategy.longScore} · 空${strategy.shortScore}`
+        : "—";
+    $("position-entry").textContent = Number.isFinite(strategy.entryLow) && Number.isFinite(strategy.entryHigh)
+      ? `${strategyPrice(strategy.entryLow)}–${strategyPrice(strategy.entryHigh)}`
+      : "—";
+    $("position-stop").textContent = strategyPrice(strategy.stopLoss);
+    const takeProfitValues = [strategy.takeProfit, strategy.target]
+      .filter(Number.isFinite)
+      .map(strategyPrice);
+    $("position-take-profit").textContent = takeProfitValues.length ? takeProfitValues.join(" / ") : "—";
+    $("position-rr").textContent = Number.isFinite(strategy.rewardRisk1) && Number.isFinite(strategy.rewardRisk2)
+      ? `1:${strategy.rewardRisk1.toFixed(2)} / 1:${strategy.rewardRisk2.toFixed(2)}`
+      : "—";
+    $("position-summary").textContent = strategy.summary;
+    $("position-trigger").textContent = strategy.trigger;
+    $("position-status").textContent = hasFrames
+      ? `信号使用已收盘D1/H4/H1，M15仅辅助入场；${Number.isFinite(state.book?.mid) ? "入场区随实时中间价更新" : "暂用H1最近收盘作为入场参考"} · ${formatTime(Date.now())}`
+      : "等待D1、H4与H1已收盘K线…";
+  }
+
   function renderAnalysisCard(key, result, conclusion) {
     $(`${key}-card`).dataset.bias = result.marketState.bias;
     $(`${key}-state`).textContent = result.marketState.label;
@@ -1477,17 +1714,19 @@
     applyMultiFrameContext(results);
     state.analysisResults = results;
     const conclusions = buildConclusions(results);
-    for (const key of Object.keys(ANALYSIS_FRAMES)) {
+    for (const [key, config] of Object.entries(ANALYSIS_FRAMES)) {
+      if (config.hidden) continue;
       if (results[key]) renderAnalysisCard(key, results[key], conclusions[key]);
       else renderAnalysisUnavailable(key, errors[key] || "暂时无法生成判断，请稍后重试。");
     }
     renderIntradayStrategy(results);
+    renderPositionStrategy(results);
   }
 
   async function loadAnalysis() {
     const token = ++state.analysisLoadToken;
     const symbol = state.symbol;
-    $("analysis-status").textContent = "正在更新 H4、H1、M15 已收盘K线…";
+    $("analysis-status").textContent = "正在更新 D1、H4、H1、M15 已收盘K线…";
     const entries = Object.entries(ANALYSIS_FRAMES);
     const cached = await Promise.all(entries.map(([, config]) =>
       readCandleCache(analysisCacheKey(symbol, config.interval))
@@ -1501,7 +1740,7 @@
     });
     if (hasCachedAnalysis) {
       renderAnalysis();
-      $("analysis-status").textContent = "已显示本地缓存 · 正在同步 H4、H1、M15 最新K线…";
+      $("analysis-status").textContent = "已显示本地缓存 · 正在同步 D1、H4、H1、M15 最新K线…";
     }
     const settled = await Promise.allSettled(entries.map(([, config]) =>
       fetchAnalysisCandles(symbol, config.interval)

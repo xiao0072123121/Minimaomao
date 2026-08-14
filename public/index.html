@@ -463,9 +463,11 @@
     .strategy-head h2 { margin: 0 0 4px; font-size: 17px; font-weight: 700; }
     .strategy-head p { margin: 0; color: var(--muted); font-size: 12px; }
 
-    #strategy-direction { color: var(--muted); font-weight: 700; }
-    .strategy-card[data-bias="bullish"] #strategy-direction { color: var(--red); }
-    .strategy-card[data-bias="bearish"] #strategy-direction { color: var(--green); }
+    #strategy-direction, #position-direction { color: var(--muted); font-weight: 700; }
+    .strategy-card[data-bias="bullish"] #strategy-direction,
+    .strategy-card[data-bias="bullish"] #position-direction { color: var(--red); }
+    .strategy-card[data-bias="bearish"] #strategy-direction,
+    .strategy-card[data-bias="bearish"] #position-direction { color: var(--green); }
 
     .strategy-metrics {
       display: grid;
@@ -1002,6 +1004,29 @@
         <div class="strategy-note"><span>执行与失效条件</span><p id="strategy-trigger">方向、位置与触发周期一致后再生成执行参数。</p></div>
       </div>
       <p class="strategy-disclaimer">基于公开行情和量化规则自动生成，仅供策略观察；不代表胜率，不构成投资建议。实际交易请结合仓位、滑点和杠杆风险。</p>
+    </section>
+
+    <section id="position-strategy" class="card strategy-card" data-bias="neutral" aria-labelledby="position-title" aria-live="polite">
+      <div class="strategy-head">
+        <div>
+          <h2 id="position-title">中长线交易策略</h2>
+          <p id="position-status">等待D1、H4与H1已收盘K线…</p>
+        </div>
+      </div>
+      <div class="strategy-metrics" aria-label="中长线策略参数">
+        <div class="strategy-metric"><span>方向</span><b id="position-direction">观望</b></div>
+        <div class="strategy-metric"><span>策略优先级</span><b id="position-priority">等待</b></div>
+        <div class="strategy-metric"><span>入场区域</span><b id="position-entry">—</b></div>
+        <div class="strategy-metric"><span>止损</span><b id="position-stop">—</b></div>
+        <div class="strategy-metric"><span>止盈</span><b id="position-take-profit">—</b></div>
+        <div class="strategy-metric"><span>盈亏比</span><b id="position-rr">—</b></div>
+        <div class="strategy-metric"><span>策略评分</span><b id="position-score">—</b></div>
+      </div>
+      <div class="strategy-body">
+        <div class="strategy-note"><span>策略依据</span><p id="position-summary">等待高周期判断完成。</p></div>
+        <div class="strategy-note"><span>执行与失效条件</span><p id="position-trigger">等待日线背景、H4结构与H1确认形成一致方向。</p></div>
+      </div>
+      <p class="strategy-disclaimer">持仓周期参考数日至数周；基于D1/H4/H1已收盘行情和量化规则自动生成，仅供策略观察，不构成投资建议。中长线波动与资金占用更大，请严格控制仓位和杠杆。</p>
     </section>
 
     <section class="card chart-card" aria-label="Binance 合约历史K线">
