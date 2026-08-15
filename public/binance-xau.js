@@ -34,10 +34,12 @@
   const MAX_RIGHT_BLANK_RATIO = 0.22;
   const STRATEGY_FILTERS = {
     estimatedRoundTripCostRate: 0.0014,
-    intradayMinimumBaseScore: 55,
-    intradayMinimumScoreEdge: 8,
-    intradayMinimumRawRewardRisk: 2,
-    intradayMinimumCostAdjustedRewardRisk: 1.1,
+    intradayMinimumBaseScore: 50,
+    intradayMinimumScoreEdge: 6,
+    intradayMinimumRawRewardRiskA: 1.5,
+    intradayMinimumRawRewardRiskB: 1.3,
+    intradayMinimumCostAdjustedRewardRiskA: 1.15,
+    intradayMinimumCostAdjustedRewardRiskB: 1,
     intradayMaximumCostToRisk: 0.45,
     positionMinimumBaseScore: 55,
     positionMinimumScoreEdge: 10,
@@ -1021,6 +1023,98 @@
     return `量比=${volume.ratio.toFixed(2)}（最近已收盘K线/前20根均量），${volume.label}；多方条件${signed(volume.longAdjustment, 0)}，空方条件${signed(volume.shortAdjustment, 0)}。`;
   }
 
+  function analyzeIntradayPriceStructure(candles, atr, levels, volume, swing) {
+    const last = candles[candles.length - 1];
+    const previous = candles[candles.length - 2] || last;
+    const context = candles.slice(-25, -1);
+    const recent = candles.slice(-6);
+    const contextHigh = Math.max(...context.map((candle) => candle.high));
+    const contextLow = Math.min(...context.map((candle) => candle.low));
+    const contextRange = Math.max(contextHigh - contextLow, atr * 0.5);
+    const rangePosition = clamp((last.close - contextLow) / contextRange, 0, 1);
+    const netBase = candles[Math.max(0, candles.length - 9)];
+    const netMoveAtr = (last.close - netBase.close) / Math.max(atr, 0.000001);
+    const pressure = recent.reduce((sum, candle) => {
+      const range = Math.max(candle.high - candle.low, atr * 0.04, 0.000001);
+      const bodyDirection = (candle.close - candle.open) / range;
+      const closeLocation = ((candle.close - candle.low) / range) * 2 - 1;
+      return sum + bodyDirection * 0.6 + closeLocation * 0.4;
+    }, 0) / Math.max(1, recent.length);
+    const lastRange = Math.max(last.high - last.low, atr * 0.04, 0.000001);
+    const lastBodyRatio = Math.abs(last.close - last.open) / lastRange;
+    const lastCloseLocation = (last.close - last.low) / lastRange;
+    const bullishImpulse = last.close > last.open && lastBodyRatio >= 0.45 && lastCloseLocation >= 0.7;
+    const bearishImpulse = last.close < last.open && lastBodyRatio >= 0.45 && lastCloseLocation <= 0.3;
+    const breakoutDirection = last.close > contextHigh + atr * 0.05
+      ? 1
+      : last.close < contextLow - atr * 0.05
+        ? -1
+        : 0;
+    const supportRejection = last.low <= levels.support + atr * 0.3 && bullishImpulse && last.close > previous.close;
+    const resistanceRejection = last.high >= levels.resistance - atr * 0.3 && bearishImpulse && last.close < previous.close;
+    const volumeDirection = volume?.breakoutDirection || volume?.priceDirection || 0;
+    const volumeStrength = Number.isFinite(volume?.ratio) && volume.ratio >= 1.2 ? Math.min(8, (volume.ratio - 1) * 10) : 0;
+    let baseScore = swing.score * 0.4;
+    baseScore += clamp(netMoveAtr / 2, -1, 1) * 25;
+    baseScore += clamp((rangePosition - 0.5) * 2, -1, 1) * 15;
+    baseScore += clamp(pressure, -1, 1) * 15;
+    baseScore += breakoutDirection * 25;
+    if (supportRejection) baseScore += 16;
+    if (resistanceRejection) baseScore -= 16;
+    baseScore = Math.round(clamp(baseScore, -100, 100));
+    const score = Math.round(clamp(baseScore + volumeDirection * volumeStrength, -100, 100));
+    const sign = score >= 18 ? 1 : score <= -18 ? -1 : 0;
+    const strong = Math.abs(score) >= 38;
+
+    const priorThree = candles.slice(-4, -1);
+    const priorThreeHigh = Math.max(...priorThree.map((candle) => candle.high));
+    const priorThreeLow = Math.min(...priorThree.map((candle) => candle.low));
+    const shortBreakDirection = last.close > priorThreeHigh + atr * 0.03
+      ? 1
+      : last.close < priorThreeLow - atr * 0.03
+        ? -1
+        : 0;
+    let triggerDirection = 0;
+    let triggerLabel = "等待M15价格触发";
+    if (supportRejection) {
+      triggerDirection = 1;
+      triggerLabel = "支撑区出现多头拒绝K线";
+    } else if (resistanceRejection) {
+      triggerDirection = -1;
+      triggerLabel = "压力区出现空头拒绝K线";
+    } else if (breakoutDirection && Number.isFinite(volume?.ratio) && volume.ratio >= 1.1) {
+      triggerDirection = breakoutDirection;
+      triggerLabel = `${breakoutDirection > 0 ? "向上" : "向下"}突破近期区间并获得量能确认`;
+    } else if (shortBreakDirection && ((shortBreakDirection > 0 && bullishImpulse) || (shortBreakDirection < 0 && bearishImpulse))) {
+      triggerDirection = shortBreakDirection;
+      triggerLabel = `M15实体K线${shortBreakDirection > 0 ? "突破近3根高点" : "跌破近3根低点"}`;
+    }
+
+    const label = sign > 0
+      ? strong ? "价格结构明显偏多" : "价格结构偏多"
+      : sign < 0
+        ? strong ? "价格结构明显偏空" : "价格结构偏空"
+        : "价格结构中性";
+    return {
+      score,
+      baseScore,
+      sign,
+      bias: sign > 0 ? "bullish" : sign < 0 ? "bearish" : "neutral",
+      strong,
+      label,
+      rangePosition,
+      contextHigh,
+      contextLow,
+      breakoutDirection,
+      supportRejection,
+      resistanceRejection,
+      bullishImpulse,
+      bearishImpulse,
+      triggerDirection,
+      triggerLabel
+    };
+  }
+
   function calculateDirectionalSetup(result, sign) {
     const risk = sign > 0 ? result.price - result.support : result.resistance - result.price;
     const reward = sign > 0 ? result.resistance - result.price : result.price - result.support;
@@ -1170,6 +1264,7 @@
     const nearThreshold = Math.max(atr * 0.65, price * 0.001);
     const priceAction = detectPriceAction(candles, levels, atr, ma20, ma60);
     const volume = analyzeVolume(candles, atr);
+    const intradayStructure = analyzeIntradayPriceStructure(candles, atr, levels, volume, swing);
     const result = {
       ...config,
       price,
@@ -1189,6 +1284,7 @@
       swing,
       priceAction,
       volume,
+      intradayStructure,
       support: levels.support,
       resistance: levels.resistance,
       supportZone: formatZone(levels.support, atr),
@@ -1357,7 +1453,7 @@
     return conclusions;
   }
 
-  function emptyIntradayStrategy(reason = "等待H1与M15已收盘K线完成计算。") {
+  function emptyIntradayStrategy(reason = "等待H4、H1与M15已收盘K线完成计算。") {
     return {
       bias: "neutral",
       candidateBias: "neutral",
@@ -1395,15 +1491,15 @@
     let takeProfit;
     if (isLong) {
       const stopAnchor = supports[0];
-      const minimumRisk = Math.max(atr * 1.05, h1.atr * 0.32, entry * 0.0012);
+      const minimumRisk = Math.max(atr * 0.75, h1.atr * 0.18, entry * 0.0008);
       stopLoss = Number.isFinite(stopAnchor)
         ? Math.min(stopAnchor - atr * 0.2, entry - minimumRisk)
         : entry - minimumRisk;
       const risk = Math.max(atr * 0.35, entry - stopLoss);
-      const projectedFirst = entry + risk * STRATEGY_FILTERS.intradayMinimumRawRewardRisk;
-      takeProfit = Math.max(resistances[0] || projectedFirst, projectedFirst);
+      const projectedFirst = entry + risk * 1.5;
+      takeProfit = resistances[0] || projectedFirst;
       const secondResistance = resistances.find((value) => value > takeProfit + atr * 0.2);
-      const target = Math.max(secondResistance || 0, entry + risk * 3);
+      const target = Math.max(secondResistance || 0, entry + risk * 2.5);
       return {
         entryLow,
         entryHigh,
@@ -1416,15 +1512,15 @@
       };
     }
     const stopAnchor = resistances[0];
-    const minimumRisk = Math.max(atr * 1.05, h1.atr * 0.32, entry * 0.0012);
+    const minimumRisk = Math.max(atr * 0.75, h1.atr * 0.18, entry * 0.0008);
     stopLoss = Number.isFinite(stopAnchor)
       ? Math.max(stopAnchor + atr * 0.2, entry + minimumRisk)
       : entry + minimumRisk;
     const risk = Math.max(atr * 0.35, stopLoss - entry);
-    const projectedFirst = entry - risk * STRATEGY_FILTERS.intradayMinimumRawRewardRisk;
-    takeProfit = Math.min(supports[0] || projectedFirst, projectedFirst);
+    const projectedFirst = entry - risk * 1.5;
+    takeProfit = supports[0] || projectedFirst;
     const secondSupport = supports.find((value) => value < takeProfit - atr * 0.2);
-    const target = Math.min(Number.isFinite(secondSupport) ? secondSupport : Infinity, entry - risk * 3);
+    const target = Math.min(Number.isFinite(secondSupport) ? secondSupport : Infinity, entry - risk * 2.5);
     return {
       entryLow,
       entryHigh,
@@ -1453,121 +1549,152 @@
     };
   }
 
-  function intradayPriority(candidateBias, compositeScore, h4, h1, m15) {
-    const h1Aligned = h1.opportunity.bias === candidateBias;
-    const m15Aligned = m15.opportunity.bias === candidateBias;
-    const h4Aligned = h4?.bias === candidateBias;
-    const h4Opposed = Boolean(h4 && h4.bias !== "neutral" && h4.bias !== candidateBias);
-    if (h1Aligned && m15Aligned && h4Aligned && compositeScore >= 65) {
-      return { code: "A", label: "A · 顺势优先", rank: 3 };
+  function intradayConditionScore(frame, sign) {
+    const structure = frame.intradayStructure;
+    let baseScore = 50 + sign * structure.baseScore * 0.42;
+    if (sign > 0 && frame.nearSupport) baseScore += 12;
+    if (sign < 0 && frame.nearResistance) baseScore += 12;
+    if (sign > 0 && frame.nearResistance) baseScore -= 14;
+    if (sign < 0 && frame.nearSupport) baseScore -= 14;
+    if (sign > 0 && structure.supportRejection) baseScore += 16;
+    if (sign < 0 && structure.resistanceRejection) baseScore += 16;
+    if (sign > 0 && structure.resistanceRejection) baseScore -= 16;
+    if (sign < 0 && structure.supportRejection) baseScore -= 16;
+    baseScore = Math.round(clamp(baseScore, 0, 100));
+    const volumeAdjustment = sign > 0 ? frame.volume.longAdjustment : frame.volume.shortAdjustment;
+    return {
+      baseScore,
+      score: Math.round(clamp(baseScore + volumeAdjustment, 0, 100)),
+      volumeAdjustment
+    };
+  }
+
+  function intradayPriority(candidateSign, compositeScore, h4, h1, m15) {
+    const h4Structure = h4?.intradayStructure;
+    const h1Structure = h1.intradayStructure;
+    const m15Structure = m15.intradayStructure;
+    const h4StrongAligned = h4Structure?.strong && h4Structure.sign === candidateSign;
+    const h4StrongOpposed = h4Structure?.strong && h4Structure.sign === -candidateSign;
+    const h1Aligned = h1Structure.sign === candidateSign;
+    const m15Triggered = m15Structure.triggerDirection === candidateSign;
+    if (h4StrongAligned && h1Aligned && m15Triggered && compositeScore >= 60) {
+      return { code: "A", label: "A · H4主趋势顺势", rank: 3 };
     }
-    if (h1Aligned && m15Aligned && !h4Opposed && compositeScore >= 55) {
-      return { code: "B", label: "B · 同周期共振", rank: 2 };
+    if (!h4StrongOpposed && h1Aligned && m15Triggered && compositeScore >= 55) {
+      return { code: "B", label: "B · H1结构机会", rank: 2 };
     }
-    if (h1Aligned && m15Aligned && h4Opposed) {
-      return { code: "C", label: "C · 逆势谨慎", rank: 1 };
-    }
-    return { code: "C", label: "C · 等待强化", rank: 1 };
+    return { code: "C", label: "C · 等待价格触发", rank: 1 };
   }
 
   function buildIntradayStrategy(results, entryPrice) {
     const { h4, h1, m15 } = results;
-    if (!h1 || !m15) return emptyIntradayStrategy();
-    const baseLongScore = Math.round((h1.longSetup.baseScore ?? h1.longSetup.score) * 0.6 + (m15.longSetup.baseScore ?? m15.longSetup.score) * 0.4);
-    const baseShortScore = Math.round((h1.shortSetup.baseScore ?? h1.shortSetup.score) * 0.6 + (m15.shortSetup.baseScore ?? m15.shortSetup.score) * 0.4);
-    const longScore = Math.round(h1.longSetup.score * 0.6 + m15.longSetup.score * 0.4);
-    const shortScore = Math.round(h1.shortSetup.score * 0.6 + m15.shortSetup.score * 0.4);
-    const candidateBias = baseLongScore >= baseShortScore ? "bullish" : "bearish";
-    const baseCompositeScore = Math.max(baseLongScore, baseShortScore);
-    const compositeScore = candidateBias === "bullish" ? longScore : shortScore;
+    if (!h4 || !h1 || !m15) return emptyIntradayStrategy();
+    const h4Structure = h4.intradayStructure;
+    const h1Structure = h1.intradayStructure;
+    const m15Structure = m15.intradayStructure;
+    const h4MainSign = h4Structure.strong ? h4Structure.sign : 0;
+    const candidateSign = h4MainSign || (h1Structure.strong ? h1Structure.sign : 0);
+    const longParts = [
+      intradayConditionScore(h4, 1),
+      intradayConditionScore(h1, 1),
+      intradayConditionScore(m15, 1)
+    ];
+    const shortParts = [
+      intradayConditionScore(h4, -1),
+      intradayConditionScore(h1, -1),
+      intradayConditionScore(m15, -1)
+    ];
+    const combine = (parts, field) => Math.round(parts[0][field] * 0.45 + parts[1][field] * 0.4 + parts[2][field] * 0.15);
+    const baseLongScore = combine(longParts, "baseScore");
+    const baseShortScore = combine(shortParts, "baseScore");
+    const longScore = combine(longParts, "score");
+    const shortScore = combine(shortParts, "score");
     const scoreEdge = Math.abs(baseLongScore - baseShortScore);
-    const volumeAdjustment = compositeScore - baseCompositeScore;
-    const h1Signal = h1.opportunity.bias;
-    const m15Signal = m15.opportunity.bias;
-    const candidateSign = candidateBias === "bullish" ? 1 : -1;
-    const directionName = candidateBias === "bullish" ? "做多" : "做空";
-    const stateSummary = `H4 ${h4?.marketState.label || "数据不足"}，H1 ${h1.marketState.label}，M15 ${m15.marketState.label}；技术面基础多${baseLongScore}、空${baseShortScore}，量能调整后多${longScore}、空${shortScore}（候选方向调整${signed(volumeAdjustment, 0)}）。量能：H1 ${h1.volume?.label || "中性"}，M15 ${m15.volume?.label || "中性"}。`;
+    const directionName = candidateSign > 0 ? "做多" : candidateSign < 0 ? "做空" : "等待";
+    const candidateBias = candidateSign > 0 ? "bullish" : candidateSign < 0 ? "bearish" : "neutral";
+    const compositeScore = candidateSign > 0 ? longScore : candidateSign < 0 ? shortScore : Math.max(longScore, shortScore);
+    const baseCompositeScore = candidateSign > 0 ? baseLongScore : candidateSign < 0 ? baseShortScore : Math.max(baseLongScore, baseShortScore);
+    const stateSummary = `H4 ${h4Structure.label}（结构分${signed(h4Structure.score, 0)}），H1 ${h1Structure.label}（结构分${signed(h1Structure.score, 0)}），M15 ${m15Structure.label}；价格结构基础多${baseLongScore}、空${baseShortScore}，量能调整后多${longScore}、空${shortScore}。H4${h4MainSign ? "已确定日内主方向" : "暂未形成强方向"}；M15：${m15Structure.triggerLabel}。`;
     const waitForCandidate = (reason, trigger) => ({
       ...emptyIntradayStrategy(reason),
       candidateBias,
-      directionLabel: `观望 · 候选${directionName}`,
+      directionLabel: candidateSign ? `观望 · 候选${directionName}` : "观望",
       score: compositeScore,
       longScore,
       shortScore,
       trigger
     });
 
-    if (h1Signal !== "neutral" && m15Signal !== "neutral" && h1Signal !== m15Signal) {
-      return {
-        ...emptyIntradayStrategy(`${stateSummary} H1与M15机会方向冲突，暂不执行。`),
-        longScore,
-        shortScore,
-        trigger: h1Signal === "bearish"
-          ? `等待M15转为空方并确认跌破支撑 ${h1.supportZone}。`
-          : `等待M15转为多方并确认突破压力 ${h1.resistanceZone}。`
-      };
+    if (!candidateSign) {
+      return waitForCandidate(
+        `${stateSummary} H4尚无强方向，H1价格结构也未形成明确机会，暂不选择方向。`,
+        "等待H4形成明确主趋势，或H1形成强结构后由M15触发B级机会。"
+      );
+    }
+    if (h4MainSign && h1Structure.sign !== candidateSign) {
+      return waitForCandidate(
+        `${stateSummary} H4已确定${directionName}主方向，但H1尚未形成同向机会，暂不提前入场。`,
+        `等待H1价格结构转为${candidateSign > 0 ? "偏多" : "偏空"}，再由M15确认触发。`
+      );
     }
     if (baseCompositeScore < STRATEGY_FILTERS.intradayMinimumBaseScore ||
         scoreEdge < STRATEGY_FILTERS.intradayMinimumScoreEdge) {
       return waitForCandidate(
-        `${stateSummary} 多空优势不足，暂不强行选择方向。`,
-        `等待H1与M15同向，基础分达到${STRATEGY_FILTERS.intradayMinimumBaseScore}分，且多空分差扩大到${STRATEGY_FILTERS.intradayMinimumScoreEdge}分以上。`
+        `${stateSummary} 当前价格结构优势不足，暂不强行选择方向。`,
+        `等待结构分达到${STRATEGY_FILTERS.intradayMinimumBaseScore}分，且多空分差扩大到${STRATEGY_FILTERS.intradayMinimumScoreEdge}分以上。`
       );
     }
-    if (h1Signal !== "neutral" && h1Signal !== candidateBias) {
-      return {
-        ...emptyIntradayStrategy(`${stateSummary} 综合分与H1主要机会方向不一致，暂不执行。`),
-        longScore,
-        shortScore,
-        trigger: "等待H1机会方向与M15触发方向重新一致。"
-      };
-    }
-    if (m15Signal !== candidateBias || m15.twoCloseDirection !== candidateSign) {
+    if (h1Structure.sign !== candidateSign) {
       return waitForCandidate(
-        `${stateSummary} 方向已有候选，但M15尚未完成同向连续收盘确认。`,
-        `等待M15机会方向转为${candidateBias === "bullish" ? "多方" : "空方"}，且连续两根已收盘K线位于MA20和MA60的同向一侧。`
+        `${stateSummary} H1尚未形成与候选方向一致的价格结构。`,
+        `等待H1摆动结构、区间位置和最近收盘共同转为${candidateSign > 0 ? "偏多" : "偏空"}。`
+      );
+    }
+    if (m15Structure.triggerDirection !== candidateSign) {
+      return waitForCandidate(
+        `${stateSummary} 日内方向已经确定，但M15尚未给出同向价格触发。`,
+        candidateSign > 0
+          ? `等待M15突破近3根高点、放量突破区间或在支撑 ${m15.supportZone} 出现多头拒绝K线。`
+          : `等待M15跌破近3根低点、放量跌破区间或在压力 ${m15.resistanceZone} 出现空头拒绝K线。`
       );
     }
 
+    const priority = intradayPriority(candidateSign, compositeScore, h4, h1, m15);
+    if (priority.code === "C") {
+      return waitForCandidate(
+        `${stateSummary} 已出现方向倾向，但结构强度不足以进入A/B级执行评估。`,
+        "等待H1结构增强并保留M15同向触发。"
+      );
+    }
     const entry = Number.isFinite(entryPrice) ? entryPrice : m15.price;
     const levels = calculateIntradayLevels(candidateBias, entry, h1, m15);
-    const priority = intradayPriority(candidateBias, compositeScore, h4, h1, m15);
     const executionQuality = evaluateExecutionQuality(levels, candidateBias);
-    const structuralNote = candidateBias === "bullish"
-      ? `止损设置在最近有效支撑下方，止盈参考上方压力。`
-      : `止损设置在最近有效压力上方，止盈参考下方支撑。`;
-    const trigger = candidateBias === "bullish"
-      ? `执行条件：价格进入参考区后，M15保持多方机会且未跌破 ${m15.supportZone}；跌破止损位则策略失效。`
-      : `执行条件：价格进入参考区后，M15保持空方机会且未突破 ${m15.resistanceZone}；突破止损位则策略失效。`;
-    if (priority.code !== "A") {
-      return {
-        bias: "neutral",
-        candidateBias,
-        actionable: false,
-        directionLabel: `观察 · 候选${directionName}`,
-        priority: `${priority.label} · 不执行`,
-        score: compositeScore,
-        longScore,
-        shortScore,
-        ...levels,
-        summary: `${stateSummary} 当前仅达到${priority.code}级观察条件；保留方向提示但不生成执行信号。`,
-        trigger: `等待H4、H1和M15形成A级同向共振。${structuralNote}`
-      };
-    }
-    if (levels.rewardRisk1 < STRATEGY_FILTERS.intradayMinimumRawRewardRisk ||
-        executionQuality.costAdjustedRewardRisk < STRATEGY_FILTERS.intradayMinimumCostAdjustedRewardRisk ||
+    const minimumRawRewardRisk = priority.code === "A"
+      ? STRATEGY_FILTERS.intradayMinimumRawRewardRiskA
+      : STRATEGY_FILTERS.intradayMinimumRawRewardRiskB;
+    const minimumCostAdjustedRewardRisk = priority.code === "A"
+      ? STRATEGY_FILTERS.intradayMinimumCostAdjustedRewardRiskA
+      : STRATEGY_FILTERS.intradayMinimumCostAdjustedRewardRiskB;
+    const structuralNote = candidateSign > 0
+      ? "止损设置在最近有效支撑下方，止盈优先参考真实压力位。"
+      : "止损设置在最近有效压力上方，止盈优先参考真实支撑位。";
+    const trigger = candidateSign > 0
+      ? `执行条件：${m15Structure.triggerLabel}；价格进入参考区后不得跌破 ${m15.supportZone}，触及结构止损则失效。`
+      : `执行条件：${m15Structure.triggerLabel}；价格进入参考区后不得突破 ${m15.resistanceZone}，触及结构止损则失效。`;
+    if (levels.rewardRisk1 < minimumRawRewardRisk ||
+        executionQuality.costAdjustedRewardRisk < minimumCostAdjustedRewardRisk ||
         executionQuality.costToRisk > STRATEGY_FILTERS.intradayMaximumCostToRisk) {
       return {
         bias: "neutral",
         candidateBias,
         actionable: false,
         directionLabel: `观望 · 候选${directionName}`,
-        priority: "等待 · 盈亏比不足",
+        priority: "等待 · 成本或盈亏比不足",
         score: compositeScore,
         longScore,
         shortScore,
         ...levels,
-        summary: `${stateSummary} 候选${directionName}未通过成本保护：原始盈亏比1:${levels.rewardRisk1.toFixed(2)}，${executionQuality.label}，成本/风险=${executionQuality.costToRisk.toFixed(2)}。`,
+        summary: `${stateSummary} ${priority.code}级候选未通过风险保护：原始盈亏比1:${levels.rewardRisk1.toFixed(2)}，${executionQuality.label}，成本/风险=${executionQuality.costToRisk.toFixed(2)}。`,
         trigger: `等待入场价格改善、止损结构更清晰或目标空间扩大后再评估。${structuralNote}`
       };
     }
@@ -1581,17 +1708,16 @@
       longScore,
       shortScore,
       ...levels,
-      summary: `${stateSummary} ${directionName}条件领先，且通过成本保护（${executionQuality.label}）。${structuralNote}`,
+      summary: `${stateSummary} ${directionName}条件达到${priority.code}级，并通过成本保护（${executionQuality.label}）。${structuralNote}`,
       trigger
     };
   }
-
   function strategyPrice(value) {
     return Number.isFinite(value) ? priceFormat.format(value) : "—";
   }
 
   function renderIntradayStrategy(results = state.analysisResults) {
-    const hasFrames = Boolean(results?.h1 && results?.m15);
+    const hasFrames = Boolean(results?.h4 && results?.h1 && results?.m15);
     const entryPrice = Number.isFinite(state.book?.mid) ? state.book.mid : results?.m15?.price;
     const strategy = buildIntradayStrategy(results || {}, entryPrice);
     const card = $("intraday-strategy");
@@ -1617,8 +1743,8 @@
     $("strategy-summary").textContent = strategy.summary;
     $("strategy-trigger").textContent = strategy.trigger;
     $("strategy-status").textContent = hasFrames
-      ? `信号使用已收盘H1/M15，H4决定顺逆势；${Number.isFinite(state.book?.mid) ? "入场区随实时中间价更新" : "暂用M15最近收盘作为入场参考"} · ${formatTime(Date.now())}`
-      : "等待H1与M15已收盘K线…";
+      ? `日内去均线化：H4结构定方向、H1找机会、M15价格触发；${Number.isFinite(state.book?.mid) ? "入场区随实时中间价更新" : "暂用M15最近收盘作为入场参考"} · ${formatTime(Date.now())}`
+      : "等待H4、H1与M15已收盘K线…";
   }
 
   function emptyPositionStrategy(reason = "等待D1、H4与H1已收盘K线完成计算。") {
