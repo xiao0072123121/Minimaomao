@@ -1298,15 +1298,22 @@
     if (!combined.length) return { available: false, zones: [] };
     const poc = combined.reduce((best, bin) => bin.score > best.score ? bin : best, combined[0]);
     const totalScore = combined.reduce((sum, bin) => sum + bin.score, 0);
-    let accumulated = 0;
-    const valueBins = [];
-    for (const bin of [...combined].sort((a, b) => b.score - a.score)) {
-      valueBins.push(bin);
-      accumulated += bin.score;
-      if (accumulated >= totalScore * 0.7) break;
+    let valueLowIndex = combined.findIndex((bin) => bin.index === poc.index);
+    let valueHighIndex = valueLowIndex;
+    let accumulated = poc.score;
+    while (accumulated < totalScore * 0.7 && (valueLowIndex > 0 || valueHighIndex < combined.length - 1)) {
+      const lowerScore = valueLowIndex > 0 ? combined[valueLowIndex - 1].score : -1;
+      const higherScore = valueHighIndex < combined.length - 1 ? combined[valueHighIndex + 1].score : -1;
+      if (higherScore > lowerScore) {
+        valueHighIndex += 1;
+        accumulated += combined[valueHighIndex].score;
+      } else {
+        valueLowIndex -= 1;
+        accumulated += combined[valueLowIndex].score;
+      }
     }
-    const valueLow = Math.min(...valueBins.map((bin) => bin.price));
-    const valueHigh = Math.max(...valueBins.map((bin) => bin.price));
+    const valueLow = combined[valueLowIndex].price;
+    const valueHigh = combined[valueHighIndex].price;
     const nodes = [];
     for (let index = 0; index < combined.length; index += 1) {
       const bin = combined[index];
