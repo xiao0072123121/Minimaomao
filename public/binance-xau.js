@@ -116,6 +116,7 @@
     analysisFrames: {},
     analysisResults: {},
     currentIntradayStrategy: null,
+    intradayStrategyHistory: {},
     lockedStrategies: {},
     directionStates: {},
     socket: null,
@@ -226,7 +227,11 @@
   function readLockedStrategies() {
     try {
       const parsed = JSON.parse(window.localStorage.getItem(LOCKED_STRATEGY_STORAGE_KEY) || "{}");
-      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+      return Object.fromEntries(Object.entries(parsed).map(([symbol, value]) => {
+        const records = Array.isArray(value) ? value : value && typeof value === "object" ? [value] : [];
+        return [symbol, records.filter((record) => record && typeof record === "object").slice(0, 20)];
+      }));
     } catch (_) {
       return {};
     }
@@ -241,9 +246,12 @@
     }
   }
 
-  function createLockedStrategySnapshot(strategy, rsiRisk, symbol, lockedAt, referencePrice) {
+  function createLockedStrategySnapshot(strategy, rsiRisk, symbol, lockedAt, referencePrice, sourceId = "", sourceFingerprint = "") {
     return {
-      version: 1,
+      version: 2,
+      id: `locked-${symbol}-${lockedAt}-${Math.random().toString(36).slice(2, 7)}`,
+      sourceId,
+      sourceFingerprint,
       symbol,
       lockedAt,
       referencePrice: Number.isFinite(referencePrice) ? referencePrice : null,
@@ -269,74 +277,178 @@
     };
   }
 
+  function escapeStrategyHtml(value) {
+    return String(value ?? "—").replace(/[&<>"']/g, (character) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      "\"": "&quot;",
+      "'": "&#039;"
+    })[character]);
+  }
+
+  function lockedStrategiesForSymbol(symbol = state.symbol) {
+    const records = state.lockedStrategies[symbol];
+    return Array.isArray(records) ? records : records ? [records] : [];
+  }
+
+  function isStrategyRecordLocked(record) {
+    if (!record) return false;
+    return lockedStrategiesForSymbol(record.symbol).some((locked) =>
+      locked.sourceFingerprint && locked.sourceFingerprint === record.fingerprint
+    );
+  }
+
+  function strategyMetricsMarkup(strategy) {
+    const entry = Number.isFinite(strategy.entryLow) && Number.isFinite(strategy.entryHigh)
+      ? `${strategyPrice(strategy.entryLow)}–${strategyPrice(strategy.entryHigh)}`
+      : "—";
+    const takeProfit = [strategy.takeProfit, strategy.target].filter(Number.isFinite).map(strategyPrice).join(" / ") || "—";
+    const rewardRisk = Number.isFinite(strategy.rewardRisk1) && Number.isFinite(strategy.rewardRisk2)
+      ? `1:${strategy.rewardRisk1.toFixed(2)} / 1:${strategy.rewardRisk2.toFixed(2)}`
+      : "—";
+    const score = Number.isFinite(strategy.score) ? `${strategy.score} / 100` : "—";
+    return `
+      <div class="strategy-metrics" aria-label="日内策略参数">
+        <div class="strategy-metric"><span>方向</span><b class="strategy-direction-value">${escapeStrategyHtml(strategy.directionLabel)}</b></div>
+        <div class="strategy-metric"><span>策略优先级</span><b>${escapeStrategyHtml(strategy.priority)}</b></div>
+        <div class="strategy-metric"><span>入场区域</span><b>${escapeStrategyHtml(entry)}</b></div>
+        <div class="strategy-metric"><span>止损</span><b>${escapeStrategyHtml(strategyPrice(strategy.stopLoss))}</b></div>
+        <div class="strategy-metric"><span>止盈</span><b>${escapeStrategyHtml(takeProfit)}</b></div>
+        <div class="strategy-metric"><span>盈亏比</span><b>${escapeStrategyHtml(rewardRisk)}</b></div>
+        <div class="strategy-metric"><span>策略评分</span><b>${escapeStrategyHtml(score)}</b></div>
+      </div>`;
+  }
+
+  function strategyNotesMarkup(strategy, rsiRisk, locked = false) {
+    const prefix = locked ? "锁定时" : "生成时";
+    return `
+      <div class="strategy-body">
+        <div class="strategy-note"><span>${prefix}策略依据</span><p>${escapeStrategyHtml(strategy.summary)}</p></div>
+        <div class="strategy-note"><span>${prefix}执行与失效条件</span><p>${escapeStrategyHtml(strategy.trigger)}</p></div>
+        <div class="strategy-note strategy-risk" data-tone="${escapeStrategyHtml(rsiRisk?.tone || strategy.rsiTone || "neutral")}"><span>${prefix}RSI风险提示</span><p>${escapeStrategyHtml(rsiRisk?.text || strategy.rsiRisk || "—")}</p></div>
+      </div>`;
+  }
+
   function updateLockStrategyButton() {
     const button = $("lock-strategy-button");
     if (!button) return;
     const current = state.currentIntradayStrategy;
     const canLock = Boolean(current?.strategy?.actionable && current.symbol === state.symbol);
+    const isLocked = canLock && isStrategyRecordLocked(current);
     button.disabled = !canLock;
     button.title = canLock
       ? "保存当前日内策略快照；后续实时策略仍会继续更新"
       : "仅可锁定当前可执行的 A/B 级日内策略";
     button.textContent = canLock
-      ? state.lockedStrategies[state.symbol] ? "更新锁定策略" : "锁定当前策略"
+      ? isLocked ? "更新这条锁定" : "锁定这条策略"
       : "暂无可锁定策略";
+  }
+
+  function renderIntradayStrategyHistory() {
+    const container = $("intraday-strategy-history");
+    if (!container) return;
+    const history = state.intradayStrategyHistory[state.symbol] || [];
+    container.hidden = history.length === 0;
+    container.innerHTML = history.map((record, index) => {
+      const locked = isStrategyRecordLocked(record);
+      const reference = Number.isFinite(record.referencePrice) ? ` · 参考价 ${strategyPrice(record.referencePrice)}` : "";
+      return `
+        <article class="strategy-list-item" data-bias="${escapeStrategyHtml(record.strategy.bias)}" data-strategy-id="${escapeStrategyHtml(record.id)}">
+          <div class="strategy-head">
+            <div><h3>此前策略 ${index + 1}</h3><p>${escapeStrategyHtml(formatTime(record.generatedAt, true))}${escapeStrategyHtml(reference)} · 生成时快照</p></div>
+            <button class="strategy-action primary" type="button" data-lock-strategy-id="${escapeStrategyHtml(record.id)}">${locked ? "更新这条锁定" : "锁定这条策略"}</button>
+          </div>
+          ${strategyMetricsMarkup(record.strategy)}
+          ${strategyNotesMarkup(record.strategy, record.rsiRisk)}
+        </article>`;
+    }).join("");
   }
 
   function renderLockedStrategy() {
     const card = $("locked-strategy");
     if (!card) return;
-    const locked = state.lockedStrategies[state.symbol];
-    const hasLocked = Boolean(locked);
+    const lockedRecords = lockedStrategiesForSymbol();
+    const hasLocked = lockedRecords.length > 0;
     card.dataset.empty = String(!hasLocked);
-    card.dataset.bias = locked?.bias || "neutral";
+    card.dataset.bias = "neutral";
     $("locked-strategy-empty").hidden = hasLocked;
-    $("locked-strategy-content").hidden = !hasLocked;
+    $("locked-strategy-list").hidden = !hasLocked;
     $("clear-locked-strategy-button").disabled = !hasLocked;
     if (!hasLocked) {
       $("locked-strategy-status").textContent = `${state.symbol} 尚未锁定日内策略。`;
+      $("locked-strategy-list").innerHTML = "";
       updateLockStrategyButton();
+      renderIntradayStrategyHistory();
       return;
     }
-    const reference = Number.isFinite(locked.referencePrice) ? ` · 参考价 ${strategyPrice(locked.referencePrice)}` : "";
-    $("locked-strategy-status").textContent = `${locked.symbol} · 锁定于 ${formatTime(locked.lockedAt, true)}${reference} · 上方实时策略继续更新`;
-    $("locked-direction").textContent = locked.directionLabel;
-    $("locked-priority").textContent = locked.priority;
-    $("locked-entry").textContent = Number.isFinite(locked.entryLow) && Number.isFinite(locked.entryHigh)
-      ? `${strategyPrice(locked.entryLow)}–${strategyPrice(locked.entryHigh)}`
-      : "—";
-    $("locked-stop").textContent = strategyPrice(locked.stopLoss);
-    const takeProfitValues = [locked.takeProfit, locked.target].filter(Number.isFinite).map(strategyPrice);
-    $("locked-take-profit").textContent = takeProfitValues.length ? takeProfitValues.join(" / ") : "—";
-    $("locked-rr").textContent = Number.isFinite(locked.rewardRisk1) && Number.isFinite(locked.rewardRisk2)
-      ? `1:${locked.rewardRisk1.toFixed(2)} / 1:${locked.rewardRisk2.toFixed(2)}`
-      : "—";
-    $("locked-score").textContent = Number.isFinite(locked.score) ? `${locked.score} / 100` : "—";
-    $("locked-summary").textContent = locked.summary || "—";
-    $("locked-trigger").textContent = locked.trigger || "—";
-    $("locked-rsi-risk").textContent = locked.rsiRisk || "—";
-    $("locked-rsi-risk").parentElement.dataset.tone = locked.rsiTone || "neutral";
+    $("locked-strategy-status").textContent = `${state.symbol} · 已锁定 ${lockedRecords.length} 条策略 · 上方实时策略继续更新`;
+    $("locked-strategy-list").innerHTML = lockedRecords.map((locked, index) => {
+      const reference = Number.isFinite(locked.referencePrice) ? ` · 参考价 ${strategyPrice(locked.referencePrice)}` : "";
+      return `
+        <article class="strategy-list-item" data-bias="${escapeStrategyHtml(locked.bias || "neutral")}" data-locked-id="${escapeStrategyHtml(locked.id || `legacy-${index}`)}">
+          <div class="strategy-head">
+            <div><h3>锁定策略 ${index + 1}</h3><p>锁定于 ${escapeStrategyHtml(formatTime(locked.lockedAt, true))}${escapeStrategyHtml(reference)}</p></div>
+            <button class="strategy-action" type="button" data-remove-locked-id="${escapeStrategyHtml(locked.id || `legacy-${index}`)}">删除这条</button>
+          </div>
+          ${strategyMetricsMarkup(locked)}
+          ${strategyNotesMarkup(locked, null, true)}
+        </article>`;
+    }).join("");
     updateLockStrategyButton();
+    renderIntradayStrategyHistory();
   }
 
-  function lockCurrentStrategy() {
-    const current = state.currentIntradayStrategy;
+  function findIntradayStrategyRecord(strategyId) {
+    if (state.currentIntradayStrategy?.id === strategyId) return state.currentIntradayStrategy;
+    return (state.intradayStrategyHistory[state.symbol] || []).find((record) => record.id === strategyId) || null;
+  }
+
+  function lockIntradayStrategy(strategyId) {
+    const current = findIntradayStrategyRecord(strategyId);
     if (!current?.strategy?.actionable || current.symbol !== state.symbol) return false;
     const snapshot = createLockedStrategySnapshot(
       current.strategy,
       current.rsiRisk,
       state.symbol,
       Date.now(),
-      current.referencePrice
+      current.referencePrice,
+      current.id,
+      current.fingerprint
     );
-    state.lockedStrategies = { ...state.lockedStrategies, [state.symbol]: snapshot };
+    const existing = lockedStrategiesForSymbol();
+    const matchingIndex = existing.findIndex((locked) =>
+      locked.sourceFingerprint && locked.sourceFingerprint === current.fingerprint
+    );
+    const nextRecords = [...existing];
+    if (matchingIndex >= 0) {
+      snapshot.id = existing[matchingIndex].id;
+      nextRecords[matchingIndex] = snapshot;
+    } else {
+      nextRecords.unshift(snapshot);
+    }
+    state.lockedStrategies = { ...state.lockedStrategies, [state.symbol]: nextRecords.slice(0, 20) };
+    writeLockedStrategies(state.lockedStrategies);
+    renderLockedStrategy();
+    return true;
+  }
+
+  function lockCurrentStrategy() {
+    return state.currentIntradayStrategy ? lockIntradayStrategy(state.currentIntradayStrategy.id) : false;
+  }
+
+  function removeLockedStrategy(lockedId) {
+    const existing = lockedStrategiesForSymbol();
+    const nextRecords = existing.filter((locked, index) => (locked.id || `legacy-${index}`) !== lockedId);
+    if (nextRecords.length === existing.length) return false;
+    state.lockedStrategies = { ...state.lockedStrategies, [state.symbol]: nextRecords };
     writeLockedStrategies(state.lockedStrategies);
     renderLockedStrategy();
     return true;
   }
 
   function clearLockedStrategy() {
-    if (!state.lockedStrategies[state.symbol]) return false;
+    if (!lockedStrategiesForSymbol().length) return false;
     const next = { ...state.lockedStrategies };
     delete next[state.symbol];
     state.lockedStrategies = next;
@@ -2173,6 +2285,46 @@
     };
   }
 
+  function intradayStrategyFingerprint(strategy, m15) {
+    if (!strategy?.actionable) return `waiting-${strategy?.candidateBias || "neutral"}`;
+    const entryCenter = (strategy.entryLow + strategy.entryHigh) / 2;
+    const bucketSize = Math.max((m15?.atr || 0) * 0.6, entryCenter * 0.0005, 0.000001);
+    const entryBucket = Math.round(entryCenter / bucketSize);
+    const priorityCode = String(strategy.priority || "").split("·")[0].trim();
+    return `${strategy.bias}-${priorityCode}-${entryBucket}`;
+  }
+
+  function createIntradayStrategyRecord(strategy, rsiRisk, entryPrice, m15) {
+    const generatedAt = Date.now();
+    return {
+      id: `strategy-${state.symbol}-${generatedAt}-${Math.random().toString(36).slice(2, 7)}`,
+      symbol: state.symbol,
+      generatedAt,
+      referencePrice: Number.isFinite(entryPrice) ? entryPrice : null,
+      fingerprint: intradayStrategyFingerprint(strategy, m15),
+      strategy,
+      rsiRisk
+    };
+  }
+
+  function updateIntradayStrategyFeed(nextRecord) {
+    const previous = state.currentIntradayStrategy;
+    let history = [...(state.intradayStrategyHistory[state.symbol] || [])];
+    if (previous?.strategy?.actionable && previous.fingerprint !== nextRecord.fingerprint) {
+      history = [previous, ...history.filter((record) => record.fingerprint !== previous.fingerprint)].slice(0, 6);
+    }
+    if (nextRecord.strategy.actionable && previous?.fingerprint === nextRecord.fingerprint) {
+      nextRecord.id = previous.id;
+      nextRecord.generatedAt = previous.generatedAt;
+    }
+    if (nextRecord.strategy.actionable) {
+      history = history.filter((record) => record.fingerprint !== nextRecord.fingerprint);
+    }
+    state.currentIntradayStrategy = nextRecord;
+    state.intradayStrategyHistory = { ...state.intradayStrategyHistory, [state.symbol]: history };
+    renderIntradayStrategyHistory();
+  }
+
   function renderIntradayStrategy(results = state.analysisResults) {
     const hasFrames = Boolean(results?.h4 && results?.h1 && results?.m15);
     const entryPrice = Number.isFinite(state.book?.mid) ? state.book.mid : results?.m15?.price;
@@ -2202,16 +2354,12 @@
     const rsiRisk = intradayRsiRisk(results, strategy);
     $("strategy-rsi-risk-box").dataset.tone = rsiRisk.tone;
     $("strategy-rsi-risk").textContent = rsiRisk.text;
-    state.currentIntradayStrategy = {
-      symbol: state.symbol,
-      generatedAt: Date.now(),
-      referencePrice: Number.isFinite(entryPrice) ? entryPrice : null,
-      strategy,
-      rsiRisk
-    };
+    updateIntradayStrategyFeed(createIntradayStrategyRecord(strategy, rsiRisk, entryPrice, results?.m15));
     updateLockStrategyButton();
+    const historyCount = (state.intradayStrategyHistory[state.symbol] || []).length;
+    const historyCopy = historyCount ? ` · 保留此前${historyCount}条策略` : "";
     $("strategy-status").textContent = hasFrames
-      ? `日内去均线化：H4结构定方向、H1找机会、M15价格触发；${Number.isFinite(state.book?.mid) ? "入场区随实时中间价更新" : "暂用M15最近收盘作为入场参考"} · ${formatTime(Date.now())}`
+      ? `日内去均线化：H4结构定方向、H1找机会、M15价格触发；${Number.isFinite(state.book?.mid) ? "入场区随实时中间价更新" : "暂用M15最近收盘作为入场参考"}${historyCopy} · ${formatTime(Date.now())}`
       : "等待H4、H1与M15已收盘K线…";
   }
 
@@ -3364,8 +3512,19 @@
   $("ma20-toggle").addEventListener("click", () => toggleMovingAverage(20));
   $("ma60-toggle").addEventListener("click", () => toggleMovingAverage(60));
   $("lock-strategy-button").addEventListener("click", lockCurrentStrategy);
+  $("intraday-strategy-history").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-lock-strategy-id]");
+    if (button) lockIntradayStrategy(button.dataset.lockStrategyId);
+  });
+  $("locked-strategy-list").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-remove-locked-id]");
+    if (!button) return;
+    if (window.confirm("确认删除这条已锁定的日内策略吗？")) {
+      removeLockedStrategy(button.dataset.removeLockedId);
+    }
+  });
   $("clear-locked-strategy-button").addEventListener("click", () => {
-    if (window.confirm(`确认清除 ${state.symbol} 已锁定的日内策略吗？`)) clearLockedStrategy();
+    if (window.confirm(`确认清除 ${state.symbol} 的全部已锁定日内策略吗？`)) clearLockedStrategy();
   });
 
   $("chart-stage").addEventListener("pointermove", showTooltip, { passive: true });
