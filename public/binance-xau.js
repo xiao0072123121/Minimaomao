@@ -1716,6 +1716,47 @@
     return Number.isFinite(value) ? priceFormat.format(value) : "—";
   }
 
+  function intradayRsiRisk(results, strategy) {
+    const rsi = results?.m15?.rsi;
+    if (!Number.isFinite(rsi)) {
+      return { tone: "neutral", text: "M15 RSI数据不足；该提示不参与方向、评分或入场判断。" };
+    }
+    const value = rsi.toFixed(2);
+    const candidate = strategy.candidateBias === "bullish"
+      ? "当前候选方向为做多，"
+      : strategy.candidateBias === "bearish"
+        ? "当前候选方向为做空，"
+        : "当前尚无候选方向，";
+    if (rsi >= 70) {
+      return {
+        tone: "danger",
+        text: `M15 RSI=${value}，处于超买区。${candidate}做多需防范追涨与高位回落；超买不等于立即做空，仍以结构、位置和价格触发为准。`
+      };
+    }
+    if (rsi >= 60) {
+      return {
+        tone: "warning",
+        text: `M15 RSI=${value}，短线偏热。${candidate}若计划做多，避免远离入场区追价；仅作风险提示，不计入策略评分。`
+      };
+    }
+    if (rsi <= 30) {
+      return {
+        tone: "cool",
+        text: `M15 RSI=${value}，处于超卖区。${candidate}做空需防范追跌与快速反弹；超卖不等于立即做多，仍以结构、位置和价格触发为准。`
+      };
+    }
+    if (rsi <= 40) {
+      return {
+        tone: "cool",
+        text: `M15 RSI=${value}，短线偏弱并接近超卖。${candidate}若计划做空，避免远离入场区追价；仅作风险提示，不计入策略评分。`
+      };
+    }
+    return {
+      tone: "neutral",
+      text: `M15 RSI=${value}，处于中性区，暂无明显追涨或追跌风险；该提示不参与方向、评分或入场判断。`
+    };
+  }
+
   function renderIntradayStrategy(results = state.analysisResults) {
     const hasFrames = Boolean(results?.h4 && results?.h1 && results?.m15);
     const entryPrice = Number.isFinite(state.book?.mid) ? state.book.mid : results?.m15?.price;
@@ -1742,6 +1783,9 @@
       : "—";
     $("strategy-summary").textContent = strategy.summary;
     $("strategy-trigger").textContent = strategy.trigger;
+    const rsiRisk = intradayRsiRisk(results, strategy);
+    $("strategy-rsi-risk-box").dataset.tone = rsiRisk.tone;
+    $("strategy-rsi-risk").textContent = rsiRisk.text;
     $("strategy-status").textContent = hasFrames
       ? `日内去均线化：H4结构定方向、H1找机会、M15价格触发；${Number.isFinite(state.book?.mid) ? "入场区随实时中间价更新" : "暂用M15最近收盘作为入场参考"} · ${formatTime(Date.now())}`
       : "等待H4、H1与M15已收盘K线…";
