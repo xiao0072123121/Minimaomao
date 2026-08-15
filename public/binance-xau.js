@@ -784,12 +784,11 @@
 
   function describeRsi(value) {
     const number = value.toFixed(2);
-    if (value >= 70) return `RSI=${number}，进入超买区，趋势虽强但需防范高位回落。`;
-    if (value >= 60) return `RSI=${number}，处于偏强区域，多头动能占优。`;
-    if (value >= 50) return `RSI=${number}，位于中轴上方，多方略占优势。`;
-    if (value >= 40) return `RSI=${number}，处于偏弱区域，尚未进入超卖。`;
-    if (value >= 30) return `RSI=${number}，弱势并接近超卖，关注止跌信号。`;
-    return `RSI=${number}，进入超卖区，空头占优但反弹概率上升。`;
+    if (value >= 70) return `RSI=${number}，进入超买区，提示追多和高位回落风险；不据此反向做空。`;
+    if (value >= 60) return `RSI=${number}，短线偏热，做多应避免远离结构入场区追价。`;
+    if (value >= 40) return `RSI=${number}，处于中性区，暂无明显追涨或追跌风险。`;
+    if (value >= 30) return `RSI=${number}，短线偏弱并接近超卖，做空应避免追价。`;
+    return `RSI=${number}，进入超卖区，提示追空和快速反弹风险；不据此反向做多。`;
   }
 
   function describeMacd(macd) {
@@ -1054,15 +1053,16 @@
     const resistanceRejection = last.high >= levels.resistance - atr * 0.3 && bearishImpulse && last.close < previous.close;
     const volumeDirection = volume?.breakoutDirection || volume?.priceDirection || 0;
     const volumeStrength = Number.isFinite(volume?.ratio) && volume.ratio >= 1.2 ? Math.min(8, (volume.ratio - 1) * 10) : 0;
-    let baseScore = swing.score * 0.4;
-    baseScore += clamp(netMoveAtr / 2, -1, 1) * 25;
-    baseScore += clamp((rangePosition - 0.5) * 2, -1, 1) * 15;
-    baseScore += clamp(pressure, -1, 1) * 15;
-    baseScore += breakoutDirection * 25;
-    if (supportRejection) baseScore += 16;
-    if (resistanceRejection) baseScore -= 16;
+    const swingContribution = swing.score * 0.4;
+    const netMoveContribution = clamp(netMoveAtr / 2, -1, 1) * 25;
+    const rangeContribution = clamp((rangePosition - 0.5) * 2, -1, 1) * 15;
+    const pressureContribution = clamp(pressure, -1, 1) * 15;
+    const breakoutContribution = breakoutDirection * 25;
+    const rejectionContribution = (supportRejection ? 16 : 0) - (resistanceRejection ? 16 : 0);
+    let baseScore = swingContribution + netMoveContribution + rangeContribution + pressureContribution + breakoutContribution + rejectionContribution;
     baseScore = Math.round(clamp(baseScore, -100, 100));
-    const score = Math.round(clamp(baseScore + volumeDirection * volumeStrength, -100, 100));
+    const volumeContribution = volumeDirection * volumeStrength;
+    const score = Math.round(clamp(baseScore + volumeContribution, -100, 100));
     const sign = score >= 18 ? 1 : score <= -18 ? -1 : 0;
     const strong = Math.abs(score) >= 38;
 
@@ -1075,7 +1075,7 @@
         ? -1
         : 0;
     let triggerDirection = 0;
-    let triggerLabel = "等待M15价格触发";
+    let triggerLabel = "等待价格触发";
     if (supportRejection) {
       triggerDirection = 1;
       triggerLabel = "支撑区出现多头拒绝K线";
@@ -1102,12 +1102,21 @@
       bias: sign > 0 ? "bullish" : sign < 0 ? "bearish" : "neutral",
       strong,
       label,
+      swingContribution,
+      netMoveAtr,
+      netMoveContribution,
       rangePosition,
+      rangeContribution,
+      pressure,
+      pressureContribution,
       contextHigh,
       contextLow,
       breakoutDirection,
+      breakoutContribution,
       supportRejection,
       resistanceRejection,
+      rejectionContribution,
+      volumeContribution,
       bullishImpulse,
       bearishImpulse,
       triggerDirection,
@@ -1440,15 +1449,23 @@
     const { h4, h1, m15 } = results;
     const conclusions = {};
     if (h4) {
-      conclusions.h4 = `H4为${h4.marketState.label}（方向分${signed(h4.directionScore, 0)}）：${signalSummary(h4)}。${setupSummary(h4)}${proximityText(h4)}`;
+      const view = intradayFrameView(h4);
+      const direction = view.structure.strong
+        ? `已形成日内${view.structure.sign > 0 ? "做多" : "做空"}主方向`
+        : view.structure.sign
+          ? "已有方向倾向，但尚未达到H4强方向阈值"
+          : "尚未形成日内主方向";
+      conclusions.h4 = `H4为${view.structure.label}（结构分${signed(view.structure.score, 0)}），${direction}；价格结构条件多${view.longScore}、空${view.shortScore}。${proximityText(h4)}`;
     }
     if (h1) {
-      const relation = h1.opportunityContext || "与H4尚未形成明确共振";
-      conclusions.h1 = `H1为${h1.marketState.label}（方向分${signed(h1.directionScore, 0)}），${relation}：${signalSummary(h1)}。${setupSummary(h1)}${proximityText(h1)}`;
+      const view = intradayFrameView(h1);
+      const relation = intradayFrameRelation(h1, [h4], "H4");
+      conclusions.h1 = `H1为${view.structure.label}（结构分${signed(view.structure.score, 0)}），${relation}；价格结构条件多${view.longScore}、空${view.shortScore}。${proximityText(h1)}`;
     }
     if (m15) {
-      const relation = m15.opportunityContext || "上级周期尚未完全配合";
-      conclusions.m15 = `M15为${m15.marketState.label}（方向分${signed(m15.directionScore, 0)}），${relation}：${signalSummary(m15)}。${setupSummary(m15)}${proximityText(m15)}`;
+      const view = intradayFrameView(m15);
+      const relation = intradayFrameRelation(m15, [h4, h1], "H4/H1");
+      conclusions.m15 = `M15为${view.structure.label}（结构分${signed(view.structure.score, 0)}），${relation}；${view.structure.triggerLabel}，价格结构条件多${view.longScore}、空${view.shortScore}。${proximityText(m15)}`;
     }
     return conclusions;
   }
@@ -1567,6 +1584,85 @@
       score: Math.round(clamp(baseScore + volumeAdjustment, 0, 100)),
       volumeAdjustment
     };
+  }
+
+  function intradayStructureStrength(score) {
+    const strength = Math.abs(score);
+    if (strength >= 60) return { label: `强 · ${strength}/100`, tone: "high" };
+    if (strength >= 38) return { label: `明确 · ${strength}/100`, tone: "high" };
+    if (strength >= 18) return { label: `初步 · ${strength}/100`, tone: "medium" };
+    return { label: `中性 · ${strength}/100`, tone: "low" };
+  }
+
+  function intradayFrameView(result) {
+    const structure = result.intradayStructure;
+    const longCondition = intradayConditionScore(result, 1);
+    const shortCondition = intradayConditionScore(result, -1);
+    return {
+      structure,
+      longScore: longCondition.score,
+      shortScore: shortCondition.score,
+      baseLongScore: longCondition.baseScore,
+      baseShortScore: shortCondition.baseScore,
+      bias: structure.bias,
+      tone: structure.strong ? "ready" : structure.sign ? "wait" : "caution",
+      strength: intradayStructureStrength(structure.score)
+    };
+  }
+
+  function intradayStructureDetail(result) {
+    const structure = result.intradayStructure;
+    const pressureLabel = structure.pressure >= 0.12
+      ? "多头压力"
+      : structure.pressure <= -0.12
+        ? "空头压力"
+        : "多空压力均衡";
+    const breakoutLabel = structure.breakoutDirection > 0
+      ? "收盘突破前24根区间高点"
+      : structure.breakoutDirection < 0
+        ? "收盘跌破前24根区间低点"
+        : "尚未突破前24根价格区间";
+    const rejectionLabel = structure.supportRejection
+      ? "支撑区出现多头拒绝K线"
+      : structure.resistanceRejection
+        ? "压力区出现空头拒绝K线"
+        : "支撑压力附近暂无有效拒绝K线";
+    const volumeLabel = Math.abs(structure.volumeContribution) >= 0.5
+      ? `量能确认${signed(structure.volumeContribution, 0)}分`
+      : "量能本次不改变结构分";
+    return `摆动结构：${result.swing.label}（${signed(structure.swingContribution, 0)}）；近8根净变动${signed(structure.netMoveAtr, 2)} ATR（${signed(structure.netMoveContribution, 0)}）；收盘位于前24根区间${Math.round(structure.rangePosition * 100)}%位置（${signed(structure.rangeContribution, 0)}）；近6根为${pressureLabel}（${signed(structure.pressureContribution, 0)}）。${breakoutLabel}（${signed(structure.breakoutContribution, 0)}）；${rejectionLabel}（${signed(structure.rejectionContribution, 0)}）；${volumeLabel}。`;
+  }
+
+  function intradayOpportunityDetail(result, view = intradayFrameView(result)) {
+    const structure = view.structure;
+    const pair = `多方${view.longScore}、空方${view.shortScore}`;
+    const location = result.nearSupport
+      ? "当前靠近支撑，多方条件加分、空方避免追价"
+      : result.nearResistance
+        ? "当前靠近压力，空方条件加分、多方避免追价"
+        : "当前未处于支撑或压力近端";
+    if (!structure.sign) {
+      return `双向等待：${pair}；结构分尚未达到±18方向阈值，${location}。`;
+    }
+    const direction = structure.sign > 0 ? "多方" : "空方";
+    const threshold = structure.strong
+      ? `已达到±38强方向阈值，${direction}结构明确`
+      : `已达到初步方向阈值，但尚未达到±38强方向阈值`;
+    const trigger = result.key === "m15" ? `；价格触发：${structure.triggerLabel}` : "";
+    return `${pair}；${threshold}，${location}${trigger}。`;
+  }
+
+  function intradayFrameRelation(frame, higherFrames, label) {
+    const sign = frame?.intradayStructure?.sign || 0;
+    const available = higherFrames.filter((item) => item?.intradayStructure);
+    if (!sign) return "本周期尚未形成明确方向";
+    const directional = available.filter((item) => item.intradayStructure.sign !== 0);
+    if (!directional.length) return `${label}尚未形成明确结构方向`;
+    const aligned = directional.filter((item) => item.intradayStructure.sign === sign).length;
+    const opposed = directional.filter((item) => item.intradayStructure.sign === -sign).length;
+    if (opposed) return `与${label}至少一个结构方向相反，属于逆向信号`;
+    if (aligned === available.length) return `与${label}价格结构同向`;
+    return `${label}尚未完全形成同向结构`;
   }
 
   function intradayPriority(candidateSign, compositeScore, h4, h1, m15) {
@@ -2071,22 +2167,24 @@
   }
 
   function renderAnalysisCard(key, result, conclusion) {
-    $(`${key}-card`).dataset.bias = result.marketState.bias;
-    $(`${key}-state`).textContent = result.marketState.label;
-    $(`${key}-direction-score`).textContent = signed(result.directionScore, 0);
-    $(`${key}-direction-score`).className = result.directionScore >= 25
+    const view = intradayFrameView(result);
+    const structure = view.structure;
+    $(`${key}-card`).dataset.bias = view.bias;
+    $(`${key}-state`).textContent = structure.label;
+    $(`${key}-direction-score`).textContent = signed(structure.score, 0);
+    $(`${key}-direction-score`).className = structure.sign > 0
       ? "bullish"
-      : result.directionScore <= -25
+      : structure.sign < 0
         ? "bearish"
         : "neutral";
-    $(`${key}-setup-score`).textContent = `多${result.longSetup.score} · 空${result.shortSetup.score}`;
-    $(`${key}-setup-score`).className = result.opportunity.bias;
-    $(`${key}-setup-score`).dataset.tone = result.setup.tone;
-    $(`${key}-setup-score`).title = result.opportunity.label;
-    $(`${key}-confidence`).textContent = `${result.confidence.label} · ${result.confidenceScore}%`;
-    $(`${key}-confidence`).dataset.tone = result.confidence.tone;
-    $(`${key}-structure`).textContent = result.structure;
-    $(`${key}-opportunity`).textContent = opportunityDetail(result);
+    $(`${key}-setup-score`).textContent = `多${view.longScore} · 空${view.shortScore}`;
+    $(`${key}-setup-score`).className = view.bias;
+    $(`${key}-setup-score`).dataset.tone = view.tone;
+    $(`${key}-setup-score`).title = structure.label;
+    $(`${key}-confidence`).textContent = view.strength.label;
+    $(`${key}-confidence`).dataset.tone = view.strength.tone;
+    $(`${key}-structure`).textContent = intradayStructureDetail(result);
+    $(`${key}-opportunity`).textContent = intradayOpportunityDetail(result, view);
     $(`${key}-rsi`).textContent = describeRsi(result.rsi);
     $(`${key}-macd`).textContent = describeMacd(result.macd);
     $(`${key}-volume`).textContent = describeVolume(result.volume);
@@ -2161,7 +2259,7 @@
     });
     renderAnalysis(errors);
     const failed = Object.keys(errors).length;
-    $("analysis-status").textContent = `${failed ? `${failed}个周期延迟 · ` : ""}已收盘K线同口径计算 · 实时价仅展示 · 置信度非胜率 · ${formatTime(Date.now())}`;
+    $("analysis-status").textContent = `${failed ? `${failed}个周期延迟 · ` : ""}行情卡片与日内策略统一采用结构＋位置＋触发 · RSI/MACD仅提示 · ${formatTime(Date.now())}`;
   }
 
   function indicatorX(index, count, margin, innerW) {
