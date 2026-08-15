@@ -1,10 +1,16 @@
 (() => {
   const REST = "https://fapi.binance.com";
+  const HOUR = 60 * 60 * 1000;
   const DAY = 24 * 60 * 60 * 1000;
   const CACHE_DB = "binance-multi-asset-kline-cache";
   const CACHE_STORE = "datasets";
   const CACHE_VERSION = 1;
   const CACHE_MAX_AGE = 14 * DAY;
+  const MICROSTRUCTURE_CACHE_MAX_AGE = 30 * 60 * 1000;
+  const PROFILE_LOOKBACK = 30 * DAY;
+  const AGG_TRADE_LOOKBACK = 48 * 60 * 60 * 1000;
+  const DEPTH_HISTORY_WINDOW = 60 * 1000;
+  const MAX_AGG_TRADES = 48000;
   const LOCKED_STRATEGY_STORAGE_KEY = "minimaomao-locked-intraday-strategies-v1";
   const MAX_HISTORY_CANDLES = 10000;
 
@@ -113,8 +119,18 @@
     showMa60: true,
     loadToken: 0,
     analysisLoadToken: 0,
+    microstructureLoadToken: 0,
     analysisFrames: {},
     analysisResults: {},
+    marketMicrostructure: {
+      symbol: "XAUUSDT",
+      profileCandles: [],
+      aggregateTrades: [],
+      depthHistory: [],
+      profileStatus: "loading",
+      tradeCoverageHours: 0,
+      tradeWindowsPartial: 0
+    },
     currentIntradayStrategy: null,
     intradayStrategyHistory: {},
     lockedStrategies: {},
@@ -132,6 +148,7 @@
   let panRenderFrame = 0;
   let chartPanState = null;
   let resizeRenderFrame = 0;
+  let aggregateTradePollInFlight = false;
   const priceFormat = new Intl.NumberFormat("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2
@@ -194,6 +211,36 @@
       if (!database) return;
       const transaction = database.transaction(CACHE_STORE, "readwrite");
       transaction.objectStore(CACHE_STORE).put({ key, savedAt: Date.now(), candles });
+      transaction.oncomplete = () => database.close();
+      transaction.onerror = () => database.close();
+    } catch (_) {}
+  }
+
+  async function readDatasetCache(key, maxAge = MICROSTRUCTURE_CACHE_MAX_AGE) {
+    try {
+      const database = await openCacheDatabase();
+      if (!database) return null;
+      return await new Promise((resolve) => {
+        const transaction = database.transaction(CACHE_STORE, "readonly");
+        const request = transaction.objectStore(CACHE_STORE).get(key);
+        request.onsuccess = () => {
+          const record = request.result;
+          resolve(record && Date.now() - record.savedAt < maxAge ? record.payload : null);
+        };
+        request.onerror = () => resolve(null);
+        transaction.oncomplete = () => database.close();
+      });
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async function writeDatasetCache(key, payload) {
+    try {
+      const database = await openCacheDatabase();
+      if (!database) return;
+      const transaction = database.transaction(CACHE_STORE, "readwrite");
+      transaction.objectStore(CACHE_STORE).put({ key, savedAt: Date.now(), payload });
       transaction.oncomplete = () => database.close();
       transaction.onerror = () => database.close();
     } catch (_) {}
@@ -486,6 +533,15 @@
     state.historyLimited = false;
     state.analysisFrames = {};
     state.analysisResults = {};
+    state.marketMicrostructure = {
+      symbol: state.symbol,
+      profileCandles: [],
+      aggregateTrades: [],
+      depthHistory: [],
+      profileStatus: "loading",
+      tradeCoverageHours: 0,
+      tradeWindowsPartial: 0
+    };
     state.currentIntradayStrategy = null;
     state.directionStates = {};
     state.timelineStart = 0;
@@ -529,6 +585,7 @@
     seedCurrentData();
     loadHistory();
     loadAnalysis();
+    loadMicrostructure();
   }
 
   function setLiveStatus() {
@@ -623,7 +680,7 @@
       state.socket = null;
     }
     const streamSymbol = symbol.toLowerCase();
-    const socket = new WebSocket(`wss://fstream.binance.com/stream?streams=${streamSymbol}@bookTicker/${streamSymbol}@ticker`);
+    const socket = new WebSocket(`wss://fstream.binance.com/stream?streams=${streamSymbol}@bookTicker/${streamSymbol}@ticker/${streamSymbol}@depth20@500ms`);
     state.socket = socket;
 
     socket.addEventListener("open", () => {
@@ -639,14 +696,19 @@
         const message = JSON.parse(event.data);
         const stream = message.stream || "";
         const payload = message.data || message;
+        let quoteChanged = false;
         if (stream.endsWith("@bookTicker")) {
           state.book = parseBook(payload) ?? state.book;
           state.quoteAt = Number(payload.E) || Date.now();
+          quoteChanged = true;
         } else if (stream.endsWith("@ticker")) {
           state.ticker = parseTicker(payload) ?? state.ticker;
           state.quoteAt = Number(payload.E) || state.quoteAt || Date.now();
+          quoteChanged = true;
+        } else if (stream.includes("@depth20")) {
+          recordDepthSnapshot(payload);
         }
-        updateQuoteUI();
+        if (quoteChanged) updateQuoteUI();
       } catch (_) {}
     });
 
@@ -711,6 +773,174 @@
       item.closeTime < now &&
       [item.t, item.open, item.high, item.low, item.close].every(Number.isFinite)
     );
+  }
+
+  function parseAggregateTrade(payload) {
+    const id = Number(payload.a);
+    const price = Number(payload.p);
+    const quantity = Number(payload.q);
+    const time = Number(payload.T);
+    if (![id, price, quantity, time].every(Number.isFinite) || quantity <= 0) return null;
+    return { id, price, quantity, time, buyerMaker: Boolean(payload.m) };
+  }
+
+  function mergeAggregateTrades(...groups) {
+    const byId = new Map();
+    for (const trade of groups.flat()) {
+      if (trade && Number.isFinite(trade.id)) byId.set(trade.id, trade);
+    }
+    return [...byId.values()]
+      .filter((trade) => trade.time >= Date.now() - AGG_TRADE_LOOKBACK)
+      .sort((a, b) => a.time - b.time)
+      .slice(-MAX_AGG_TRADES);
+  }
+
+  async function fetchAggregateTradeHistory(symbol) {
+    const endTime = Date.now();
+    const startTime = endTime - AGG_TRADE_LOOKBACK;
+    const windows = [];
+    for (let cursor = startTime; cursor < endTime; cursor += HOUR) {
+      windows.push({ start: cursor, end: Math.min(endTime, cursor + HOUR - 1) });
+    }
+    const trades = [];
+    let completedWindows = 0;
+    let partialWindows = 0;
+    for (let index = 0; index < windows.length; index += 4) {
+      const batch = windows.slice(index, index + 4);
+      const results = await Promise.all(batch.map(async (windowRange) => {
+        try {
+          const url = new URL(`${REST}/fapi/v1/aggTrades`);
+          url.searchParams.set("symbol", symbol);
+          url.searchParams.set("startTime", String(windowRange.start));
+          url.searchParams.set("endTime", String(windowRange.end));
+          url.searchParams.set("limit", "1000");
+          const payload = await fetchJson(url);
+          return { payload, ok: true };
+        } catch (_) {
+          return { payload: [], ok: false };
+        }
+      }));
+      for (const result of results) {
+        if (!result.ok) continue;
+        completedWindows += 1;
+        if (result.payload.length >= 1000) partialWindows += 1;
+        trades.push(...result.payload.map(parseAggregateTrade).filter(Boolean));
+      }
+    }
+    return {
+      trades: mergeAggregateTrades(trades),
+      coverageHours: completedWindows,
+      partialWindows
+    };
+  }
+
+  async function refreshRecentAggregateTrades() {
+    if (aggregateTradePollInFlight) return;
+    aggregateTradePollInFlight = true;
+    const symbol = state.symbol;
+    try {
+      const url = new URL(`${REST}/fapi/v1/aggTrades`);
+      url.searchParams.set("symbol", symbol);
+      url.searchParams.set("limit", "1000");
+      const payload = await fetchJson(url);
+      if (symbol !== state.symbol) return;
+      state.marketMicrostructure.aggregateTrades = mergeAggregateTrades(
+        state.marketMicrostructure.aggregateTrades,
+        payload.map(parseAggregateTrade).filter(Boolean)
+      );
+    } catch (_) {
+      // Historical profile and the existing structure model remain available.
+    } finally {
+      aggregateTradePollInFlight = false;
+    }
+  }
+
+  function parseDepthLevels(levels) {
+    return (levels || []).map(([price, quantity]) => ({
+      price: Number(price),
+      quantity: Number(quantity)
+    })).filter((level) => Number.isFinite(level.price) && Number.isFinite(level.quantity) && level.quantity > 0);
+  }
+
+  function recordDepthSnapshot(payload) {
+    if (state.marketMicrostructure.symbol !== state.symbol) return;
+    const bids = parseDepthLevels(payload.bids || payload.b);
+    const asks = parseDepthLevels(payload.asks || payload.a);
+    if (!bids.length || !asks.length) return;
+    const now = Number(payload.E) || Date.now();
+    const history = state.marketMicrostructure.depthHistory;
+    history.push({ time: now, bids, asks });
+    while (history.length && history[0].time < now - DEPTH_HISTORY_WINDOW) history.shift();
+  }
+
+  function microstructureStatusText() {
+    const micro = state.marketMicrostructure;
+    if (micro.profileStatus === "ready") {
+      const exact = micro.tradeCoverageHours
+        ? `真实成交已采样${micro.tradeCoverageHours}个小时窗口${micro.tradeWindowsPartial ? `（${micro.tradeWindowsPartial}个窗口达到1000条上限）` : ""}`
+        : "真实成交等待补充";
+      return `30日成交分布已加载 · ${exact}`;
+    }
+    if (micro.profileCandles.length) return "已使用本地成交分布缓存 · 正在同步真实成交";
+    return "成交分布加载中 · 暂用价格结构降级判断";
+  }
+
+  function refreshAnalysisForMicrostructure() {
+    if (state.analysisFrames.h4 && state.analysisFrames.h1 && state.analysisFrames.m15) {
+      renderAnalysis();
+      $("analysis-status").textContent = `${microstructureStatusText()} · 深度实时修正 · ${formatTime(Date.now())}`;
+    }
+  }
+
+  async function loadMicrostructure() {
+    const token = ++state.microstructureLoadToken;
+    const symbol = state.symbol;
+    const candleKey = `micro:${symbol}:5m30d:v1`;
+    const tradeKey = `micro:${symbol}:agg48h:v1`;
+    const [cachedCandles, cachedTrades] = await Promise.all([
+      readDatasetCache(candleKey),
+      readDatasetCache(tradeKey)
+    ]);
+    if (token !== state.microstructureLoadToken || symbol !== state.symbol) return;
+    if (Array.isArray(cachedCandles)) state.marketMicrostructure.profileCandles = cachedCandles;
+    if (cachedTrades?.trades) {
+      state.marketMicrostructure.aggregateTrades = mergeAggregateTrades(cachedTrades.trades);
+      state.marketMicrostructure.tradeCoverageHours = cachedTrades.coverageHours || 0;
+      state.marketMicrostructure.tradeWindowsPartial = cachedTrades.partialWindows || 0;
+    }
+    if (state.marketMicrostructure.profileCandles.length) {
+      state.marketMicrostructure.profileStatus = "ready";
+      refreshAnalysisForMicrostructure();
+    }
+    if (Array.isArray(cachedCandles) && cachedCandles.length >= 500 && cachedTrades?.trades?.length) return;
+
+    const endTime = Date.now();
+    const [candleResult, tradeResult] = await Promise.allSettled([
+      fetchCandles(symbol, "5m", endTime - PROFILE_LOOKBACK, endTime),
+      fetchAggregateTradeHistory(symbol)
+    ]);
+    if (token !== state.microstructureLoadToken || symbol !== state.symbol) return;
+    if (candleResult.status === "fulfilled" && candleResult.value.length >= 500) {
+      state.marketMicrostructure.profileCandles = candleResult.value;
+      state.marketMicrostructure.profileStatus = "ready";
+      writeDatasetCache(candleKey, candleResult.value);
+    } else {
+      state.marketMicrostructure.profileStatus = state.marketMicrostructure.profileCandles.length ? "ready" : "degraded";
+    }
+    if (tradeResult.status === "fulfilled") {
+      state.marketMicrostructure.aggregateTrades = mergeAggregateTrades(
+        tradeResult.value.trades,
+        state.marketMicrostructure.aggregateTrades
+      );
+      state.marketMicrostructure.tradeCoverageHours = tradeResult.value.coverageHours;
+      state.marketMicrostructure.tradeWindowsPartial = tradeResult.value.partialWindows;
+      writeDatasetCache(tradeKey, {
+        trades: state.marketMicrostructure.aggregateTrades,
+        coverageHours: tradeResult.value.coverageHours,
+        partialWindows: tradeResult.value.partialWindows
+      });
+    }
+    refreshAnalysisForMicrostructure();
   }
 
   function updateChartCopy() {
@@ -997,6 +1227,219 @@
     return 0;
   }
 
+  function median(values) {
+    const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
+    if (!sorted.length) return 0;
+    const middle = Math.floor(sorted.length / 2);
+    return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+  }
+
+  function addProfileVolume(profile, price, volume, binSize) {
+    if (![price, volume, binSize].every(Number.isFinite) || volume <= 0 || binSize <= 0) return;
+    const index = Math.round(price / binSize);
+    profile.set(index, (profile.get(index) || 0) + volume);
+  }
+
+  function normalizeProfile(profile) {
+    const maximum = Math.max(...profile.values(), 0);
+    const normalized = new Map();
+    if (!maximum) return normalized;
+    for (const [index, value] of profile) normalized.set(index, value / maximum);
+    return normalized;
+  }
+
+  function buildVolumeProfile(microstructure, price, atr, frameKey) {
+    const profileCandles = microstructure?.profileCandles || [];
+    const aggregateTrades = microstructure?.aggregateTrades || [];
+    if (profileCandles.length < 100 && aggregateTrades.length < 100) return { available: false, zones: [] };
+    const frameConfig = {
+      d1: { lookback: 30 * DAY, exactLookback: 48 * HOUR, approximateWeight: 0.8, exactWeight: 0.2, binAtr: 0.16 },
+      h4: { lookback: 30 * DAY, exactLookback: 48 * HOUR, approximateWeight: 0.7, exactWeight: 0.3, binAtr: 0.13 },
+      h1: { lookback: 7 * DAY, exactLookback: 48 * HOUR, approximateWeight: 0.5, exactWeight: 0.5, binAtr: 0.11 },
+      m15: { lookback: 2 * DAY, exactLookback: 24 * HOUR, approximateWeight: 0.35, exactWeight: 0.65, binAtr: 0.09 }
+    }[frameKey] || { lookback: 7 * DAY, exactLookback: 48 * HOUR, approximateWeight: 0.5, exactWeight: 0.5, binAtr: 0.11 };
+    const binSize = Math.max(atr * frameConfig.binAtr, price * 0.00012, 0.000001);
+    const now = Date.now();
+    const approximate = new Map();
+    for (const candle of profileCandles) {
+      if (candle.t < now - frameConfig.lookback || !Number.isFinite(candle.volume) || candle.volume <= 0) continue;
+      const lowIndex = Math.round(candle.low / binSize);
+      const highIndex = Math.round(candle.high / binSize);
+      const typicalIndex = Math.round(((candle.high + candle.low + candle.close) / 3) / binSize);
+      const startIndex = Math.min(lowIndex, highIndex);
+      const endIndex = Math.max(lowIndex, highIndex);
+      const count = Math.max(1, endIndex - startIndex + 1);
+      const weights = [];
+      let weightTotal = 0;
+      for (let index = startIndex; index <= endIndex; index += 1) {
+        const distance = Math.abs(index - typicalIndex) / Math.max(1, count);
+        const weight = Math.max(0.2, 1 - distance * 1.6);
+        weights.push([index, weight]);
+        weightTotal += weight;
+      }
+      for (const [index, weight] of weights) {
+        approximate.set(index, (approximate.get(index) || 0) + candle.volume * weight / weightTotal);
+      }
+    }
+    const exact = new Map();
+    for (const trade of aggregateTrades) {
+      if (trade.time < now - frameConfig.exactLookback) continue;
+      addProfileVolume(exact, trade.price, trade.quantity, binSize);
+    }
+    const approximateNormalized = normalizeProfile(approximate);
+    const exactNormalized = normalizeProfile(exact);
+    const indexes = new Set([...approximateNormalized.keys(), ...exactNormalized.keys()]);
+    const combined = [...indexes].map((index) => ({
+      index,
+      price: index * binSize,
+      score: (approximateNormalized.get(index) || 0) * frameConfig.approximateWeight +
+        (exactNormalized.get(index) || 0) * frameConfig.exactWeight
+    })).filter((bin) => bin.score > 0).sort((a, b) => a.index - b.index);
+    if (!combined.length) return { available: false, zones: [] };
+    const poc = combined.reduce((best, bin) => bin.score > best.score ? bin : best, combined[0]);
+    const totalScore = combined.reduce((sum, bin) => sum + bin.score, 0);
+    let accumulated = 0;
+    const valueBins = [];
+    for (const bin of [...combined].sort((a, b) => b.score - a.score)) {
+      valueBins.push(bin);
+      accumulated += bin.score;
+      if (accumulated >= totalScore * 0.7) break;
+    }
+    const valueLow = Math.min(...valueBins.map((bin) => bin.price));
+    const valueHigh = Math.max(...valueBins.map((bin) => bin.price));
+    const nodes = [];
+    for (let index = 0; index < combined.length; index += 1) {
+      const bin = combined[index];
+      const previous = combined[index - 1]?.score || 0;
+      const next = combined[index + 1]?.score || 0;
+      if (bin.score >= 0.45 && bin.score >= previous && bin.score >= next) {
+        nodes.push({ ...bin, type: bin.index === poc.index ? "POC" : "HVN" });
+      }
+    }
+    for (const [edgePrice, type] of [[valueLow, "VAL"], [valueHigh, "VAH"]]) {
+      if (!nodes.some((node) => Math.abs(node.price - edgePrice) <= binSize)) {
+        const edge = combined.reduce((best, bin) => Math.abs(bin.price - edgePrice) < Math.abs(best.price - edgePrice) ? bin : best, combined[0]);
+        nodes.push({ ...edge, type });
+      }
+    }
+    const zones = nodes.map((node) => ({
+      center: node.price,
+      low: node.price - binSize * 0.65,
+      high: node.price + binSize * 0.65,
+      profileScore: Math.round(clamp((node.type === "POC" ? 32 : node.type === "HVN" ? 25 : 20) + node.score * 8, 0, 40)),
+      nodeType: node.type,
+      density: node.score
+    }));
+    return {
+      available: true,
+      binSize,
+      poc: poc.price,
+      valueLow,
+      valueHigh,
+      exactSamples: aggregateTrades.filter((trade) => trade.time >= now - frameConfig.exactLookback).length,
+      zones
+    };
+  }
+
+  function depthAdjustmentForZone(zone, side, price, atr, depthHistory) {
+    if (!depthHistory?.length || distanceToLevelZone(price, zone) > atr * 1.2) {
+      return { score: 0, label: "未进入深度观察范围", persistence: 0 };
+    }
+    const expandedLow = zone.low - atr * 0.18;
+    const expandedHigh = zone.high + atr * 0.18;
+    let strongSnapshots = 0;
+    let latestRatio = 0;
+    for (const snapshot of depthHistory) {
+      const levels = side === "support" ? snapshot.bids : snapshot.asks;
+      const baseline = median(levels.map((level) => level.quantity));
+      const relevant = levels.filter((level) => level.price >= expandedLow && level.price <= expandedHigh);
+      const ratio = baseline > 0 && relevant.length
+        ? Math.max(...relevant.map((level) => level.quantity / baseline))
+        : 0;
+      if (ratio >= 2.5) strongSnapshots += 1;
+      if (snapshot === depthHistory[depthHistory.length - 1]) latestRatio = ratio;
+    }
+    const persistence = strongSnapshots / depthHistory.length;
+    const latest = depthHistory[depthHistory.length - 1];
+    const bidTotal = latest.bids.reduce((sum, level) => sum + level.quantity, 0);
+    const askTotal = latest.asks.reduce((sum, level) => sum + level.quantity, 0);
+    const preferredShare = side === "support"
+      ? bidTotal / Math.max(0.000001, bidTotal + askTotal)
+      : askTotal / Math.max(0.000001, bidTotal + askTotal);
+    let score = clamp((preferredShare - 0.5) * 12, -3, 3);
+    let label = "深度中性";
+    if (persistence >= 0.25 && latestRatio >= 2.5) {
+      score += Math.min(12, persistence * 8 + Math.max(0, latestRatio - 2.5) * 1.5);
+      label = `${side === "support" ? "买墙" : "卖墙"}持续${Math.round(persistence * 100)}%`;
+    } else if (persistence >= 0.25 && latestRatio < 1.2) {
+      score -= 6;
+      label = "历史挂单墙已撤离";
+    }
+    return { score: Math.round(clamp(score, -15, 15)), label, persistence };
+  }
+
+  function combineStructureAndProfileZones(structureZones, profile, side, price, atr, depthHistory) {
+    if (!profile.available) return structureZones.map((zone) => ({ ...zone, scoringMode: "structure" }));
+    const matchDistance = Math.max(atr * 0.55, profile.binSize * 1.5);
+    const candidates = [];
+    for (const profileZone of profile.zones) {
+      if (side === "support" ? profileZone.center >= price + atr * 0.12 : profileZone.center <= price - atr * 0.12) continue;
+      const structure = [...structureZones].sort((a, b) => Math.abs(a.center - profileZone.center) - Math.abs(b.center - profileZone.center))[0];
+      const matched = structure && Math.abs(structure.center - profileZone.center) <= matchDistance ? structure : null;
+      const reactionScore = matched ? Math.min(25, matched.touches * 4 + matched.rejections * 6) : 0;
+      const roleRecencyScore = matched
+        ? Math.min(15, (matched.roleReversal ? 7 : 0) + 8 * Math.exp(-matched.age / 20))
+        : 2;
+      const merged = {
+        ...(matched || {}),
+        side,
+        center: matched ? (matched.center * 0.35 + profileZone.center * 0.65) : profileZone.center,
+        low: Math.min(profileZone.low, matched?.low ?? profileZone.low),
+        high: Math.max(profileZone.high, matched?.high ?? profileZone.high),
+        touches: matched?.touches || 0,
+        rejections: matched?.rejections || 0,
+        age: matched?.age ?? 999,
+        roleReversal: Boolean(matched?.roleReversal),
+        averageVolumeRatio: matched?.averageVolumeRatio || 1,
+        nodeType: profileZone.nodeType,
+        density: profileZone.density,
+        source: matched ? `${profileZone.nodeType}成交密集＋价格反应` : `${profileZone.nodeType}成交密集`,
+        scoringMode: "volume-profile",
+        scoreComponents: {
+          volumeProfile: profileZone.profileScore,
+          reaction: reactionScore,
+          multiFrame: 0,
+          roleRecency: Math.round(roleRecencyScore),
+          depth: 0
+        }
+      };
+      const depth = depthAdjustmentForZone(merged, side, price, atr, depthHistory);
+      merged.depthLabel = depth.label;
+      merged.depthAdjustment = depth.score;
+      merged.scoreComponents.depth = depth.score;
+      merged.baseStrength = merged.scoreComponents.volumeProfile + reactionScore + roleRecencyScore;
+      merged.strength = Math.round(clamp(merged.baseStrength + depth.score, 0, 100));
+      candidates.push(merged);
+    }
+    for (const structure of structureZones) {
+      if (candidates.some((zone) => Math.abs(zone.center - structure.center) <= matchDistance)) continue;
+      const reactionScore = Math.min(25, structure.touches * 4 + structure.rejections * 6);
+      const roleRecencyScore = Math.min(15, (structure.roleReversal ? 7 : 0) + 8 * Math.exp(-structure.age / 20));
+      const depth = depthAdjustmentForZone(structure, side, price, atr, depthHistory);
+      candidates.push({
+        ...structure,
+        scoringMode: "structure-with-profile",
+        source: `${structure.source}（非成交密集）`,
+        scoreComponents: { volumeProfile: 0, reaction: reactionScore, multiFrame: 0, roleRecency: Math.round(roleRecencyScore), depth: depth.score },
+        depthLabel: depth.label,
+        depthAdjustment: depth.score,
+        baseStrength: reactionScore + roleRecencyScore,
+        strength: Math.round(clamp(reactionScore + roleRecencyScore + depth.score, 0, 100))
+      });
+    }
+    return candidates;
+  }
+
   function clusterLevelPoints(points, candles, price, atr, lookback, side) {
     if (!points.length) return [];
     const clusterDistance = Math.max(atr * 0.28, price * 0.00035);
@@ -1085,7 +1528,7 @@
     })[0];
   }
 
-  function findLevels(candles, price, atr, lookback) {
+  function findLevels(candles, price, atr, lookback, microstructure = null, frameKey = "h1") {
     const recent = candles.slice(-lookback);
     const validVolumes = recent
       .map((candle) => candle.volume)
@@ -1134,6 +1577,23 @@
       const high = Math.max(...recent.map((candle) => candle.high));
       resistanceZones = [fallbackLevelZone(high > price ? high : price + atr * 1.5, atr, "resistance")];
     }
+    const volumeProfile = buildVolumeProfile(microstructure, price, atr, frameKey);
+    supportZones = combineStructureAndProfileZones(
+      supportZones,
+      volumeProfile,
+      "support",
+      price,
+      atr,
+      microstructure?.depthHistory
+    );
+    resistanceZones = combineStructureAndProfileZones(
+      resistanceZones,
+      volumeProfile,
+      "resistance",
+      price,
+      atr,
+      microstructure?.depthHistory
+    );
     const supportZone = selectPrimaryLevelZone(supportZones, price, atr);
     const resistanceZone = selectPrimaryLevelZone(resistanceZones, price, atr);
     return {
@@ -1142,7 +1602,8 @@
       supportZone,
       resistanceZone,
       supportZones,
-      resistanceZones
+      resistanceZones,
+      volumeProfile
     };
   }
 
@@ -1586,7 +2047,7 @@
     if (![price, ma20, ma60, rsi, atr].every(Number.isFinite) || !macd) {
       throw new Error(`${config.label}指标计算失败`);
     }
-    const levels = findLevels(candles, price, atr, config.lookback);
+    const levels = findLevels(candles, price, atr, config.lookback, state.marketMicrostructure, config.key);
     const ma20Series = calculateSmaSeries(candles, 20);
     const ma60Series = calculateSmaSeries(candles, 60);
     const lastIndex = candles.length - 1;
@@ -1674,6 +2135,7 @@
       resistanceLevel: levels.resistanceZone,
       supportLevels: levels.supportZones,
       resistanceLevels: levels.resistanceZones,
+      volumeProfile: levels.volumeProfile,
       supportZone: formatZone(levels.supportZone, atr),
       resistanceZone: formatZone(levels.resistanceZone, atr),
       analysisSupportZone: formatAnalysisZone(levels.supportZone, atr),
@@ -1714,7 +2176,37 @@
     return `关注支撑 ${result.analysisSupportZone} 与压力 ${result.analysisResistanceZone}。`;
   }
 
+  function applySupportResistanceConfluence(results) {
+    const frames = [results.d1, results.h4, results.h1, results.m15].filter(Boolean);
+    for (const frame of frames) {
+      for (const side of ["support", "resistance"]) {
+        const zones = side === "support" ? frame.supportLevels : frame.resistanceLevels;
+        for (const zone of zones || []) {
+          if (!zone.scoreComponents) continue;
+          const alignedFrames = new Set([frame.key]);
+          for (const other of frames) {
+            if (other.key === frame.key) continue;
+            const otherZones = side === "support" ? other.supportLevels : other.resistanceLevels;
+            const threshold = Math.max(frame.atr * 0.55, other.atr * 0.35, frame.price * 0.0003);
+            if ((otherZones || []).some((candidate) => Math.abs(candidate.center - zone.center) <= threshold)) {
+              alignedFrames.add(other.key);
+            }
+          }
+          zone.timeframes = [...alignedFrames];
+          zone.confluence = alignedFrames.size;
+          zone.scoreComponents.multiFrame = Math.min(20, (alignedFrames.size - 1) * 10);
+          zone.strength = Math.round(clamp(
+            zone.baseStrength + zone.scoreComponents.multiFrame + (zone.depthAdjustment || 0),
+            0,
+            100
+          ));
+        }
+      }
+    }
+  }
+
   function applyMultiFrameContext(results) {
+    applySupportResistanceConfluence(results);
     const { h4, h1, m15 } = results;
     if (h1 && h4) {
       const opportunityBias = h1.opportunity.bias;
@@ -2093,8 +2585,14 @@
 
   function describeLevelZone(zone) {
     if (!zone) return "强度未知";
+    if (zone.scoreComponents) {
+      const components = zone.scoreComponents;
+      const depth = components.depth > 0 ? `+${components.depth}` : String(components.depth || 0);
+      const node = zone.nodeType ? `${zone.nodeType} · ` : "";
+      return `${node}强度${zone.strength}/100，成交密集${components.volumeProfile}/40、价格反应${components.reaction}/25、多周期${components.multiFrame}/20、角色/时效${components.roleRecency}/15、深度${depth}（${zone.depthLabel || "中性"}）`;
+    }
     const role = zone.roleReversal ? "，包含突破后角色互换" : "";
-    return `强度${zone.strength}/100，触碰${zone.touches}次、有效反应${zone.rejections}次${role}`;
+    return `结构降级：强度${zone.strength}/100，触碰${zone.touches}次、有效反应${zone.rejections}次${role}`;
   }
 
   function intradayPriority(candidateSign, compositeScore, h4, h1, m15) {
@@ -2735,7 +3233,7 @@
     });
     renderAnalysis(errors);
     const failed = Object.keys(errors).length;
-    $("analysis-status").textContent = `${failed ? `${failed}个周期延迟 · ` : ""}行情卡片与日内策略统一采用结构＋位置＋触发 · RSI/MACD仅提示 · ${formatTime(Date.now())}`;
+    $("analysis-status").textContent = `${failed ? `${failed}个周期延迟 · ` : ""}${microstructureStatusText()} · 行情卡片与日内策略统一采用成交密集＋结构＋位置＋触发 · ${formatTime(Date.now())}`;
   }
 
   function indicatorX(index, count, margin, innerW) {
@@ -3555,11 +4053,14 @@
   seedCurrentData();
   loadHistory();
   loadAnalysis();
+  loadMicrostructure();
   connectBinance();
   setInterval(() => {
     if (!state.wsOk) seedCurrentData();
   }, 5000);
   setInterval(setLiveStatus, 1000);
+  setInterval(refreshAnalysisForMicrostructure, 10000);
+  setInterval(refreshRecentAggregateTrades, 15000);
   setInterval(loadHistory, 60000);
   setInterval(loadAnalysis, 60000);
 })();
