@@ -5,6 +5,7 @@
   const CACHE_STORE = "datasets";
   const CACHE_VERSION = 1;
   const CACHE_MAX_AGE = 14 * DAY;
+  const LOCKED_STRATEGY_STORAGE_KEY = "minimaomao-locked-intraday-strategies-v1";
   const MAX_HISTORY_CANDLES = 10000;
 
   const SYMBOLS = {
@@ -114,6 +115,8 @@
     analysisLoadToken: 0,
     analysisFrames: {},
     analysisResults: {},
+    currentIntradayStrategy: null,
+    lockedStrategies: {},
     directionStates: {},
     socket: null,
     socketGeneration: 0,
@@ -220,6 +223,128 @@
     return `${value > 0 ? "+" : ""}${value.toFixed(digits)}`;
   }
 
+  function readLockedStrategies() {
+    try {
+      const parsed = JSON.parse(window.localStorage.getItem(LOCKED_STRATEGY_STORAGE_KEY) || "{}");
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function writeLockedStrategies(strategies) {
+    try {
+      window.localStorage.setItem(LOCKED_STRATEGY_STORAGE_KEY, JSON.stringify(strategies));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function createLockedStrategySnapshot(strategy, rsiRisk, symbol, lockedAt, referencePrice) {
+    return {
+      version: 1,
+      symbol,
+      lockedAt,
+      referencePrice: Number.isFinite(referencePrice) ? referencePrice : null,
+      bias: strategy.bias,
+      candidateBias: strategy.candidateBias,
+      directionLabel: strategy.directionLabel,
+      priority: strategy.priority,
+      score: strategy.score,
+      longScore: strategy.longScore,
+      shortScore: strategy.shortScore,
+      entryLow: strategy.entryLow,
+      entryHigh: strategy.entryHigh,
+      stopLoss: strategy.stopLoss,
+      takeProfit: strategy.takeProfit,
+      target: strategy.target,
+      rewardRisk1: strategy.rewardRisk1,
+      rewardRisk2: strategy.rewardRisk2,
+      summary: strategy.summary,
+      trigger: strategy.trigger,
+      levelNote: strategy.levelNote || "",
+      rsiRisk: rsiRisk?.text || "—",
+      rsiTone: rsiRisk?.tone || "neutral"
+    };
+  }
+
+  function updateLockStrategyButton() {
+    const button = $("lock-strategy-button");
+    if (!button) return;
+    const current = state.currentIntradayStrategy;
+    const canLock = Boolean(current?.strategy?.actionable && current.symbol === state.symbol);
+    button.disabled = !canLock;
+    button.title = canLock
+      ? "保存当前日内策略快照；后续实时策略仍会继续更新"
+      : "仅可锁定当前可执行的 A/B 级日内策略";
+    button.textContent = canLock
+      ? state.lockedStrategies[state.symbol] ? "更新锁定策略" : "锁定当前策略"
+      : "暂无可锁定策略";
+  }
+
+  function renderLockedStrategy() {
+    const card = $("locked-strategy");
+    if (!card) return;
+    const locked = state.lockedStrategies[state.symbol];
+    const hasLocked = Boolean(locked);
+    card.dataset.empty = String(!hasLocked);
+    card.dataset.bias = locked?.bias || "neutral";
+    $("locked-strategy-empty").hidden = hasLocked;
+    $("locked-strategy-content").hidden = !hasLocked;
+    $("clear-locked-strategy-button").disabled = !hasLocked;
+    if (!hasLocked) {
+      $("locked-strategy-status").textContent = `${state.symbol} 尚未锁定日内策略。`;
+      updateLockStrategyButton();
+      return;
+    }
+    const reference = Number.isFinite(locked.referencePrice) ? ` · 参考价 ${strategyPrice(locked.referencePrice)}` : "";
+    $("locked-strategy-status").textContent = `${locked.symbol} · 锁定于 ${formatTime(locked.lockedAt, true)}${reference} · 上方实时策略继续更新`;
+    $("locked-direction").textContent = locked.directionLabel;
+    $("locked-priority").textContent = locked.priority;
+    $("locked-entry").textContent = Number.isFinite(locked.entryLow) && Number.isFinite(locked.entryHigh)
+      ? `${strategyPrice(locked.entryLow)}–${strategyPrice(locked.entryHigh)}`
+      : "—";
+    $("locked-stop").textContent = strategyPrice(locked.stopLoss);
+    const takeProfitValues = [locked.takeProfit, locked.target].filter(Number.isFinite).map(strategyPrice);
+    $("locked-take-profit").textContent = takeProfitValues.length ? takeProfitValues.join(" / ") : "—";
+    $("locked-rr").textContent = Number.isFinite(locked.rewardRisk1) && Number.isFinite(locked.rewardRisk2)
+      ? `1:${locked.rewardRisk1.toFixed(2)} / 1:${locked.rewardRisk2.toFixed(2)}`
+      : "—";
+    $("locked-score").textContent = Number.isFinite(locked.score) ? `${locked.score} / 100` : "—";
+    $("locked-summary").textContent = locked.summary || "—";
+    $("locked-trigger").textContent = locked.trigger || "—";
+    $("locked-rsi-risk").textContent = locked.rsiRisk || "—";
+    $("locked-rsi-risk").parentElement.dataset.tone = locked.rsiTone || "neutral";
+    updateLockStrategyButton();
+  }
+
+  function lockCurrentStrategy() {
+    const current = state.currentIntradayStrategy;
+    if (!current?.strategy?.actionable || current.symbol !== state.symbol) return false;
+    const snapshot = createLockedStrategySnapshot(
+      current.strategy,
+      current.rsiRisk,
+      state.symbol,
+      Date.now(),
+      current.referencePrice
+    );
+    state.lockedStrategies = { ...state.lockedStrategies, [state.symbol]: snapshot };
+    writeLockedStrategies(state.lockedStrategies);
+    renderLockedStrategy();
+    return true;
+  }
+
+  function clearLockedStrategy() {
+    if (!state.lockedStrategies[state.symbol]) return false;
+    const next = { ...state.lockedStrategies };
+    delete next[state.symbol];
+    state.lockedStrategies = next;
+    writeLockedStrategies(state.lockedStrategies);
+    renderLockedStrategy();
+    return true;
+  }
+
   function setError(message = "") {
     const element = $("error-banner");
     element.textContent = message;
@@ -249,6 +374,7 @@
     state.historyLimited = false;
     state.analysisFrames = {};
     state.analysisResults = {};
+    state.currentIntradayStrategy = null;
     state.directionStates = {};
     state.timelineStart = 0;
     state.timelineEnd = 100;
@@ -273,6 +399,7 @@
     }
     renderIntradayStrategy({});
     renderPositionStrategy({});
+    renderLockedStrategy();
     setError("");
     hideTooltip();
     setLiveStatus();
@@ -742,44 +869,179 @@
     return atr;
   }
 
+  function levelZoneBounds(levelOrZone, atr) {
+    if (levelOrZone && Number.isFinite(levelOrZone.low) && Number.isFinite(levelOrZone.high)) {
+      return { low: levelOrZone.low, high: levelOrZone.high };
+    }
+    const level = Number(levelOrZone);
+    const halfWidth = Math.max(atr * 0.18, level * 0.00025);
+    return { low: level - halfWidth, high: level + halfWidth };
+  }
+
+  function distanceToLevelZone(price, zone) {
+    if (!zone) return Infinity;
+    if (price < zone.low) return zone.low - price;
+    if (price > zone.high) return price - zone.high;
+    return 0;
+  }
+
+  function clusterLevelPoints(points, candles, price, atr, lookback, side) {
+    if (!points.length) return [];
+    const clusterDistance = Math.max(atr * 0.28, price * 0.00035);
+    const padding = Math.max(atr * 0.08, price * 0.0001);
+    const sorted = [...points].sort((a, b) => a.price - b.price);
+    const clusters = [];
+    for (const point of sorted) {
+      const cluster = clusters[clusters.length - 1];
+      if (!cluster || Math.abs(point.price - cluster.center) > clusterDistance) {
+        clusters.push({ center: point.price, points: [point] });
+        continue;
+      }
+      cluster.points.push(point);
+      const totalWeight = cluster.points.reduce((sum, item) => sum + item.weight, 0);
+      cluster.center = cluster.points.reduce((sum, item) => sum + item.price * item.weight, 0) / totalWeight;
+    }
+    return clusters.map((cluster) => {
+      const uniqueIndexes = [...new Set(cluster.points.map((point) => point.index))];
+      const latestIndex = Math.max(...uniqueIndexes);
+      const age = Math.max(0, candles.length - 1 - latestIndex);
+      const recencyScore = 20 * Math.exp(-age / Math.max(1, lookback * 0.35));
+      let rejections = 0;
+      for (const index of uniqueIndexes) {
+        const reaction = candles.slice(index + 1, Math.min(candles.length, index + 4));
+        if (!reaction.length) continue;
+        const favorableMove = side === "support"
+          ? Math.max(...reaction.map((candle) => candle.high)) - cluster.center
+          : cluster.center - Math.min(...reaction.map((candle) => candle.low));
+        if (favorableMove >= atr * 0.55) rejections += 1;
+      }
+      const volumeRatios = cluster.points.map((point) => point.volumeRatio).filter(Number.isFinite);
+      const averageVolumeRatio = volumeRatios.length
+        ? volumeRatios.reduce((sum, value) => sum + value, 0) / volumeRatios.length
+        : 1;
+      const touchScore = Math.min(30, uniqueIndexes.length * 8);
+      const rejectionScore = Math.min(25, rejections * 8);
+      const volumeScore = clamp((averageVolumeRatio - 1) * 10, 0, 10);
+      const roleReversal = cluster.points.some((point) => point.roleReversal);
+      const distance = Math.abs(price - cluster.center);
+      const proximityScore = clamp(15 - distance / Math.max(atr * 4, 0.000001) * 15, 0, 15);
+      const strength = Math.round(clamp(
+        touchScore + rejectionScore + recencyScore + volumeScore + (roleReversal ? 12 : 0) + proximityScore,
+        0,
+        100
+      ));
+      return {
+        side,
+        center: cluster.center,
+        low: Math.min(...cluster.points.map((point) => point.price)) - padding,
+        high: Math.max(...cluster.points.map((point) => point.price)) + padding,
+        strength,
+        touches: uniqueIndexes.length,
+        rejections,
+        age,
+        roleReversal,
+        averageVolumeRatio,
+        source: roleReversal ? "角色互换" : "摆动聚类"
+      };
+    });
+  }
+
+  function fallbackLevelZone(level, atr, side) {
+    const bounds = levelZoneBounds(level, atr);
+    return {
+      side,
+      center: level,
+      low: bounds.low,
+      high: bounds.high,
+      strength: 20,
+      touches: 1,
+      rejections: 0,
+      age: 0,
+      roleReversal: false,
+      averageVolumeRatio: 1,
+      source: "区间备用"
+    };
+  }
+
+  function selectPrimaryLevelZone(zones, price, atr) {
+    return [...zones].sort((a, b) => {
+      const distancePenaltyA = Math.min(35, distanceToLevelZone(price, a) / Math.max(atr, 0.000001) * 7);
+      const distancePenaltyB = Math.min(35, distanceToLevelZone(price, b) / Math.max(atr, 0.000001) * 7);
+      const rankA = a.strength - distancePenaltyA;
+      const rankB = b.strength - distancePenaltyB;
+      return rankB - rankA || distanceToLevelZone(price, a) - distanceToLevelZone(price, b);
+    })[0];
+  }
+
   function findLevels(candles, price, atr, lookback) {
     const recent = candles.slice(-lookback);
-    const supports = [];
-    const resistances = [];
-    const separation = Math.max(atr * 0.15, price * 0.00025);
+    const validVolumes = recent
+      .map((candle) => candle.volume)
+      .filter((value) => Number.isFinite(value) && value > 0);
+    const averageVolume = validVolumes.length
+      ? validVolumes.reduce((sum, value) => sum + value, 0) / validVolumes.length
+      : 0;
+    const pivots = [];
     for (let index = 2; index < recent.length - 2; index += 1) {
       const candle = recent[index];
       const neighbors = [recent[index - 2], recent[index - 1], recent[index + 1], recent[index + 2]];
-      if (neighbors.every((item) => candle.low <= item.low) && candle.low < price - separation) {
-        supports.push(candle.low);
+      const volumeRatio = averageVolume > 0 && Number.isFinite(candle.volume) ? candle.volume / averageVolume : 1;
+      if (neighbors.every((item) => candle.low <= item.low)) {
+        pivots.push({ type: "low", price: candle.low, index, volumeRatio });
       }
-      if (neighbors.every((item) => candle.high >= item.high) && candle.high > price + separation) {
-        resistances.push(candle.high);
+      if (neighbors.every((item) => candle.high >= item.high)) {
+        pivots.push({ type: "high", price: candle.high, index, volumeRatio });
       }
     }
-    supports.sort((a, b) => b - a);
-    resistances.sort((a, b) => a - b);
-    let support = supports[0];
-    let resistance = resistances[0];
-    if (!Number.isFinite(support)) {
+    const separation = Math.max(atr * 0.12, price * 0.0002);
+    const supportPoints = [];
+    const resistancePoints = [];
+    for (const pivot of pivots) {
+      const ageWeight = 1 + Math.max(0, 1 - (recent.length - 1 - pivot.index) / Math.max(1, lookback));
+      const point = { ...pivot, weight: ageWeight + Math.min(1, pivot.volumeRatio / 2), roleReversal: false };
+      if (pivot.type === "low" && pivot.price < price + separation) supportPoints.push(point);
+      if (pivot.type === "high" && pivot.price > price - separation) resistancePoints.push(point);
+      if (pivot.type === "high" && pivot.price < price - separation) {
+        const broken = recent.slice(pivot.index + 1).some((candle) => candle.close > pivot.price + atr * 0.12);
+        if (broken) supportPoints.push({ ...point, roleReversal: true });
+      }
+      if (pivot.type === "low" && pivot.price > price + separation) {
+        const broken = recent.slice(pivot.index + 1).some((candle) => candle.close < pivot.price - atr * 0.12);
+        if (broken) resistancePoints.push({ ...point, roleReversal: true });
+      }
+    }
+    let supportZones = clusterLevelPoints(supportPoints, recent, price, atr, lookback, "support")
+      .filter((zone) => zone.center < price + separation);
+    let resistanceZones = clusterLevelPoints(resistancePoints, recent, price, atr, lookback, "resistance")
+      .filter((zone) => zone.center > price - separation);
+    if (!supportZones.length) {
       const low = Math.min(...recent.map((candle) => candle.low));
-      support = low < price ? low : price - atr * 1.5;
+      supportZones = [fallbackLevelZone(low < price ? low : price - atr * 1.5, atr, "support")];
     }
-    if (!Number.isFinite(resistance)) {
+    if (!resistanceZones.length) {
       const high = Math.max(...recent.map((candle) => candle.high));
-      resistance = high > price ? high : price + atr * 1.5;
+      resistanceZones = [fallbackLevelZone(high > price ? high : price + atr * 1.5, atr, "resistance")];
     }
-    return { support, resistance };
+    const supportZone = selectPrimaryLevelZone(supportZones, price, atr);
+    const resistanceZone = selectPrimaryLevelZone(resistanceZones, price, atr);
+    return {
+      support: supportZone.center,
+      resistance: resistanceZone.center,
+      supportZone,
+      resistanceZone,
+      supportZones,
+      resistanceZones
+    };
   }
 
-  function formatZone(level, atr) {
-    const halfWidth = Math.max(atr * 0.18, level * 0.00025);
-    return `${priceFormat.format(level - halfWidth)}–${priceFormat.format(level + halfWidth)}`;
+  function formatZone(levelOrZone, atr) {
+    const zone = levelZoneBounds(levelOrZone, atr);
+    return `${priceFormat.format(zone.low)}–${priceFormat.format(zone.high)}`;
   }
 
-  function formatAnalysisZone(level, atr) {
-    const halfWidth = Math.max(atr * 0.18, level * 0.00025);
-    return `${analysisPriceFormat.format(level - halfWidth)}–${analysisPriceFormat.format(level + halfWidth)}`;
+  function formatAnalysisZone(levelOrZone, atr) {
+    const zone = levelZoneBounds(levelOrZone, atr);
+    return `${analysisPriceFormat.format(zone.low)}–${analysisPriceFormat.format(zone.high)}`;
   }
 
   function describeRsi(value) {
@@ -1296,12 +1558,16 @@
       intradayStructure,
       support: levels.support,
       resistance: levels.resistance,
-      supportZone: formatZone(levels.support, atr),
-      resistanceZone: formatZone(levels.resistance, atr),
-      analysisSupportZone: formatAnalysisZone(levels.support, atr),
-      analysisResistanceZone: formatAnalysisZone(levels.resistance, atr),
-      nearSupport: Math.abs(price - levels.support) <= nearThreshold,
-      nearResistance: Math.abs(levels.resistance - price) <= nearThreshold,
+      supportLevel: levels.supportZone,
+      resistanceLevel: levels.resistanceZone,
+      supportLevels: levels.supportZones,
+      resistanceLevels: levels.resistanceZones,
+      supportZone: formatZone(levels.supportZone, atr),
+      resistanceZone: formatZone(levels.resistanceZone, atr),
+      analysisSupportZone: formatAnalysisZone(levels.supportZone, atr),
+      analysisResistanceZone: formatAnalysisZone(levels.resistanceZone, atr),
+      nearSupport: distanceToLevelZone(price, levels.supportZone) <= nearThreshold,
+      nearResistance: distanceToLevelZone(price, levels.resistanceZone) <= nearThreshold,
       lastClosedAt: last.closeTime
     };
     result.marketState = classifyMarketState(result);
@@ -1492,31 +1758,72 @@
     };
   }
 
-  function calculateIntradayLevels(bias, entry, h1, m15) {
+  function rankIntradayLevelZones(entry, frames, side) {
+    const timeframeBonus = { h4: 18, h1: 12, m15: 6 };
+    const availableFrames = frames.filter(Boolean);
+    const baseAtr = Math.max(
+      availableFrames.find((frame) => frame.key === "m15")?.atr || 0,
+      (availableFrames.find((frame) => frame.key === "h1")?.atr || 0) * 0.45,
+      entry * 0.00035
+    );
+    const confluenceDistance = Math.max(baseAtr * 0.45, entry * 0.00035);
+    const candidates = availableFrames.flatMap((frame) => {
+      const zones = side === "support" ? frame.supportLevels : frame.resistanceLevels;
+      return (zones || []).map((zone) => ({ ...zone, timeframe: frame.key }));
+    }).filter((zone) => side === "support" ? zone.center < entry : zone.center > entry);
+    const ranked = candidates.map((zone) => {
+      const nearbyFrames = new Set(candidates
+        .filter((candidate) => Math.abs(candidate.center - zone.center) <= confluenceDistance)
+        .map((candidate) => candidate.timeframe));
+      const confluenceBonus = Math.max(0, nearbyFrames.size - 1) * 14;
+      const distance = Math.abs(entry - zone.center);
+      const distancePenalty = Math.min(45, distance / Math.max(baseAtr, 0.000001) * 6);
+      return {
+        ...zone,
+        timeframes: [...nearbyFrames],
+        confluence: nearbyFrames.size,
+        rank: zone.strength + (timeframeBonus[zone.timeframe] || 0) + confluenceBonus - distancePenalty
+      };
+    }).sort((a, b) => b.rank - a.rank || Math.abs(entry - a.center) - Math.abs(entry - b.center));
+    const deduped = [];
+    for (const zone of ranked) {
+      if (deduped.some((item) => Math.abs(item.center - zone.center) <= confluenceDistance)) continue;
+      deduped.push(zone);
+    }
+    return deduped;
+  }
+
+  function intradayLevelBasis(zone, label, atr) {
+    if (!zone) return `${label}采用ATR推算`;
+    const frames = zone.timeframes?.map((key) => key.toUpperCase()).join("/") || zone.timeframe?.toUpperCase() || "当前周期";
+    return `${label}参考${frames}区域 ${formatZone(zone, atr)}（强度${zone.strength}/100${zone.confluence > 1 ? `，${zone.confluence}周期共振` : ""}）`;
+  }
+
+  function calculateIntradayLevels(bias, entry, h4, h1, m15) {
     const isLong = bias === "bullish";
     const atr = Math.max(m15.atr, entry * 0.00035);
     const entryPadding = Math.max(atr * 0.12, entry * 0.00008);
     const entryLow = isLong ? entry - entryPadding : entry - entryPadding * 0.35;
     const entryHigh = isLong ? entry + entryPadding * 0.35 : entry + entryPadding;
-    const supports = [m15.support, h1.support]
-      .filter((value) => Number.isFinite(value) && value < entry)
-      .sort((a, b) => b - a);
-    const resistances = [m15.resistance, h1.resistance]
-      .filter((value) => Number.isFinite(value) && value > entry)
-      .sort((a, b) => a - b);
+    const supports = rankIntradayLevelZones(entry, [h4, h1, m15], "support");
+    const resistances = rankIntradayLevelZones(entry, [h4, h1, m15], "resistance");
+    const supportTargets = [...supports].sort((a, b) => b.high - a.high);
+    const resistanceTargets = [...resistances].sort((a, b) => a.low - b.low);
+    const maximumStopZoneDistance = Math.max(atr * 5, h1.atr * 2.5, entry * 0.005);
     let stopLoss;
     let takeProfit;
     if (isLong) {
-      const stopAnchor = supports[0];
+      const stopZone = supports.find((zone) => distanceToLevelZone(entry, zone) <= maximumStopZoneDistance);
       const minimumRisk = Math.max(atr * 0.75, h1.atr * 0.18, entry * 0.0008);
-      stopLoss = Number.isFinite(stopAnchor)
-        ? Math.min(stopAnchor - atr * 0.2, entry - minimumRisk)
+      stopLoss = stopZone
+        ? Math.min(stopZone.low - atr * 0.2, entry - minimumRisk)
         : entry - minimumRisk;
       const risk = Math.max(atr * 0.35, entry - stopLoss);
       const projectedFirst = entry + risk * 1.5;
-      takeProfit = resistances[0] || projectedFirst;
-      const secondResistance = resistances.find((value) => value > takeProfit + atr * 0.2);
-      const target = Math.max(secondResistance || 0, entry + risk * 2.5);
+      const takeProfitZone = resistanceTargets.find((zone) => zone.low > entry);
+      takeProfit = takeProfitZone?.low || projectedFirst;
+      const secondResistance = resistanceTargets.find((zone) => zone.low > takeProfit + atr * 0.2);
+      const target = Math.max(secondResistance?.low || 0, entry + risk * 2.5);
       return {
         entryLow,
         entryHigh,
@@ -1525,19 +1832,23 @@
         target,
         rewardRisk1: Math.max(0, takeProfit - entry) / risk,
         rewardRisk2: Math.max(0, target - entry) / risk,
-        risk
+        risk,
+        stopLevelZone: stopZone || null,
+        takeProfitLevelZone: takeProfitZone || null,
+        levelNote: `${intradayLevelBasis(stopZone, "止损", atr)}；${intradayLevelBasis(takeProfitZone, "止盈", atr)}。`
       };
     }
-    const stopAnchor = resistances[0];
+    const stopZone = resistances.find((zone) => distanceToLevelZone(entry, zone) <= maximumStopZoneDistance);
     const minimumRisk = Math.max(atr * 0.75, h1.atr * 0.18, entry * 0.0008);
-    stopLoss = Number.isFinite(stopAnchor)
-      ? Math.max(stopAnchor + atr * 0.2, entry + minimumRisk)
+    stopLoss = stopZone
+      ? Math.max(stopZone.high + atr * 0.2, entry + minimumRisk)
       : entry + minimumRisk;
     const risk = Math.max(atr * 0.35, stopLoss - entry);
     const projectedFirst = entry - risk * 1.5;
-    takeProfit = supports[0] || projectedFirst;
-    const secondSupport = supports.find((value) => value < takeProfit - atr * 0.2);
-    const target = Math.min(Number.isFinite(secondSupport) ? secondSupport : Infinity, entry - risk * 2.5);
+    const takeProfitZone = supportTargets.find((zone) => zone.high < entry);
+    takeProfit = takeProfitZone?.high || projectedFirst;
+    const secondSupport = supportTargets.find((zone) => zone.high < takeProfit - atr * 0.2);
+    const target = Math.min(Number.isFinite(secondSupport?.high) ? secondSupport.high : Infinity, entry - risk * 2.5);
     return {
       entryLow,
       entryHigh,
@@ -1546,7 +1857,10 @@
       target,
       rewardRisk1: Math.max(0, entry - takeProfit) / risk,
       rewardRisk2: Math.max(0, entry - target) / risk,
-      risk
+      risk,
+      stopLevelZone: stopZone || null,
+      takeProfitLevelZone: takeProfitZone || null,
+      levelNote: `${intradayLevelBasis(stopZone, "止损", atr)}；${intradayLevelBasis(takeProfitZone, "止盈", atr)}。`
     };
   }
 
@@ -1665,6 +1979,12 @@
     return `${label}尚未完全形成同向结构`;
   }
 
+  function describeLevelZone(zone) {
+    if (!zone) return "强度未知";
+    const role = zone.roleReversal ? "，包含突破后角色互换" : "";
+    return `强度${zone.strength}/100，触碰${zone.touches}次、有效反应${zone.rejections}次${role}`;
+  }
+
   function intradayPriority(candidateSign, compositeScore, h4, h1, m15) {
     const h4Structure = h4?.intradayStructure;
     const h1Structure = h1.intradayStructure;
@@ -1763,7 +2083,7 @@
       );
     }
     const entry = Number.isFinite(entryPrice) ? entryPrice : m15.price;
-    const levels = calculateIntradayLevels(candidateBias, entry, h1, m15);
+    const levels = calculateIntradayLevels(candidateBias, entry, h4, h1, m15);
     const executionQuality = evaluateExecutionQuality(levels, candidateBias);
     const minimumRawRewardRisk = priority.code === "A"
       ? STRATEGY_FILTERS.intradayMinimumRawRewardRiskA
@@ -1771,9 +2091,9 @@
     const minimumCostAdjustedRewardRisk = priority.code === "A"
       ? STRATEGY_FILTERS.intradayMinimumCostAdjustedRewardRiskA
       : STRATEGY_FILTERS.intradayMinimumCostAdjustedRewardRiskB;
-    const structuralNote = candidateSign > 0
-      ? "止损设置在最近有效支撑下方，止盈优先参考真实压力位。"
-      : "止损设置在最近有效压力上方，止盈优先参考真实支撑位。";
+    const structuralNote = levels.levelNote || (candidateSign > 0
+      ? "止损设置在有效支撑区下方，止盈优先参考真实压力区。"
+      : "止损设置在有效压力区上方，止盈优先参考真实支撑区。");
     const trigger = candidateSign > 0
       ? `执行条件：${m15Structure.triggerLabel}；价格进入参考区后不得跌破 ${m15.supportZone}，触及结构止损则失效。`
       : `执行条件：${m15Structure.triggerLabel}；价格进入参考区后不得突破 ${m15.resistanceZone}，触及结构止损则失效。`;
@@ -1882,6 +2202,14 @@
     const rsiRisk = intradayRsiRisk(results, strategy);
     $("strategy-rsi-risk-box").dataset.tone = rsiRisk.tone;
     $("strategy-rsi-risk").textContent = rsiRisk.text;
+    state.currentIntradayStrategy = {
+      symbol: state.symbol,
+      generatedAt: Date.now(),
+      referencePrice: Number.isFinite(entryPrice) ? entryPrice : null,
+      strategy,
+      rsiRisk
+    };
+    updateLockStrategyButton();
     $("strategy-status").textContent = hasFrames
       ? `日内去均线化：H4结构定方向、H1找机会、M15价格触发；${Number.isFinite(state.book?.mid) ? "入场区随实时中间价更新" : "暂用M15最近收盘作为入场参考"} · ${formatTime(Date.now())}`
       : "等待H4、H1与M15已收盘K线…";
@@ -2188,7 +2516,7 @@
     $(`${key}-rsi`).textContent = describeRsi(result.rsi);
     $(`${key}-macd`).textContent = describeMacd(result.macd);
     $(`${key}-volume`).textContent = describeVolume(result.volume);
-    $(`${key}-levels`).textContent = `支撑 ${result.analysisSupportZone}；压力 ${result.analysisResistanceZone}；ATR(14)=${analysisPriceFormat.format(result.atr)}。`;
+    $(`${key}-levels`).textContent = `支撑 ${result.analysisSupportZone}（${describeLevelZone(result.supportLevel)}）；压力 ${result.analysisResistanceZone}（${describeLevelZone(result.resistanceLevel)}）；ATR(14)=${analysisPriceFormat.format(result.atr)}。`;
     $(`${key}-conclusion`).textContent = conclusion;
   }
 
@@ -3035,6 +3363,10 @@
 
   $("ma20-toggle").addEventListener("click", () => toggleMovingAverage(20));
   $("ma60-toggle").addEventListener("click", () => toggleMovingAverage(60));
+  $("lock-strategy-button").addEventListener("click", lockCurrentStrategy);
+  $("clear-locked-strategy-button").addEventListener("click", () => {
+    if (window.confirm(`确认清除 ${state.symbol} 已锁定的日内策略吗？`)) clearLockedStrategy();
+  });
 
   $("chart-stage").addEventListener("pointermove", showTooltip, { passive: true });
   $("chart-stage").addEventListener("pointerleave", hideTooltip);
@@ -3055,7 +3387,9 @@
     });
   }, { passive: true });
 
+  state.lockedStrategies = readLockedStrategies();
   updateSymbolUI();
+  renderLockedStrategy();
   updateIntervalButtons();
   updateChartCopy();
   syncTimelineInputs();

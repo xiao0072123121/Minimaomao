@@ -463,10 +463,29 @@
     .strategy-head h2 { margin: 0 0 4px; font-size: 17px; font-weight: 700; }
     .strategy-head p { margin: 0; color: var(--muted); font-size: 12px; }
 
-    #strategy-direction, #position-direction { color: var(--muted); font-weight: 700; }
+    .strategy-head-actions { display: flex; align-items: center; gap: 8px; }
+    .strategy-action {
+      padding: 8px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: #dbe5ee;
+      background: rgba(255, 255, 255, .035);
+      font: inherit;
+      font-size: 12px;
+      font-weight: 650;
+      cursor: pointer;
+      transition: border-color .18s ease, background .18s ease, color .18s ease;
+    }
+    .strategy-action:hover:not(:disabled) { border-color: rgba(240, 185, 77, .45); background: rgba(240, 185, 77, .08); }
+    .strategy-action.primary { border-color: rgba(240, 185, 77, .35); color: #ffd479; background: rgba(240, 185, 77, .07); }
+    .strategy-action:disabled { cursor: not-allowed; opacity: .42; }
+
+    #strategy-direction, #locked-direction, #position-direction { color: var(--muted); font-weight: 700; }
     .strategy-card[data-bias="bullish"] #strategy-direction,
+    .strategy-card[data-bias="bullish"] #locked-direction,
     .strategy-card[data-bias="bullish"] #position-direction { color: var(--red); }
     .strategy-card[data-bias="bearish"] #strategy-direction,
+    .strategy-card[data-bias="bearish"] #locked-direction,
     .strategy-card[data-bias="bearish"] #position-direction { color: var(--green); }
 
     .strategy-metrics {
@@ -520,6 +539,16 @@
     .strategy-note.strategy-risk[data-tone="danger"] p { color: #ff9297; }
     .strategy-note.strategy-risk[data-tone="cool"] p { color: #70ddb5; }
     .strategy-disclaimer { margin: 10px 1px 0; color: var(--muted); font-size: 11px; }
+    .locked-strategy-card[data-empty="true"] { border-style: dashed; }
+    .locked-empty {
+      margin: 0;
+      padding: 14px 12px;
+      border: 1px dashed rgba(255, 255, 255, .08);
+      border-radius: 9px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.65;
+    }
 
     .chart-card { min-height: 440px; padding: 20px 20px 15px; }
 
@@ -1025,6 +1054,9 @@
           <h2 id="strategy-title">日内交易策略</h2>
           <p id="strategy-status">等待H4、H1与M15已收盘K线…</p>
         </div>
+        <div class="strategy-head-actions">
+          <button id="lock-strategy-button" class="strategy-action primary" type="button" disabled>暂无可锁定策略</button>
+        </div>
       </div>
       <div class="strategy-metrics" aria-label="日内策略参数">
         <div class="strategy-metric"><span>方向</span><b id="strategy-direction">观望</b></div>
@@ -1041,6 +1073,36 @@
         <div id="strategy-rsi-risk-box" class="strategy-note strategy-risk" data-tone="neutral"><span>RSI 风险提示（不计分）</span><p id="strategy-rsi-risk">等待M15 RSI数据。</p></div>
       </div>
       <p class="strategy-disclaimer">日内策略不使用MA、MACD或RSI决定方向：H4价格结构确定主方向，H1寻找机会，M15负责价格触发；RSI仅提示过热、超卖与追单风险，不参与评分或拦截；A/B级进入执行评估，C级仅观察，并保留交易成本保护。策略评分不代表胜率，不构成投资建议。</p>
+    </section>
+
+    <section id="locked-strategy" class="card strategy-card locked-strategy-card" data-bias="neutral" data-empty="true" aria-labelledby="locked-strategy-title" aria-live="polite">
+      <div class="strategy-head">
+        <div>
+          <h2 id="locked-strategy-title">已锁定当前策略</h2>
+          <p id="locked-strategy-status">当前标的尚未锁定日内策略。</p>
+        </div>
+        <div class="strategy-head-actions">
+          <button id="clear-locked-strategy-button" class="strategy-action" type="button" disabled>清除锁定</button>
+        </div>
+      </div>
+      <p id="locked-strategy-empty" class="locked-empty">锁定后会在这里保存方向、入场区、止损、止盈和策略依据；上方实时策略仍会继续接收并展示新信号。</p>
+      <div id="locked-strategy-content" hidden>
+        <div class="strategy-metrics" aria-label="已锁定日内策略参数">
+          <div class="strategy-metric"><span>方向</span><b id="locked-direction">—</b></div>
+          <div class="strategy-metric"><span>策略优先级</span><b id="locked-priority">—</b></div>
+          <div class="strategy-metric"><span>入场区域</span><b id="locked-entry">—</b></div>
+          <div class="strategy-metric"><span>止损</span><b id="locked-stop">—</b></div>
+          <div class="strategy-metric"><span>止盈</span><b id="locked-take-profit">—</b></div>
+          <div class="strategy-metric"><span>盈亏比</span><b id="locked-rr">—</b></div>
+          <div class="strategy-metric"><span>策略评分</span><b id="locked-score">—</b></div>
+        </div>
+        <div class="strategy-body">
+          <div class="strategy-note"><span>锁定时策略依据</span><p id="locked-summary">—</p></div>
+          <div class="strategy-note"><span>锁定时执行与失效条件</span><p id="locked-trigger">—</p></div>
+          <div class="strategy-note strategy-risk" data-tone="neutral"><span>锁定时RSI风险提示</span><p id="locked-rsi-risk">—</p></div>
+        </div>
+        <p class="strategy-disclaimer">这是锁定时的本地快照，不会随实时行情自动修改，也不会阻止上方日内策略继续生成新信号；实际成交后仍需结合真实成交价和仓位管理。</p>
+      </div>
     </section>
 
     <section id="position-strategy" class="card strategy-card" data-bias="neutral" aria-labelledby="position-title" aria-live="polite">
