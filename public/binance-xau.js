@@ -2997,6 +2997,7 @@
     });
     const card = $("intraday-strategy");
     card.dataset.bias = strategy.bias;
+    $("primary-intraday-strategy").dataset.bias = strategy.bias;
     $("strategy-direction").textContent = strategy.directionLabel;
     $("strategy-priority").textContent = strategy.priority;
     $("strategy-score").textContent = Number.isFinite(strategy.score)

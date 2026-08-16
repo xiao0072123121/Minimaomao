@@ -565,6 +565,7 @@
     .strategy-list-item .strategy-head p { margin: 0; }
     .strategy-list-item .strategy-metrics { grid-template-columns: repeat(7, minmax(0, 1fr)); }
     .strategy-list-item .strategy-body { margin-top: 8px; }
+    .primary-strategy-item { margin-top: 12px; }
     .locked-empty {
       margin: 0;
       padding: 14px 12px;
@@ -1081,24 +1082,32 @@
           <h2 id="strategy-title">日内交易策略</h2>
           <p id="strategy-status">等待H4、H1与M15已收盘K线…</p>
         </div>
-        <div class="strategy-head-actions">
-          <button id="lock-strategy-button" class="strategy-action primary" type="button" disabled>暂无可锁定策略</button>
+      </div>
+      <article id="primary-intraday-strategy" class="strategy-list-item primary-strategy-item" data-bias="neutral" aria-labelledby="primary-strategy-title">
+        <div class="strategy-head">
+          <div>
+            <h3 id="primary-strategy-title">顺势主策略</h3>
+            <p>H4主方向策略 · 独立止损与失效条件</p>
+          </div>
+          <div class="strategy-head-actions">
+            <button id="lock-strategy-button" class="strategy-action primary" type="button" disabled>暂无可锁定策略</button>
+          </div>
         </div>
-      </div>
-      <div class="strategy-metrics" aria-label="日内策略参数">
-        <div class="strategy-metric"><span>方向</span><b id="strategy-direction">观望</b></div>
-        <div class="strategy-metric"><span>策略优先级</span><b id="strategy-priority">等待</b></div>
-        <div class="strategy-metric"><span>入场区域</span><b id="strategy-entry">—</b></div>
-        <div class="strategy-metric"><span>止损</span><b id="strategy-stop">—</b></div>
-        <div class="strategy-metric"><span>止盈</span><b id="strategy-take-profit">—</b></div>
-        <div class="strategy-metric"><span>盈亏比</span><b id="strategy-rr">—</b></div>
-        <div class="strategy-metric"><span>策略评分</span><b id="strategy-score">—</b></div>
-      </div>
-      <div class="strategy-body">
-        <div class="strategy-note"><span>策略依据</span><p id="strategy-summary">等待多周期判断完成。</p></div>
-        <div class="strategy-note"><span>执行与失效条件</span><p id="strategy-trigger">方向、位置与触发周期一致后再生成执行参数。</p></div>
-        <div id="strategy-rsi-risk-box" class="strategy-note strategy-risk" data-tone="neutral"><span>RSI 风险提示（不计分）</span><p id="strategy-rsi-risk">等待M15 RSI数据。</p></div>
-      </div>
+        <div class="strategy-metrics" aria-label="日内主策略参数">
+          <div class="strategy-metric"><span>方向</span><b id="strategy-direction" class="strategy-direction-value">观望</b></div>
+          <div class="strategy-metric"><span>策略优先级</span><b id="strategy-priority">等待</b></div>
+          <div class="strategy-metric"><span>入场区域</span><b id="strategy-entry">—</b></div>
+          <div class="strategy-metric"><span>止损</span><b id="strategy-stop">—</b></div>
+          <div class="strategy-metric"><span>止盈</span><b id="strategy-take-profit">—</b></div>
+          <div class="strategy-metric"><span>盈亏比</span><b id="strategy-rr">—</b></div>
+          <div class="strategy-metric"><span>策略评分</span><b id="strategy-score">—</b></div>
+        </div>
+        <div class="strategy-body">
+          <div class="strategy-note"><span>策略依据</span><p id="strategy-summary">等待多周期判断完成。</p></div>
+          <div class="strategy-note"><span>执行与失效条件</span><p id="strategy-trigger">方向、位置与触发周期一致后再生成执行参数。</p></div>
+          <div id="strategy-rsi-risk-box" class="strategy-note strategy-risk" data-tone="neutral"><span>RSI 风险提示（不计分）</span><p id="strategy-rsi-risk">等待M15 RSI数据。</p></div>
+        </div>
+      </article>
       <div id="active-intraday-strategies" class="strategy-stack" hidden aria-label="当前并列日内策略"></div>
       <div id="intraday-strategy-history" class="strategy-stack" hidden aria-label="此前日内策略"></div>
       <p class="strategy-disclaimer">日内策略不使用MA、MACD或RSI决定方向：H4价格结构确定主方向，H1寻找机会，M15负责价格触发；当价格在高强度反向区域出现M15拒绝触发，且主趋势没有放量突破时，可并列生成最高B级的逆势回调策略。RSI仅提示过热、超卖与追单风险；成交量只确认、不强制。策略评分不代表胜率，不构成投资建议。</p>
