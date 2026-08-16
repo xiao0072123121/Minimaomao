@@ -1925,20 +1925,126 @@
       : last.close < priorThreeLow - atr * 0.03
         ? -1
         : 0;
+    const candleMetrics = (candle) => {
+      const range = Math.max(candle.high - candle.low, atr * 0.04, 0.000001);
+      return {
+        bodyRatio: Math.abs(candle.close - candle.open) / range,
+        closeLocation: (candle.close - candle.low) / range
+      };
+    };
+    const findRecentBreakoutSetup = (direction) => {
+      const firstIndex = Math.max(4, candles.length - 8);
+      for (let index = candles.length - 2; index >= firstIndex; index -= 1) {
+        const setupCandle = candles[index];
+        const setupContext = candles.slice(Math.max(0, index - 6), index);
+        if (setupContext.length < 3) continue;
+        const metrics = candleMetrics(setupCandle);
+        const level = direction > 0
+          ? Math.max(...setupContext.map((candle) => candle.high))
+          : Math.min(...setupContext.map((candle) => candle.low));
+        const directionalBody = direction > 0
+          ? setupCandle.close > setupCandle.open && metrics.closeLocation >= 0.62
+          : setupCandle.close < setupCandle.open && metrics.closeLocation <= 0.38;
+        const crossedLevel = direction > 0
+          ? setupCandle.close > level + atr * 0.03
+          : setupCandle.close < level - atr * 0.03;
+        if (directionalBody && metrics.bodyRatio >= 0.35 && crossedLevel) {
+          return { direction, level, age: candles.length - 1 - index };
+        }
+      }
+      return null;
+    };
+    const bullishBreakoutSetup = findRecentBreakoutSetup(1);
+    const bearishBreakoutSetup = findRecentBreakoutSetup(-1);
+    const retestTouchTolerance = atr * 0.35;
+    const retestCloseTolerance = atr * 0.08;
+    const bullishRetest = Boolean(
+      bullishBreakoutSetup &&
+      last.low <= bullishBreakoutSetup.level + retestTouchTolerance &&
+      last.high >= bullishBreakoutSetup.level - retestCloseTolerance &&
+      last.close >= bullishBreakoutSetup.level - retestCloseTolerance &&
+      last.close > last.open && lastCloseLocation >= 0.58 && last.close > previous.close
+    );
+    const bearishRetest = Boolean(
+      bearishBreakoutSetup &&
+      last.high >= bearishBreakoutSetup.level - retestTouchTolerance &&
+      last.low <= bearishBreakoutSetup.level + retestCloseTolerance &&
+      last.close <= bearishBreakoutSetup.level + retestCloseTolerance &&
+      last.close < last.open && lastCloseLocation <= 0.42 && last.close < previous.close
+    );
+    const legCandles = candles.slice(-7, -2);
+    const pullbackCandles = candles.slice(-3, -1);
+    const legStart = legCandles[0] || previous;
+    const legHigh = Math.max(...legCandles.map((candle) => candle.high));
+    const legLow = Math.min(...legCandles.map((candle) => candle.low));
+    const pullbackHigh = Math.max(...pullbackCandles.map((candle) => candle.high));
+    const pullbackLow = Math.min(...pullbackCandles.map((candle) => candle.low));
+    const bullishLegMove = legHigh - legStart.close;
+    const bearishLegMove = legStart.close - legLow;
+    const bullishPullbackDepth = legHigh - pullbackLow;
+    const bearishPullbackDepth = pullbackHigh - legLow;
+    const bullishPullbackContinuation =
+      bullishLegMove >= atr * 0.7 &&
+      bullishPullbackDepth >= atr * 0.2 && bullishPullbackDepth <= atr * 1.35 &&
+      last.close > pullbackHigh + atr * 0.02 && bullishImpulse;
+    const bearishPullbackContinuation =
+      bearishLegMove >= atr * 0.7 &&
+      bearishPullbackDepth >= atr * 0.2 && bearishPullbackDepth <= atr * 1.35 &&
+      last.close < pullbackLow - atr * 0.02 && bearishImpulse;
+    let setupDirection = 0;
+    let setupType = "waiting";
+    let setupLabel = "等待方向Setup与回踩/回测";
     let triggerDirection = 0;
     let triggerLabel = "等待价格触发";
     if (supportRejection) {
+      setupDirection = 1;
+      setupType = "level-rejection";
+      setupLabel = "支撑测试Setup";
       triggerDirection = 1;
-      triggerLabel = "支撑区出现多头拒绝K线";
+      triggerLabel = "支撑测试后出现多头拒绝K线";
     } else if (resistanceRejection) {
+      setupDirection = -1;
+      setupType = "level-rejection";
+      setupLabel = "压力测试Setup";
       triggerDirection = -1;
-      triggerLabel = "压力区出现空头拒绝K线";
-    } else if (breakoutDirection && Number.isFinite(volume?.ratio) && volume.ratio >= 1.1) {
-      triggerDirection = breakoutDirection;
-      triggerLabel = `${breakoutDirection > 0 ? "向上" : "向下"}突破近期区间并获得量能确认`;
-    } else if (shortBreakDirection && ((shortBreakDirection > 0 && bullishImpulse) || (shortBreakDirection < 0 && bearishImpulse))) {
-      triggerDirection = shortBreakDirection;
-      triggerLabel = `M15实体K线${shortBreakDirection > 0 ? "突破近3根高点" : "跌破近3根低点"}`;
+      triggerLabel = "压力测试后出现空头拒绝K线";
+    } else if (bullishRetest) {
+      setupDirection = 1;
+      setupType = "breakout-retest";
+      setupLabel = `向上突破Setup（${bullishBreakoutSetup.age}根前）`;
+      triggerDirection = 1;
+      triggerLabel = "回测突破位后重新收复";
+    } else if (bearishRetest) {
+      setupDirection = -1;
+      setupType = "breakout-retest";
+      setupLabel = `向下跌破Setup（${bearishBreakoutSetup.age}根前）`;
+      triggerDirection = -1;
+      triggerLabel = "回测跌破位后重新转弱";
+    } else if (bullishPullbackContinuation) {
+      setupDirection = 1;
+      setupType = "pullback-continuation";
+      setupLabel = "多头推进后的回踩Setup";
+      triggerDirection = 1;
+      triggerLabel = "回踩后实体K线重新突破近端高点";
+    } else if (bearishPullbackContinuation) {
+      setupDirection = -1;
+      setupType = "pullback-continuation";
+      setupLabel = "空头推进后的反抽Setup";
+      triggerDirection = -1;
+      triggerLabel = "反抽后实体K线重新跌破近端低点";
+    } else if (breakoutDirection || shortBreakDirection) {
+      setupDirection = breakoutDirection || shortBreakDirection;
+      setupType = "breakout-waiting-retest";
+      setupLabel = `${setupDirection > 0 ? "向上突破" : "向下跌破"}Setup已形成`;
+      triggerLabel = "直接突破不追价，等待回测或回踩确认";
+    } else if (bullishBreakoutSetup || bearishBreakoutSetup) {
+      const setup = bullishBreakoutSetup && bearishBreakoutSetup
+        ? bullishBreakoutSetup.age <= bearishBreakoutSetup.age ? bullishBreakoutSetup : bearishBreakoutSetup
+        : bullishBreakoutSetup || bearishBreakoutSetup;
+      setupDirection = setup.direction;
+      setupType = "breakout-waiting-retest";
+      setupLabel = `${setup.direction > 0 ? "向上突破" : "向下跌破"}Setup（${setup.age}根前）`;
+      triggerLabel = "等待价格回测突破位并重新确认";
     }
 
     const label = sign > 0
@@ -1970,6 +2076,13 @@
       volumeContribution,
       bullishImpulse,
       bearishImpulse,
+      setupDirection,
+      setupType,
+      setupLabel,
+      bullishRetest,
+      bearishRetest,
+      bullishPullbackContinuation,
+      bearishPullbackContinuation,
       triggerDirection,
       triggerLabel
     };
@@ -2351,7 +2464,7 @@
     if (m15) {
       const view = intradayFrameView(m15);
       const relation = intradayFrameRelation(m15, [h4, h1], "H4/H1");
-      conclusions.m15 = `M15为${view.structure.label}（结构分${signed(view.structure.score, 0)}），${relation}；${view.structure.triggerLabel}，价格结构条件多${view.longScore}、空${view.shortScore}。${proximityText(m15)}`;
+      conclusions.m15 = `M15为${view.structure.label}（结构分${signed(view.structure.score, 0)}），${relation}；Setup：${view.structure.setupLabel}；触发：${view.structure.triggerLabel}，价格结构条件多${view.longScore}、空${view.shortScore}。${proximityText(m15)}`;
     }
     return conclusions;
   }
@@ -2584,7 +2697,9 @@
     const threshold = structure.strong
       ? `已达到±38强方向阈值，${direction}结构明确`
       : `已达到初步方向阈值，但尚未达到±38强方向阈值`;
-    const trigger = result.key === "m15" ? `；价格触发：${structure.triggerLabel}` : "";
+    const trigger = result.key === "m15"
+      ? `；Setup：${structure.setupLabel}；价格触发：${structure.triggerLabel}`
+      : "";
     return `${pair}；${threshold}，${location}${trigger}。`;
   }
 
@@ -2658,7 +2773,7 @@
     const candidateBias = candidateSign > 0 ? "bullish" : candidateSign < 0 ? "bearish" : "neutral";
     const compositeScore = candidateSign > 0 ? longScore : candidateSign < 0 ? shortScore : Math.max(longScore, shortScore);
     const baseCompositeScore = candidateSign > 0 ? baseLongScore : candidateSign < 0 ? baseShortScore : Math.max(baseLongScore, baseShortScore);
-    const stateSummary = `H4 ${h4Structure.label}（结构分${signed(h4Structure.score, 0)}），H1 ${h1Structure.label}（结构分${signed(h1Structure.score, 0)}），M15 ${m15Structure.label}；价格结构基础多${baseLongScore}、空${baseShortScore}，量能调整后多${longScore}、空${shortScore}。H4${h4MainSign ? "已确定日内主方向" : "暂未形成强方向"}；M15：${m15Structure.triggerLabel}。`;
+    const stateSummary = `H4 ${h4Structure.label}（结构分${signed(h4Structure.score, 0)}），H1 ${h1Structure.label}（结构分${signed(h1Structure.score, 0)}），M15 ${m15Structure.label}；价格结构基础多${baseLongScore}、空${baseShortScore}，量能调整后多${longScore}、空${shortScore}。H4${h4MainSign ? "已确定日内主方向" : "暂未形成强方向"}；M15 Setup：${m15Structure.setupLabel}；触发：${m15Structure.triggerLabel}。`;
     const waitForCandidate = (reason, trigger) => ({
       ...emptyIntradayStrategy(reason),
       candidateBias,
@@ -2696,10 +2811,10 @@
     }
     if (m15Structure.triggerDirection !== candidateSign) {
       return waitForCandidate(
-        `${stateSummary} 日内方向已经确定，但M15尚未给出同向价格触发。`,
+        `${stateSummary} 日内方向已经确定，但M15尚未完成同向Setup后的回踩/回测触发。`,
         candidateSign > 0
-          ? `等待M15突破近3根高点、放量突破区间或在支撑 ${m15.supportZone} 出现多头拒绝K线。`
-          : `等待M15跌破近3根低点、放量跌破区间或在压力 ${m15.resistanceZone} 出现空头拒绝K线。`
+          ? `等待向上突破Setup回测收复、推进后回踩延续，或在支撑 ${m15.supportZone} 出现多头拒绝K线；直接突破不追价。`
+          : `等待向下跌破Setup回测转弱、推进后反抽延续，或在压力 ${m15.resistanceZone} 出现空头拒绝K线；直接跌破不追价。`
       );
     }
 
@@ -2723,8 +2838,8 @@
       ? "止损设置在有效支撑区下方，止盈优先参考真实压力区。"
       : "止损设置在有效压力区上方，止盈优先参考真实支撑区。");
     const trigger = candidateSign > 0
-      ? `执行条件：${m15Structure.triggerLabel}；价格进入参考区后不得跌破 ${m15.supportZone}，触及结构止损则失效。`
-      : `执行条件：${m15Structure.triggerLabel}；价格进入参考区后不得突破 ${m15.resistanceZone}，触及结构止损则失效。`;
+      ? `Setup：${m15Structure.setupLabel}；执行触发：${m15Structure.triggerLabel}。价格进入参考区后不得跌破 ${m15.supportZone}，触及结构止损则失效。`
+      : `Setup：${m15Structure.setupLabel}；执行触发：${m15Structure.triggerLabel}。价格进入参考区后不得突破 ${m15.resistanceZone}，触及结构止损则失效。`;
     if (levels.rewardRisk1 < minimumRawRewardRisk ||
         executionQuality.costAdjustedRewardRisk < minimumCostAdjustedRewardRisk ||
         executionQuality.costToRisk > STRATEGY_FILTERS.intradayMaximumCostToRisk) {
@@ -2852,8 +2967,8 @@
       longScore: counterSign > 0 ? score : null,
       shortScore: counterSign < 0 ? score : null,
       ...levels,
-      summary: `H4仍以${mainDirection}为主（结构分${signed(h4Structure.score, 0)}），但价格进入${zoneLabel}的高强度${location.side === "support" ? "支撑" : "压力"}区（${location.zone.strength}/100），M15出现${m15Structure.triggerLabel}，因此生成${patternName}${counterDirection}。成交量只作确认加分，MA、MACD与RSI均不决定该方向。${executionQuality.label}。`,
-      trigger: `仅按${patternName}处理，不视为H4趋势反转；目标优先取最近反向结构区域。${invalidation}`
+      summary: `H4仍以${mainDirection}为主（结构分${signed(h4Structure.score, 0)}），但价格进入${zoneLabel}的高强度${location.side === "support" ? "支撑" : "压力"}区（${location.zone.strength}/100），M15形成${m15Structure.setupLabel}并由${m15Structure.triggerLabel}触发，因此生成${patternName}${counterDirection}。成交量只作确认加分，MA、MACD与RSI均不决定该方向。${executionQuality.label}。`,
+      trigger: `Setup：${m15Structure.setupLabel}；执行触发：${m15Structure.triggerLabel}。仅按${patternName}处理，不视为H4趋势反转；目标优先取最近反向结构区域。${invalidation}`
     };
   }
 
