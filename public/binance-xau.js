@@ -45,6 +45,7 @@
     intradayMinimumScoreEdge: 6,
     intradayMinimumRawRewardRiskA: 1.5,
     intradayMinimumRawRewardRiskB: 1.3,
+    intradayFirstTargetCapRewardRisk: 1.5,
     intradayMinimumCostAdjustedRewardRiskA: 1.15,
     intradayMinimumCostAdjustedRewardRiskB: 1,
     intradayMaximumCostToRisk: 0.45,
@@ -2438,9 +2439,10 @@
         ? Math.min(stopZone.low - atr * 0.2, entry - minimumRisk)
         : entry - minimumRisk;
       const risk = Math.max(atr * 0.35, entry - stopLoss);
-      const projectedFirst = entry + risk * 1.5;
+      const projectedFirst = entry + risk * STRATEGY_FILTERS.intradayFirstTargetCapRewardRisk;
       const takeProfitZone = resistanceTargets.find((zone) => zone.low > entry);
-      takeProfit = takeProfitZone?.low || projectedFirst;
+      const firstTargetCapped = Boolean(takeProfitZone && takeProfitZone.low > projectedFirst);
+      takeProfit = Math.min(takeProfitZone?.low ?? projectedFirst, projectedFirst);
       const secondResistance = resistanceTargets.find((zone) => zone.low > takeProfit + atr * 0.2);
       const target = Math.max(secondResistance?.low || 0, entry + risk * 2.5);
       return {
@@ -2454,7 +2456,7 @@
         risk,
         stopLevelZone: stopZone || null,
         takeProfitLevelZone: takeProfitZone || null,
-        levelNote: `${intradayLevelBasis(stopZone, "止损", atr)}；${intradayLevelBasis(takeProfitZone, "止盈", atr)}。`
+        levelNote: `${intradayLevelBasis(stopZone, "止损", atr)}；${intradayLevelBasis(takeProfitZone, "止盈", atr)}${firstTargetCapped ? `；第一目标按${STRATEGY_FILTERS.intradayFirstTargetCapRewardRisk.toFixed(1)}R可达性上限收近` : ""}。`
       };
     }
     const stopZone = resistances.find((zone) => distanceToLevelZone(entry, zone) <= maximumStopZoneDistance);
@@ -2463,9 +2465,10 @@
       ? Math.max(stopZone.high + atr * 0.2, entry + minimumRisk)
       : entry + minimumRisk;
     const risk = Math.max(atr * 0.35, stopLoss - entry);
-    const projectedFirst = entry - risk * 1.5;
+    const projectedFirst = entry - risk * STRATEGY_FILTERS.intradayFirstTargetCapRewardRisk;
     const takeProfitZone = supportTargets.find((zone) => zone.high < entry);
-    takeProfit = takeProfitZone?.high || projectedFirst;
+    const firstTargetCapped = Boolean(takeProfitZone && takeProfitZone.high < projectedFirst);
+    takeProfit = Math.max(takeProfitZone?.high ?? projectedFirst, projectedFirst);
     const secondSupport = supportTargets.find((zone) => zone.high < takeProfit - atr * 0.2);
     const target = Math.min(Number.isFinite(secondSupport?.high) ? secondSupport.high : Infinity, entry - risk * 2.5);
     return {
@@ -2479,7 +2482,7 @@
       risk,
       stopLevelZone: stopZone || null,
       takeProfitLevelZone: takeProfitZone || null,
-      levelNote: `${intradayLevelBasis(stopZone, "止损", atr)}；${intradayLevelBasis(takeProfitZone, "止盈", atr)}。`
+      levelNote: `${intradayLevelBasis(stopZone, "止损", atr)}；${intradayLevelBasis(takeProfitZone, "止盈", atr)}${firstTargetCapped ? `；第一目标按${STRATEGY_FILTERS.intradayFirstTargetCapRewardRisk.toFixed(1)}R可达性上限收近` : ""}。`
     };
   }
 
