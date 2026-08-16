@@ -132,6 +132,7 @@
       tradeWindowsPartial: 0
     },
     currentIntradayStrategy: null,
+    currentIntradayStrategies: [],
     intradayStrategyHistory: {},
     lockedStrategies: {},
     directionStates: {},
@@ -304,6 +305,8 @@
       referencePrice: Number.isFinite(referencePrice) ? referencePrice : null,
       bias: strategy.bias,
       candidateBias: strategy.candidateBias,
+      strategyType: strategy.strategyType || "primary",
+      strategyLabel: strategy.strategyLabel || "日内策略",
       directionLabel: strategy.directionLabel,
       priority: strategy.priority,
       score: strategy.score,
@@ -403,7 +406,7 @@
       return `
         <article class="strategy-list-item" data-bias="${escapeStrategyHtml(record.strategy.bias)}" data-strategy-id="${escapeStrategyHtml(record.id)}">
           <div class="strategy-head">
-            <div><h3>此前策略 ${index + 1}</h3><p>${escapeStrategyHtml(formatTime(record.generatedAt, true))}${escapeStrategyHtml(reference)} · 生成时快照</p></div>
+            <div><h3>此前策略 ${index + 1} · ${escapeStrategyHtml(record.strategy.strategyLabel || "日内策略")}</h3><p>${escapeStrategyHtml(formatTime(record.generatedAt, true))}${escapeStrategyHtml(reference)} · 生成时快照</p></div>
             <button class="strategy-action primary" type="button" data-lock-strategy-id="${escapeStrategyHtml(record.id)}">${locked ? "更新这条锁定" : "锁定这条策略"}</button>
           </div>
           ${strategyMetricsMarkup(record.strategy)}
@@ -426,6 +429,7 @@
       $("locked-strategy-status").textContent = `${state.symbol} 尚未锁定日内策略。`;
       $("locked-strategy-list").innerHTML = "";
       updateLockStrategyButton();
+      renderActiveSupplementalStrategies(state.currentIntradayStrategies || []);
       renderIntradayStrategyHistory();
       return;
     }
@@ -435,7 +439,7 @@
       return `
         <article class="strategy-list-item" data-bias="${escapeStrategyHtml(locked.bias || "neutral")}" data-locked-id="${escapeStrategyHtml(locked.id || `legacy-${index}`)}">
           <div class="strategy-head">
-            <div><h3>锁定策略 ${index + 1}</h3><p>锁定于 ${escapeStrategyHtml(formatTime(locked.lockedAt, true))}${escapeStrategyHtml(reference)}</p></div>
+            <div><h3>锁定策略 ${index + 1} · ${escapeStrategyHtml(locked.strategyLabel || "日内策略")}</h3><p>锁定于 ${escapeStrategyHtml(formatTime(locked.lockedAt, true))}${escapeStrategyHtml(reference)}</p></div>
             <button class="strategy-action" type="button" data-remove-locked-id="${escapeStrategyHtml(locked.id || `legacy-${index}`)}">删除这条</button>
           </div>
           ${strategyMetricsMarkup(locked)}
@@ -443,10 +447,13 @@
         </article>`;
     }).join("");
     updateLockStrategyButton();
+    renderActiveSupplementalStrategies(state.currentIntradayStrategies || []);
     renderIntradayStrategyHistory();
   }
 
   function findIntradayStrategyRecord(strategyId) {
+    const active = (state.currentIntradayStrategies || []).find((record) => record.id === strategyId);
+    if (active) return active;
     if (state.currentIntradayStrategy?.id === strategyId) return state.currentIntradayStrategy;
     return (state.intradayStrategyHistory[state.symbol] || []).find((record) => record.id === strategyId) || null;
   }
@@ -543,6 +550,7 @@
       tradeWindowsPartial: 0
     };
     state.currentIntradayStrategy = null;
+    state.currentIntradayStrategies = [];
     state.directionStates = {};
     state.timelineStart = 0;
     state.timelineEnd = 100;
@@ -2745,6 +2753,117 @@
       trigger
     };
   }
+
+  function counterTrendLocation(entry, counterSign, h1, m15) {
+    const side = counterSign > 0 ? "support" : "resistance";
+    const zones = rankIntradayLevelZones(entry, [h1, m15], side);
+    const maximumDistance = Math.max(m15.atr * 1.25, h1.atr * 0.45, entry * 0.0012);
+    const zone = zones.find((candidate) => distanceToLevelZone(entry, candidate) <= maximumDistance) || null;
+    return { side, zone, maximumDistance };
+  }
+
+  function tightenCounterTrendLevels(levels, counterSign, entry, zone, m15) {
+    const atr = Math.max(m15.atr, entry * 0.00035);
+    const stopPadding = atr * 0.3;
+    const minimumRisk = atr * 0.6;
+    const stopLoss = counterSign > 0
+      ? Math.min(zone.low - stopPadding, entry - minimumRisk)
+      : Math.max(zone.high + stopPadding, entry + minimumRisk);
+    const risk = Math.abs(entry - stopLoss);
+    return {
+      ...levels,
+      stopLoss,
+      risk,
+      rewardRisk1: counterSign > 0
+        ? Math.max(0, levels.takeProfit - entry) / risk
+        : Math.max(0, entry - levels.takeProfit) / risk,
+      rewardRisk2: counterSign > 0
+        ? Math.max(0, levels.target - entry) / risk
+        : Math.max(0, entry - levels.target) / risk,
+      levelNote: `${levels.levelNote} 逆势单止损按触发区域外侧加0.30倍M15 ATR收紧。`
+    };
+  }
+
+  function buildCounterTrendIntradayStrategy(results, entryPrice) {
+    const { h4, h1, m15 } = results;
+    if (!h4 || !h1 || !m15) return null;
+    const h4Structure = h4.intradayStructure;
+    const h1Structure = h1.intradayStructure;
+    const m15Structure = m15.intradayStructure;
+    if (!h4Structure.strong || !h4Structure.sign) return null;
+    const mainSign = h4Structure.sign;
+    const counterSign = -mainSign;
+    const counterBias = counterSign > 0 ? "bullish" : "bearish";
+    const mainDirection = mainSign > 0 ? "做多" : "做空";
+    const counterDirection = counterSign > 0 ? "做多" : "做空";
+    const patternName = counterSign > 0 ? "逆势反弹" : "逆势回调";
+    const entry = Number.isFinite(entryPrice) ? entryPrice : m15.price;
+    const location = counterTrendLocation(entry, counterSign, h1, m15);
+    if (!location.zone) return null;
+    const h1StillStrongWithMain = h1Structure.strong && h1Structure.sign === mainSign;
+    const minimumZoneStrength = h1StillStrongWithMain ? 75 : 65;
+    if (location.zone.strength < minimumZoneStrength) return null;
+    const rejectionTriggered = counterSign > 0
+      ? m15Structure.supportRejection
+      : m15Structure.resistanceRejection;
+    if (!rejectionTriggered || m15Structure.triggerDirection !== counterSign) return null;
+    const h1MainExpansion = h1Structure.breakoutDirection === mainSign &&
+      Number.isFinite(h1.volume?.ratio) && h1.volume.ratio >= 1.35;
+    const m15MainExpansion = m15Structure.breakoutDirection === mainSign &&
+      Number.isFinite(m15.volume?.ratio) && m15.volume.ratio >= 1.35;
+    if (h1MainExpansion || m15MainExpansion) return null;
+
+    const conditions = [
+      intradayConditionScore(h4, counterSign),
+      intradayConditionScore(h1, counterSign),
+      intradayConditionScore(m15, counterSign)
+    ];
+    const combine = (field) => Math.round(
+      conditions[0][field] * 0.15 + conditions[1][field] * 0.3 + conditions[2][field] * 0.55
+    );
+    const baseScore = combine("baseScore");
+    const score = Math.round(clamp(combine("score") + Math.min(6, Math.max(0, location.zone.strength - 65) * 0.2), 0, 100));
+    if (baseScore < 55) return null;
+
+    let levels = calculateIntradayLevels(counterBias, entry, h4, h1, m15);
+    levels = tightenCounterTrendLevels(levels, counterSign, entry, location.zone, m15);
+    const executionQuality = evaluateExecutionQuality(levels, counterBias);
+    if (levels.rewardRisk1 < STRATEGY_FILTERS.intradayMinimumRawRewardRiskB ||
+        executionQuality.costAdjustedRewardRisk < STRATEGY_FILTERS.intradayMinimumCostAdjustedRewardRiskB ||
+        executionQuality.costToRisk > STRATEGY_FILTERS.intradayMaximumCostToRisk) {
+      return null;
+    }
+    const zoneLabel = formatZone(location.zone, m15.atr);
+    const invalidation = counterSign > 0
+      ? `M15有效跌破 ${zoneLabel} 或触及止损 ${strategyPrice(levels.stopLoss)}，策略失效。`
+      : `M15有效站上 ${zoneLabel} 或触及止损 ${strategyPrice(levels.stopLoss)}，策略失效。`;
+    return {
+      bias: counterBias,
+      candidateBias: counterBias,
+      strategyType: "countertrend",
+      strategyLabel: `${patternName}策略`,
+      actionable: true,
+      directionLabel: `${patternName}${counterDirection}`,
+      priority: "B · 逆势价格机会",
+      score,
+      longScore: counterSign > 0 ? score : null,
+      shortScore: counterSign < 0 ? score : null,
+      ...levels,
+      summary: `H4仍以${mainDirection}为主（结构分${signed(h4Structure.score, 0)}），但价格进入${zoneLabel}的高强度${location.side === "support" ? "支撑" : "压力"}区（${location.zone.strength}/100），M15出现${m15Structure.triggerLabel}，因此生成${patternName}${counterDirection}。成交量只作确认加分，MA、MACD与RSI均不决定该方向。${executionQuality.label}。`,
+      trigger: `仅按${patternName}处理，不视为H4趋势反转；目标优先取最近反向结构区域。${invalidation}`
+    };
+  }
+
+  function buildIntradayStrategies(results, entryPrice) {
+    const primary = {
+      ...buildIntradayStrategy(results, entryPrice),
+      strategyType: "primary",
+      strategyLabel: "顺势主策略"
+    };
+    const counterTrend = buildCounterTrendIntradayStrategy(results, entryPrice);
+    return counterTrend ? [primary, counterTrend] : [primary];
+  }
+
   function strategyPrice(value) {
     return Number.isFinite(value) ? priceFormat.format(value) : "—";
   }
@@ -2791,12 +2910,13 @@
   }
 
   function intradayStrategyFingerprint(strategy, m15) {
-    if (!strategy?.actionable) return `waiting-${strategy?.candidateBias || "neutral"}`;
+    const strategyType = strategy?.strategyType || "primary";
+    if (!strategy?.actionable) return `waiting-${strategyType}-${strategy?.candidateBias || "neutral"}`;
     const entryCenter = (strategy.entryLow + strategy.entryHigh) / 2;
     const bucketSize = Math.max((m15?.atr || 0) * 0.6, entryCenter * 0.0005, 0.000001);
     const entryBucket = Math.round(entryCenter / bucketSize);
     const priorityCode = String(strategy.priority || "").split("·")[0].trim();
-    return `${strategy.bias}-${priorityCode}-${entryBucket}`;
+    return `${strategyType}-${strategy.bias}-${priorityCode}-${entryBucket}`;
   }
 
   function createIntradayStrategyRecord(strategy, rsiRisk, entryPrice, m15) {
@@ -2812,28 +2932,69 @@
     };
   }
 
-  function updateIntradayStrategyFeed(nextRecord) {
-    const previous = state.currentIntradayStrategy;
+  function updateIntradayStrategyFeed(nextRecords) {
+    nextRecords = Array.isArray(nextRecords) ? nextRecords : [nextRecords].filter(Boolean);
+    const activeRecords = Array.isArray(state.currentIntradayStrategies) ? state.currentIntradayStrategies : [];
+    const previousRecords = activeRecords.length
+      ? activeRecords
+      : state.currentIntradayStrategy
+        ? [state.currentIntradayStrategy]
+        : [];
     let history = [...(state.intradayStrategyHistory[state.symbol] || [])];
-    if (previous?.strategy?.actionable && previous.fingerprint !== nextRecord.fingerprint) {
-      history = [previous, ...history.filter((record) => record.fingerprint !== previous.fingerprint)].slice(0, 6);
+    const nextFingerprints = new Set(nextRecords
+      .filter((record) => record.strategy.actionable)
+      .map((record) => record.fingerprint));
+    for (const previous of previousRecords) {
+      if (previous.strategy?.actionable && !nextFingerprints.has(previous.fingerprint)) {
+        history = [previous, ...history.filter((record) => record.fingerprint !== previous.fingerprint)].slice(0, 8);
+      }
     }
-    if (nextRecord.strategy.actionable && previous?.fingerprint === nextRecord.fingerprint) {
-      nextRecord.id = previous.id;
-      nextRecord.generatedAt = previous.generatedAt;
-    }
-    if (nextRecord.strategy.actionable) {
-      history = history.filter((record) => record.fingerprint !== nextRecord.fingerprint);
-    }
-    state.currentIntradayStrategy = nextRecord;
-    state.intradayStrategyHistory = { ...state.intradayStrategyHistory, [state.symbol]: history };
+    const normalized = nextRecords.map((nextRecord) => {
+      const previous = previousRecords.find((record) => record.fingerprint === nextRecord.fingerprint);
+      if (nextRecord.strategy.actionable && previous) {
+        nextRecord.id = previous.id;
+        nextRecord.generatedAt = previous.generatedAt;
+      }
+      if (nextRecord.strategy.actionable) {
+        history = history.filter((record) => record.fingerprint !== nextRecord.fingerprint);
+      }
+      return nextRecord;
+    });
+    state.currentIntradayStrategies = normalized;
+    state.currentIntradayStrategy = normalized[0] || null;
+    state.intradayStrategyHistory = { ...state.intradayStrategyHistory, [state.symbol]: history.slice(0, 8) };
     renderIntradayStrategyHistory();
+  }
+
+  function renderActiveSupplementalStrategies(records) {
+    const container = $("active-intraday-strategies");
+    if (!container) return;
+    const supplemental = records.slice(1).filter((record) => record.strategy.actionable);
+    container.hidden = supplemental.length === 0;
+    container.innerHTML = supplemental.map((record) => {
+      const strategy = record.strategy;
+      const locked = isStrategyRecordLocked(record);
+      return `
+        <article class="strategy-list-item" data-bias="${escapeStrategyHtml(strategy.bias)}" data-strategy-id="${escapeStrategyHtml(record.id)}">
+          <div class="strategy-head">
+            <div><h3>${escapeStrategyHtml(strategy.strategyLabel)}</h3><p>与顺势主策略并列 · 独立止损与失效条件</p></div>
+            <button class="strategy-action primary" type="button" data-lock-strategy-id="${escapeStrategyHtml(record.id)}">${locked ? "更新这条锁定" : "锁定这条策略"}</button>
+          </div>
+          ${strategyMetricsMarkup(strategy)}
+          ${strategyNotesMarkup(strategy, record.rsiRisk)}
+        </article>`;
+    }).join("");
   }
 
   function renderIntradayStrategy(results = state.analysisResults) {
     const hasFrames = Boolean(results?.h4 && results?.h1 && results?.m15);
     const entryPrice = Number.isFinite(state.book?.mid) ? state.book.mid : results?.m15?.price;
-    const strategy = buildIntradayStrategy(results || {}, entryPrice);
+    const strategies = buildIntradayStrategies(results || {}, entryPrice);
+    const strategy = strategies[0];
+    const records = strategies.map((item) => {
+      const rsiRisk = intradayRsiRisk(results, item);
+      return createIntradayStrategyRecord(item, rsiRisk, entryPrice, results?.m15);
+    });
     const card = $("intraday-strategy");
     card.dataset.bias = strategy.bias;
     $("strategy-direction").textContent = strategy.directionLabel;
@@ -2856,15 +3017,18 @@
       : "—";
     $("strategy-summary").textContent = strategy.summary;
     $("strategy-trigger").textContent = strategy.trigger;
-    const rsiRisk = intradayRsiRisk(results, strategy);
+    const rsiRisk = records[0].rsiRisk;
     $("strategy-rsi-risk-box").dataset.tone = rsiRisk.tone;
     $("strategy-rsi-risk").textContent = rsiRisk.text;
-    updateIntradayStrategyFeed(createIntradayStrategyRecord(strategy, rsiRisk, entryPrice, results?.m15));
+    updateIntradayStrategyFeed(records);
+    renderActiveSupplementalStrategies(state.currentIntradayStrategies);
     updateLockStrategyButton();
     const historyCount = (state.intradayStrategyHistory[state.symbol] || []).length;
+    const activeCount = state.currentIntradayStrategies.filter((record) => record.strategy.actionable).length;
+    const activeCopy = activeCount > 1 ? ` · 当前并列${activeCount}条策略` : "";
     const historyCopy = historyCount ? ` · 保留此前${historyCount}条策略` : "";
     $("strategy-status").textContent = hasFrames
-      ? `日内去均线化：H4结构定方向、H1找机会、M15价格触发；${Number.isFinite(state.book?.mid) ? "入场区随实时中间价更新" : "暂用M15最近收盘作为入场参考"}${historyCopy} · ${formatTime(Date.now())}`
+      ? `日内去均线化：H4确定主方向，强支撑压力配合M15反向触发时可并列生成逆势回调策略；${Number.isFinite(state.book?.mid) ? "入场区随实时中间价更新" : "暂用M15最近收盘作为入场参考"}${activeCopy}${historyCopy} · ${formatTime(Date.now())}`
       : "等待H4、H1与M15已收盘K线…";
   }
 
@@ -4018,6 +4182,10 @@
   $("ma60-toggle").addEventListener("click", () => toggleMovingAverage(60));
   $("lock-strategy-button").addEventListener("click", lockCurrentStrategy);
   $("intraday-strategy-history").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-lock-strategy-id]");
+    if (button) lockIntradayStrategy(button.dataset.lockStrategyId);
+  });
+  $("active-intraday-strategies").addEventListener("click", (event) => {
     const button = event.target.closest("[data-lock-strategy-id]");
     if (button) lockIntradayStrategy(button.dataset.lockStrategyId);
   });

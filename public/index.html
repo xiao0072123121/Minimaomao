@@ -1099,8 +1099,9 @@
         <div class="strategy-note"><span>执行与失效条件</span><p id="strategy-trigger">方向、位置与触发周期一致后再生成执行参数。</p></div>
         <div id="strategy-rsi-risk-box" class="strategy-note strategy-risk" data-tone="neutral"><span>RSI 风险提示（不计分）</span><p id="strategy-rsi-risk">等待M15 RSI数据。</p></div>
       </div>
+      <div id="active-intraday-strategies" class="strategy-stack" hidden aria-label="当前并列日内策略"></div>
       <div id="intraday-strategy-history" class="strategy-stack" hidden aria-label="此前日内策略"></div>
-      <p class="strategy-disclaimer">日内策略不使用MA、MACD或RSI决定方向：H4价格结构确定主方向，H1寻找机会，M15负责价格触发；RSI仅提示过热、超卖与追单风险，不参与评分或拦截；A/B级进入执行评估，C级仅观察，并保留交易成本保护。策略评分不代表胜率，不构成投资建议。</p>
+      <p class="strategy-disclaimer">日内策略不使用MA、MACD或RSI决定方向：H4价格结构确定主方向，H1寻找机会，M15负责价格触发；当价格在高强度反向区域出现M15拒绝触发，且主趋势没有放量突破时，可并列生成最高B级的逆势回调策略。RSI仅提示过热、超卖与追单风险；成交量只确认、不强制。策略评分不代表胜率，不构成投资建议。</p>
     </section>
 
     <section id="locked-strategy" class="card strategy-card locked-strategy-card" data-bias="neutral" data-empty="true" aria-labelledby="locked-strategy-title" aria-live="polite">
