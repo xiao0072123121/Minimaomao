@@ -480,17 +480,15 @@
     .strategy-action.primary { border-color: rgba(240, 185, 77, .35); color: #ffd479; background: rgba(240, 185, 77, .07); }
     .strategy-action:disabled { cursor: not-allowed; opacity: .42; }
 
-    #strategy-direction, .strategy-direction-value, #position-direction { color: var(--muted); font-weight: 700; }
+    #strategy-direction, .strategy-direction-value { color: var(--muted); font-weight: 700; }
     .strategy-card[data-bias="bullish"] #strategy-direction,
-    .strategy-list-item[data-bias="bullish"] .strategy-direction-value,
-    .strategy-card[data-bias="bullish"] #position-direction { color: var(--red); }
+    .strategy-list-item[data-bias="bullish"] .strategy-direction-value { color: var(--red); }
     .strategy-card[data-bias="bearish"] #strategy-direction,
-    .strategy-list-item[data-bias="bearish"] .strategy-direction-value,
-    .strategy-card[data-bias="bearish"] #position-direction { color: var(--green); }
+    .strategy-list-item[data-bias="bearish"] .strategy-direction-value { color: var(--green); }
 
     .strategy-metrics {
       display: grid;
-      grid-template-columns: repeat(7, minmax(0, 1fr));
+      grid-template-columns: repeat(6, minmax(0, 1fr));
       gap: 8px;
     }
 
@@ -1039,9 +1037,6 @@
           </div>
           <div class="analysis-item"><span class="analysis-label">价格结构</span><p id="h4-structure">等待4小时K线…</p></div>
           <div class="analysis-item"><span class="analysis-label">机会判断</span><p id="h4-opportunity">—</p></div>
-          <div class="analysis-item"><span class="analysis-label">RSI 风险提示（不计分）</span><p id="h4-rsi">—</p></div>
-          <div class="analysis-item"><span class="analysis-label">MACD 动能提示（不计分）</span><p id="h4-macd">—</p></div>
-          <div class="analysis-item"><span class="analysis-label">成交量确认 (20)</span><p id="h4-volume">—</p></div>
           <div class="analysis-item"><span class="analysis-label">支撑 / 压力（成交密集核心）</span><p id="h4-levels">—</p></div>
           <div class="analysis-item conclusion"><span class="analysis-label">综合判断</span><p id="h4-conclusion">正在生成动态判断…</p></div>
         </article>
@@ -1054,9 +1049,6 @@
           </div>
           <div class="analysis-item"><span class="analysis-label">价格结构</span><p id="h1-structure">等待1小时K线…</p></div>
           <div class="analysis-item"><span class="analysis-label">机会判断</span><p id="h1-opportunity">—</p></div>
-          <div class="analysis-item"><span class="analysis-label">RSI 风险提示（不计分）</span><p id="h1-rsi">—</p></div>
-          <div class="analysis-item"><span class="analysis-label">MACD 动能提示（不计分）</span><p id="h1-macd">—</p></div>
-          <div class="analysis-item"><span class="analysis-label">成交量确认 (20)</span><p id="h1-volume">—</p></div>
           <div class="analysis-item"><span class="analysis-label">支撑 / 压力（成交密集核心）</span><p id="h1-levels">—</p></div>
           <div class="analysis-item conclusion"><span class="analysis-label">综合判断</span><p id="h1-conclusion">正在生成动态判断…</p></div>
         </article>
@@ -1069,9 +1061,6 @@
           </div>
           <div class="analysis-item"><span class="analysis-label">价格结构</span><p id="m15-structure">等待15分钟K线…</p></div>
           <div class="analysis-item"><span class="analysis-label">机会判断</span><p id="m15-opportunity">—</p></div>
-          <div class="analysis-item"><span class="analysis-label">RSI 风险提示（不计分）</span><p id="m15-rsi">—</p></div>
-          <div class="analysis-item"><span class="analysis-label">MACD 动能提示（不计分）</span><p id="m15-macd">—</p></div>
-          <div class="analysis-item"><span class="analysis-label">成交量确认 (20)</span><p id="m15-volume">—</p></div>
           <div class="analysis-item"><span class="analysis-label">支撑 / 压力（成交密集核心）</span><p id="m15-levels">—</p></div>
           <div class="analysis-item conclusion"><span class="analysis-label">综合判断</span><p id="m15-conclusion">正在生成动态判断…</p></div>
         </article>
@@ -1102,18 +1091,16 @@
           <div class="strategy-metric"><span>止损</span><b id="strategy-stop">—</b></div>
           <div class="strategy-metric"><span>止盈</span><b id="strategy-take-profit">—</b></div>
           <div class="strategy-metric"><span>盈亏比</span><b id="strategy-rr">—</b></div>
-          <div class="strategy-metric"><span>策略评分</span><b id="strategy-score">—</b></div>
         </div>
         <div class="strategy-body">
           <div class="strategy-note"><span>策略依据</span><p id="strategy-summary">等待多周期判断完成。</p></div>
           <div class="strategy-note"><span>执行与失效条件</span><p id="strategy-trigger">方向、位置与触发周期一致后再生成执行参数。</p></div>
           <div class="strategy-note strategy-portfolio"><span>组合风险规则</span><p id="strategy-portfolio-rule">单笔风险最高1%；新订单进入时同时止损风险不超过4%、总名义杠杆不超过4倍，额度不足时缩小新仓。</p></div>
-          <div id="strategy-rsi-risk-box" class="strategy-note strategy-risk" data-tone="neutral"><span>RSI 风险提示（不计分）</span><p id="strategy-rsi-risk">等待M15 RSI数据。</p></div>
         </div>
       </article>
       <div id="active-intraday-strategies" class="strategy-stack" hidden aria-label="当前并列日内策略"></div>
       <div id="intraday-strategy-history" class="strategy-stack" hidden aria-label="此前日内策略"></div>
-      <p class="strategy-disclaimer">日内策略不使用MA、MACD或RSI决定方向：H4价格结构确定主方向，H1寻找机会，M15负责价格触发；当价格在高强度反向区域出现M15拒绝触发，且主趋势没有放量突破时，可并列生成最高B级的逆势回调策略。RSI仅提示过热、超卖与追单风险；成交量只确认、不强制。策略评分不代表胜率，不构成投资建议。</p>
+      <p class="strategy-disclaimer">日内策略仅使用价格结构、关键位置与已收盘K线触发：H4确定主方向，H1寻找机会，M15负责入场触发；当价格在反向关键区域出现M15拒绝触发时，可并列生成逆势回调策略。成交量、MACD、RSI和策略评分均不参与方向、优先级或信号生成，不构成投资建议。</p>
     </section>
 
     <section id="locked-strategy" class="card strategy-card locked-strategy-card" data-bias="neutral" data-empty="true" aria-labelledby="locked-strategy-title" aria-live="polite">
@@ -1129,29 +1116,6 @@
       <p id="locked-strategy-empty" class="locked-empty">锁定后会在这里保存方向、入场区、止损、止盈和策略依据；上方实时策略仍会继续接收并展示新信号。</p>
       <div id="locked-strategy-list" class="strategy-stack" hidden aria-label="已锁定日内策略列表"></div>
       <p class="strategy-disclaimer">每条锁定记录都是生成时的本地快照，不会随实时行情自动修改，也不会阻止上方日内策略继续生成新信号；实际成交后仍需结合真实成交价和仓位管理。</p>
-    </section>
-
-    <section id="position-strategy" class="card strategy-card" data-bias="neutral" aria-labelledby="position-title" aria-live="polite">
-      <div class="strategy-head">
-        <div>
-          <h2 id="position-title">中长线交易策略</h2>
-          <p id="position-status">等待D1、H4与H1已收盘K线…</p>
-        </div>
-      </div>
-      <div class="strategy-metrics" aria-label="中长线策略参数">
-        <div class="strategy-metric"><span>方向</span><b id="position-direction">观望</b></div>
-        <div class="strategy-metric"><span>策略优先级</span><b id="position-priority">等待</b></div>
-        <div class="strategy-metric"><span>入场区域</span><b id="position-entry">—</b></div>
-        <div class="strategy-metric"><span>止损</span><b id="position-stop">—</b></div>
-        <div class="strategy-metric"><span>止盈</span><b id="position-take-profit">—</b></div>
-        <div class="strategy-metric"><span>盈亏比</span><b id="position-rr">—</b></div>
-        <div class="strategy-metric"><span>策略评分</span><b id="position-score">—</b></div>
-      </div>
-      <div class="strategy-body">
-        <div class="strategy-note"><span>策略依据</span><p id="position-summary">等待高周期判断完成。</p></div>
-        <div class="strategy-note"><span>执行与失效条件</span><p id="position-trigger">等待日线背景、H4结构与H1确认形成一致方向。</p></div>
-      </div>
-      <p class="strategy-disclaimer">持仓周期参考数日至数周；基于D1/H4/H1的MA、MACD、RSI、成交量、支撑压力和已收盘K线生成，仅A级信号进入执行评估，B/C级保留观察。策略评分不代表胜率，不构成投资建议。</p>
     </section>
 
     <section class="card chart-card" aria-label="Binance 合约历史K线">
