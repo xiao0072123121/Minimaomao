@@ -319,8 +319,11 @@
       stopLoss: strategy.stopLoss,
       takeProfit: strategy.takeProfit,
       target: strategy.target,
+      target3: strategy.target3,
       rewardRisk1: strategy.rewardRisk1,
       rewardRisk2: strategy.rewardRisk2,
+      rewardRisk3: strategy.rewardRisk3,
+      score: strategy.score,
       summary: strategy.summary,
       trigger: strategy.trigger,
       levelNote: strategy.levelNote || "",
@@ -354,14 +357,16 @@
     const entry = Number.isFinite(strategy.entryLow) && Number.isFinite(strategy.entryHigh)
       ? `${strategyPrice(strategy.entryLow)}–${strategyPrice(strategy.entryHigh)}`
       : "—";
-    const takeProfit = [strategy.takeProfit, strategy.target].filter(Number.isFinite).map(strategyPrice).join(" / ") || "—";
-    const rewardRisk = Number.isFinite(strategy.rewardRisk1) && Number.isFinite(strategy.rewardRisk2)
-      ? `1:${strategy.rewardRisk1.toFixed(2)} / 1:${strategy.rewardRisk2.toFixed(2)}`
+    const takeProfit = [strategy.takeProfit, strategy.target, strategy.target3].filter(Number.isFinite).map(strategyPrice).join(" / ") || "—";
+    const rewardRisks = [strategy.rewardRisk1, strategy.rewardRisk2, strategy.rewardRisk3].filter(Number.isFinite);
+    const rewardRisk = rewardRisks.length
+      ? rewardRisks.map((value) => `1:${value.toFixed(2)}`).join(" / ")
       : "—";
     return `
       <div class="strategy-metrics" aria-label="日内策略参数">
         <div class="strategy-metric"><span>方向</span><b class="strategy-direction-value">${escapeStrategyHtml(strategy.directionLabel)}</b></div>
         <div class="strategy-metric"><span>策略优先级</span><b>${escapeStrategyHtml(strategy.priority)}</b></div>
+        <div class="strategy-metric"><span>共振评分</span><b>${Number.isFinite(strategy.score) ? `${Math.round(strategy.score)} / 100` : "—"}</b></div>
         <div class="strategy-metric"><span>入场区域</span><b>${escapeStrategyHtml(entry)}</b></div>
         <div class="strategy-metric"><span>止损</span><b>${escapeStrategyHtml(strategyPrice(strategy.stopLoss))}</b></div>
         <div class="strategy-metric"><span>止盈</span><b>${escapeStrategyHtml(takeProfit)}</b></div>
@@ -853,7 +858,7 @@
   function refreshAnalysisForMicrostructure() {
     if (state.analysisFrames.h4 && state.analysisFrames.h1 && state.analysisFrames.m15) {
       renderAnalysis();
-      $("analysis-status").textContent = `${microstructureStatusText()} · 深度实时修正 · ${formatTime(Date.now())}`;
+      $("analysis-status").textContent = `${microstructureStatusText()} · SMC模型：H4趋势、H1区域、M15扫单＋CHoCH触发 · ${formatTime(Date.now())}`;
     }
   }
 
@@ -1635,6 +1640,238 @@
     return { score, label, direction: alignedDirection, highChange, lowChange };
   }
 
+  function latestFinite(values) {
+    const index = latestFiniteIndex(values);
+    return index >= 0 ? values[index] : null;
+  }
+
+  function findSmcPivots(candles, left = 2, right = 2) {
+    const pivots = [];
+    for (let index = left; index < candles.length - right; index += 1) {
+      const window = candles.slice(index - left, index + right + 1);
+      const candle = candles[index];
+      if (window.every((item) => candle.high >= item.high)) {
+        pivots.push({ type: "high", price: candle.high, index, time: candle.t });
+      }
+      if (window.every((item) => candle.low <= item.low)) {
+        pivots.push({ type: "low", price: candle.low, index, time: candle.t });
+      }
+    }
+    return pivots;
+  }
+
+  function smcSwingDirection(pivots, beforeIndex = Number.POSITIVE_INFINITY) {
+    const highs = pivots.filter((pivot) => pivot.type === "high" && pivot.index < beforeIndex).slice(-2);
+    const lows = pivots.filter((pivot) => pivot.type === "low" && pivot.index < beforeIndex).slice(-2);
+    if (highs.length < 2 || lows.length < 2) return 0;
+    const highDirection = Math.sign(highs[1].price - highs[0].price);
+    const lowDirection = Math.sign(lows[1].price - lows[0].price);
+    return highDirection === lowDirection ? highDirection : 0;
+  }
+
+  function detectSmcBreakEvents(candles, pivots, atr) {
+    const events = [];
+    const broken = new Set();
+    const startIndex = Math.max(5, candles.length - 90);
+    let marketDirection = smcSwingDirection(pivots, startIndex);
+    for (let index = startIndex; index < candles.length; index += 1) {
+      const previous = candles[index - 1];
+      const candle = candles[index];
+      const available = pivots.filter((pivot) => pivot.index <= index - 2);
+      const high = available.filter((pivot) => pivot.type === "high").at(-1);
+      const low = available.filter((pivot) => pivot.type === "low").at(-1);
+      const tolerance = atr * 0.03;
+      let event = null;
+      if (high && !broken.has(`high-${high.index}`) && candle.close > high.price + tolerance && previous.close <= high.price + tolerance) {
+        event = { direction: 1, level: high.price, pivotIndex: high.index, index, time: candle.t };
+        broken.add(`high-${high.index}`);
+      }
+      if (low && !broken.has(`low-${low.index}`) && candle.close < low.price - tolerance && previous.close >= low.price - tolerance) {
+        const bearish = { direction: -1, level: low.price, pivotIndex: low.index, index, time: candle.t };
+        if (!event || Math.abs(candle.close - low.price) > Math.abs(candle.close - high.price)) event = bearish;
+        broken.add(`low-${low.index}`);
+      }
+      if (!event) continue;
+      event.type = marketDirection && marketDirection !== event.direction ? "CHoCH" : "BOS";
+      marketDirection = event.direction;
+      events.push(event);
+    }
+    return events;
+  }
+
+  function findSmcOrderBlock(candles, breakEvents, direction, atr) {
+    const event = [...breakEvents].reverse().find((item) => item.direction === direction);
+    const searchEnd = event?.index ?? candles.length - 1;
+    const searchStart = Math.max(1, searchEnd - 8);
+    for (let index = searchEnd - 1; index >= searchStart; index -= 1) {
+      const candle = candles[index];
+      const opposite = direction > 0 ? candle.close < candle.open : candle.close > candle.open;
+      if (!opposite) continue;
+      const low = direction > 0 ? candle.low : Math.min(candle.open, candle.close);
+      const high = direction > 0 ? Math.max(candle.open, candle.close) : candle.high;
+      if (high - low < atr * 0.08) continue;
+      return {
+        direction,
+        low,
+        high,
+        center: (low + high) / 2,
+        index,
+        time: candle.t,
+        source: direction > 0 ? "看涨Order Block" : "看跌Order Block"
+      };
+    }
+    return null;
+  }
+
+  function findActiveFvg(candles, direction, atr) {
+    const start = Math.max(2, candles.length - 90);
+    const candidates = [];
+    for (let index = start; index < candles.length; index += 1) {
+      const first = candles[index - 2];
+      const third = candles[index];
+      const low = direction > 0 ? first.high : third.high;
+      const high = direction > 0 ? third.low : first.low;
+      if (high - low < atr * 0.06) continue;
+      const later = candles.slice(index + 1);
+      const filled = direction > 0
+        ? later.some((candle) => candle.low <= low)
+        : later.some((candle) => candle.high >= high);
+      if (!filled) {
+        candidates.push({
+          direction,
+          low,
+          high,
+          center: (low + high) / 2,
+          index,
+          time: third.t,
+          source: direction > 0 ? "看涨FVG" : "看跌FVG"
+        });
+      }
+    }
+    return candidates.at(-1) || null;
+  }
+
+  function detectLiquiditySweep(candles, pivots, direction, atr) {
+    const start = Math.max(3, candles.length - 12);
+    let latest = null;
+    for (let index = start; index < candles.length; index += 1) {
+      const reference = pivots
+        .filter((pivot) => pivot.type === (direction > 0 ? "low" : "high") && pivot.index <= index - 2)
+        .at(-1);
+      if (!reference) continue;
+      const candle = candles[index];
+      const swept = direction > 0
+        ? candle.low < reference.price - atr * 0.03 && candle.close > reference.price
+        : candle.high > reference.price + atr * 0.03 && candle.close < reference.price;
+      if (swept) {
+        latest = {
+          direction,
+          level: reference.price,
+          extreme: direction > 0 ? candle.low : candle.high,
+          index,
+          time: candle.t
+        };
+      }
+    }
+    return latest;
+  }
+
+  function analyzeSmcFrame(candles, atr, levels, key) {
+    const closes = candles.map((candle) => candle.close);
+    const last = candles[candles.length - 1];
+    const ema20 = latestFinite(calculateEmaSeries(closes, 20));
+    const ema50 = latestFinite(calculateEmaSeries(closes, 50));
+    const ema200 = latestFinite(calculateEmaSeries(closes, 200));
+    const rsiSeries = calculateRsi(candles);
+    const rsi = latestFinite(rsiSeries);
+    const previousRsi = rsiSeries.slice(0, -1).reverse().find(Number.isFinite) ?? rsi;
+    const macd = calculateMacd(candles);
+    const pivots = findSmcPivots(candles);
+    const breakEvents = detectSmcBreakEvents(candles, pivots, atr);
+    const lastBreak = breakEvents.at(-1) || null;
+    const swingDirection = smcSwingDirection(pivots);
+    const structuralDirection = lastBreak?.direction || swingDirection;
+    const ema200Direction = Number.isFinite(ema200)
+      ? last.close > ema200 ? 1 : last.close < ema200 ? -1 : 0
+      : 0;
+    const trendSign = structuralDirection && structuralDirection === ema200Direction ? structuralDirection : 0;
+    const emaStackDirection = ema20 > ema50 ? 1 : ema20 < ema50 ? -1 : 0;
+    const rsiDirection = Number.isFinite(rsi) ? rsi >= 50 ? 1 : -1 : 0;
+    const macdDirection = macd && macd.dif > macd.signal && macd.histogram >= 0
+      ? 1
+      : macd && macd.dif < macd.signal && macd.histogram <= 0
+        ? -1
+        : 0;
+    const momentumPassed = Boolean(trendSign && rsiDirection === trendSign && macdDirection === trendSign);
+    const candidateSign = trendSign || ema200Direction || structuralDirection;
+    let stageScore = 0;
+    if (candidateSign && ema200Direction === candidateSign) stageScore += 1.5;
+    const structureConfirmed = key === "h4"
+      ? lastBreak?.type === "BOS" && lastBreak.direction === candidateSign
+      : structuralDirection === candidateSign;
+    if (candidateSign && structureConfirmed) stageScore += 1.5;
+    else if (candidateSign && structuralDirection === candidateSign) stageScore += 0.5;
+    if (candidateSign && emaStackDirection === candidateSign) stageScore += 0.75;
+    if (candidateSign && rsiDirection === candidateSign) stageScore += 0.625;
+    if (candidateSign && macdDirection === candidateSign) stageScore += 0.625;
+    const bullishOrderBlock = findSmcOrderBlock(candles, breakEvents, 1, atr);
+    const bearishOrderBlock = findSmcOrderBlock(candles, breakEvents, -1, atr);
+    const bullishFvg = findActiveFvg(candles, 1, atr);
+    const bearishFvg = findActiveFvg(candles, -1, atr);
+    const bullishSweep = detectLiquiditySweep(candles, pivots, 1, atr);
+    const bearishSweep = detectLiquiditySweep(candles, pivots, -1, atr);
+    const recentBreakWindow = key === "m15" ? 6 : 12;
+    const bullishChoch = [...breakEvents].reverse().find((event) =>
+      event.type === "CHoCH" && event.direction === 1 && candles.length - 1 - event.index <= recentBreakWindow
+    ) || null;
+    const bearishChoch = [...breakEvents].reverse().find((event) =>
+      event.type === "CHoCH" && event.direction === -1 && candles.length - 1 - event.index <= recentBreakWindow
+    ) || null;
+    const highPivots = pivots.filter((pivot) => pivot.type === "high");
+    const lowPivots = pivots.filter((pivot) => pivot.type === "low");
+    const bias = trendSign > 0 ? "bullish" : trendSign < 0 ? "bearish" : "neutral";
+    const label = trendSign > 0
+      ? lastBreak?.type !== "BOS" ? "SMC偏多·等待BOS" : momentumPassed ? "SMC多头趋势" : "SMC偏多·动能待确认"
+      : trendSign < 0
+        ? lastBreak?.type !== "BOS" ? "SMC偏空·等待BOS" : momentumPassed ? "SMC空头趋势" : "SMC偏空·动能待确认"
+        : "SMC结构未共振";
+    return {
+      key,
+      bias,
+      label,
+      price: last.close,
+      ema20,
+      ema50,
+      ema200,
+      rsi,
+      previousRsi,
+      macd,
+      pivots,
+      breakEvents,
+      lastBreak,
+      swingDirection,
+      structuralDirection,
+      ema200Direction,
+      emaStackDirection,
+      rsiDirection,
+      macdDirection,
+      trendSign,
+      momentumPassed,
+      candidateSign,
+      stageScore: Math.min(5, stageScore),
+      bullishOrderBlock,
+      bearishOrderBlock,
+      bullishFvg,
+      bearishFvg,
+      bullishSweep,
+      bearishSweep,
+      bullishChoch,
+      bearishChoch,
+      externalHigh: highPivots.at(-1)?.price ?? levels.resistance,
+      externalLow: lowPivots.at(-1)?.price ?? levels.support
+    };
+  }
+
   function classifyDirection(score, key) {
     const previous = state.directionStates[key];
     let tier;
@@ -2089,6 +2326,7 @@
     const nearThreshold = Math.max(atr * 0.65, price * 0.001);
     const priceAction = detectPriceAction(candles, levels, atr, ma20, ma60);
     const intradayStructure = analyzeIntradayPriceStructure(candles, atr, levels, swing);
+    const smc = analyzeSmcFrame(candles, atr, levels, config.key);
     const result = {
       ...config,
       price,
@@ -2105,6 +2343,7 @@
       swing,
       priceAction,
       intradayStructure,
+      smc,
       support: levels.support,
       resistance: levels.resistance,
       supportLevel: levels.supportZone,
@@ -2227,23 +2466,28 @@
     const { h4, h1, m15 } = results;
     const conclusions = {};
     if (h4) {
-      const view = intradayFrameView(h4);
-      const direction = view.structure.strong
-        ? `已形成日内${view.structure.sign > 0 ? "做多" : "做空"}主方向`
-        : view.structure.sign
-          ? "已有方向倾向，但尚未达到H4强方向阈值"
-          : "尚未形成日内主方向";
-      conclusions.h4 = `H4为${view.structure.label}（结构分${signed(view.structure.score, 0)}），${direction}；价格结构条件多${view.longScore}、空${view.shortScore}。${proximityText(h4)}`;
+      const smc = h4.smc;
+      const breakText = smc.lastBreak
+        ? `${smc.lastBreak.direction > 0 ? "Bullish" : "Bearish"} ${smc.lastBreak.type}`
+        : "尚无有效BOS";
+      const direction = smc.trendSign > 0 ? "H4主方向偏多" : smc.trendSign < 0 ? "H4主方向偏空" : "H4方向尚未共振";
+      conclusions.h4 = `${direction}：${breakText}，价格${smc.ema200Direction > 0 ? "位于EMA200上方" : smc.ema200Direction < 0 ? "位于EMA200下方" : "尚无足够EMA200数据"}；${smc.momentumPassed ? "RSI与MACD趋势过滤通过" : "RSI与MACD尚未同向"}。`;
     }
     if (h1) {
-      const view = intradayFrameView(h1);
-      const relation = intradayFrameRelation(h1, [h4], "H4");
-      conclusions.h1 = `H1为${view.structure.label}（结构分${signed(view.structure.score, 0)}），${relation}；价格结构条件多${view.longScore}、空${view.shortScore}。${proximityText(h1)}`;
+      const mainSign = h4?.smc?.trendSign || h4?.smc?.candidateSign || 0;
+      const orderBlock = mainSign > 0 ? h1.smc.bullishOrderBlock : mainSign < 0 ? h1.smc.bearishOrderBlock : null;
+      conclusions.h1 = orderBlock
+        ? `H1已识别${orderBlock.source} ${smcZoneLabel(orderBlock)}；EMA20${h1.smc.emaStackDirection > 0 ? ">" : h1.smc.emaStackDirection < 0 ? "<" : "≈"}EMA50，${h1.smc.emaStackDirection === mainSign ? "与H4候选方向一致" : "尚未与H4候选方向一致"}。`
+        : `H1尚未识别与H4候选方向一致的有效Order Block；继续等待结构突破后生成回踩区域。`;
     }
     if (m15) {
-      const view = intradayFrameView(m15);
-      const relation = intradayFrameRelation(m15, [h4, h1], "H4/H1");
-      conclusions.m15 = `M15为${view.structure.label}（结构分${signed(view.structure.score, 0)}），${relation}；Setup：${view.structure.setupLabel}；触发：${view.structure.triggerLabel}，价格结构条件多${view.longScore}、空${view.shortScore}。${proximityText(m15)}`;
+      const mainSign = h4?.smc?.trendSign || h4?.smc?.candidateSign || 0;
+      const sweep = mainSign > 0 ? m15.smc.bullishSweep : mainSign < 0 ? m15.smc.bearishSweep : null;
+      const choch = mainSign > 0 ? m15.smc.bullishChoch : mainSign < 0 ? m15.smc.bearishChoch : null;
+      const sequence = Boolean(sweep && choch && choch.index >= sweep.index);
+      conclusions.m15 = sequence
+        ? `M15已在${mainSign > 0 ? "下方" : "上方"}流动性扫单后形成${mainSign > 0 ? "看涨" : "看跌"}CHoCH，结构触发完成；仍需同时通过入场区域与风险回报检查。`
+        : `M15尚未完成“进入H1区域 → 流动性扫单 → ${mainSign > 0 ? "看涨" : mainSign < 0 ? "看跌" : "同向"}CHoCH”的完整顺序，执行状态保持WAIT。`;
     }
     return conclusions;
   }
@@ -2716,6 +2960,211 @@
     }));
   }
 
+  function smcZoneLabel(zone) {
+    return zone ? `${analysisPriceFormat.format(zone.low)}–${analysisPriceFormat.format(zone.high)}` : "尚未识别";
+  }
+
+  function smcZoneTouchedRecently(zone, candles, atr, lookback = 12) {
+    if (!zone || !candles?.length) return false;
+    const tolerance = atr * 0.18;
+    return candles.slice(-lookback).some((candle) =>
+      candle.low <= zone.high + tolerance && candle.high >= zone.low - tolerance
+    );
+  }
+
+  function smcTargetCandidates(sign, h4, h1) {
+    const primary = sign > 0
+      ? [h1.smc.bearishFvg, h1.smc.bearishOrderBlock, ...(h1.resistanceLevels || []), ...(h4.resistanceLevels || [])]
+      : [h1.smc.bullishFvg, h1.smc.bullishOrderBlock, ...(h1.supportLevels || []), ...(h4.supportLevels || [])];
+    return primary.filter(Boolean);
+  }
+
+  function calculateSmcStrategyLevels(sign, entryZone, h4, h1, m15, sweep = null) {
+    if (!entryZone) return null;
+    const entryLow = Math.min(entryZone.low, entryZone.high);
+    const entryHigh = Math.max(entryZone.low, entryZone.high);
+    const entry = (entryLow + entryHigh) / 2;
+    const atr = Math.max(m15.atr, entry * 0.00035);
+    const minimumRisk = Math.max(atr * 0.7, h1.atr * 0.15, entry * 0.0008);
+    const structuralStop = sign > 0
+      ? Math.min(entryLow - atr * 0.2, Number.isFinite(sweep?.extreme) ? sweep.extreme - atr * 0.1 : Number.POSITIVE_INFINITY)
+      : Math.max(entryHigh + atr * 0.2, Number.isFinite(sweep?.extreme) ? sweep.extreme + atr * 0.1 : Number.NEGATIVE_INFINITY);
+    const stopLoss = sign > 0
+      ? Math.min(structuralStop, entry - minimumRisk)
+      : Math.max(structuralStop, entry + minimumRisk);
+    const risk = Math.max(atr * 0.35, Math.abs(entry - stopLoss));
+    const candidatePrices = smcTargetCandidates(sign, h4, h1)
+      .map((zone) => sign > 0 ? zone.low : zone.high)
+      .filter((price) => Number.isFinite(price) && (sign > 0 ? price > entry + atr * 0.2 : price < entry - atr * 0.2))
+      .sort((a, b) => sign > 0 ? a - b : b - a)
+      .filter((price, index, values) => index === 0 || Math.abs(price - values[index - 1]) > atr * 0.18);
+    const projected = (multiple) => entry + sign * risk * multiple;
+    const takeProfit = candidatePrices[0] ?? projected(1.5);
+    const nextStructuralTarget = candidatePrices.find((price) => sign > 0
+      ? price > takeProfit + atr * 0.2
+      : price < takeProfit - atr * 0.2);
+    const targetCandidate = nextStructuralTarget ?? projected(2.4);
+    const target = sign > 0
+      ? Math.max(targetCandidate, takeProfit + atr * 0.3)
+      : Math.min(targetCandidate, takeProfit - atr * 0.3);
+    const externalLiquidity = sign > 0 ? h4.smc.externalHigh : h4.smc.externalLow;
+    const target3Candidate = Number.isFinite(externalLiquidity) && (sign > 0
+      ? externalLiquidity > target + atr * 0.2
+      : externalLiquidity < target - atr * 0.2)
+      ? externalLiquidity
+      : projected(3.5);
+    const target3 = sign > 0
+      ? Math.max(target3Candidate, target + atr * 0.3)
+      : Math.min(target3Candidate, target - atr * 0.3);
+    return {
+      entryLow,
+      entryHigh,
+      stopLoss,
+      takeProfit,
+      target,
+      target3,
+      risk,
+      rewardRisk1: Math.max(0, sign * (takeProfit - entry)) / risk,
+      rewardRisk2: Math.max(0, sign * (target - entry)) / risk,
+      rewardRisk3: Math.max(0, sign * (target3 - entry)) / risk,
+      levelNote: `入场依据H1 ${entryZone.source || "Order Block"} ${smcZoneLabel(entryZone)}；止损置于订单块与扫流动性极值之外；TP1取最近供应/需求区，TP2取下一结构区，TP3取H4外部流动性或3.5R延伸。`
+    };
+  }
+
+  function smcStageScores(sign, h4, h1, m15, entryZone) {
+    const m15Candles = state.analysisFrames.m15 || [];
+    const zoneTouched = smcZoneTouchedRecently(entryZone, m15Candles, m15.atr);
+    const h1EmaAligned = h1.smc.emaStackDirection === sign;
+    const h1Fvg = sign > 0 ? h1.smc.bullishFvg : h1.smc.bearishFvg;
+    const sweep = sign > 0 ? m15.smc.bullishSweep : m15.smc.bearishSweep;
+    const choch = sign > 0 ? m15.smc.bullishChoch : m15.smc.bearishChoch;
+    const sequenceConfirmed = Boolean(sweep && choch && choch.index >= sweep.index);
+    const optionalMomentum = sign > 0
+      ? m15.smc.rsi >= 50 && m15.smc.rsi >= m15.smc.previousRsi && m15.price >= m15.smc.ema20
+      : m15.smc.rsi <= 50 && m15.smc.rsi <= m15.smc.previousRsi && m15.price <= m15.smc.ema20;
+    const h1Score = Math.min(5,
+      (entryZone ? 2 : 0) +
+      (h1EmaAligned ? 1 : 0) +
+      (h1Fvg ? 1 : 0) +
+      (zoneTouched ? 1 : 0)
+    );
+    const m15Score = Math.min(5,
+      (zoneTouched ? 1 : 0) +
+      (sweep ? 1.5 : 0) +
+      (choch ? 1.5 : 0) +
+      (optionalMomentum ? 1 : 0)
+    );
+    const h4Score = h4.smc.stageScore;
+    return {
+      h4Score,
+      h1Score,
+      m15Score,
+      overall: Math.round(h4Score / 5 * 40 + h1Score / 5 * 30 + m15Score / 5 * 30),
+      zoneTouched,
+      h1EmaAligned,
+      h1Fvg,
+      sweep,
+      choch,
+      sequenceConfirmed,
+      optionalMomentum
+    };
+  }
+
+  function buildSmcPrimaryStrategy(results) {
+    const { h4, h1, m15 } = results;
+    if (!h4?.smc || !h1?.smc || !m15?.smc) return emptyIntradayStrategy("等待SMC多周期数据完成计算。");
+    const sign = h4.smc.trendSign || h4.smc.candidateSign;
+    if (!sign) return emptyIntradayStrategy("H4价格与EMA200、BOS方向尚未形成共振，暂不选择主方向。");
+    const bias = sign > 0 ? "bullish" : "bearish";
+    const direction = sign > 0 ? "做多" : "做空";
+    const entryZone = sign > 0 ? h1.smc.bullishOrderBlock : h1.smc.bearishOrderBlock;
+    const stages = smcStageScores(sign, h4, h1, m15, entryZone);
+    const levels = calculateSmcStrategyLevels(sign, entryZone, h4, h1, m15, stages.sweep);
+    const h4BosReady = h4.smc.lastBreak?.type === "BOS" && h4.smc.lastBreak.direction === sign;
+    const h4Ready = h4.smc.trendSign === sign && h4BosReady && h4.smc.momentumPassed;
+    const h1Ready = Boolean(entryZone && stages.h1EmaAligned);
+    const triggerReady = stages.zoneTouched && stages.sequenceConfirmed;
+    const riskReady = Boolean(levels && levels.rewardRisk1 >= 1.3);
+    const actionable = h4Ready && h1Ready && triggerReady && riskReady;
+    const waiting = [];
+    if (!h4Ready) waiting.push("H4需由EMA200、同向BOS、RSI与MACD完成趋势过滤");
+    if (!entryZone) waiting.push(`H1尚未识别有效${sign > 0 ? "看涨" : "看跌"}订单块`);
+    else if (!stages.h1EmaAligned) waiting.push(`H1 EMA20尚未${sign > 0 ? "上穿" : "下穿"}EMA50`);
+    if (!stages.zoneTouched) waiting.push("价格尚未进入H1订单块");
+    if (!stages.sweep) waiting.push(`M15尚未出现${sign > 0 ? "下方" : "上方"}流动性扫单`);
+    if (!stages.choch || !stages.sequenceConfirmed) waiting.push(`M15尚未在扫单后形成${sign > 0 ? "看涨" : "看跌"}CHoCH`);
+    if (levels && !riskReady) waiting.push("第一目标的原始盈亏比低于1:1.30");
+    const bosText = h4.smc.lastBreak
+      ? `${h4.smc.lastBreak.direction > 0 ? "Bullish" : "Bearish"} ${h4.smc.lastBreak.type}`
+      : "等待BOS";
+    const rsiText = Number.isFinite(h4.smc.rsi) ? h4.smc.rsi.toFixed(1) : "数据不足";
+    const ema200Text = Number.isFinite(h4.smc.ema200)
+      ? h4.price >= h4.smc.ema200 ? "位于EMA200上方" : "位于EMA200下方"
+      : "尚无足够K线计算EMA200";
+    const summary = `H4：价格${ema200Text}，${bosText}，RSI ${rsiText}，MACD${h4.smc.macdDirection === sign ? "同向" : "未同向"}；H1：${entryZone ? `${entryZone.source} ${smcZoneLabel(entryZone)}` : "订单块待确认"}，EMA20${h1.smc.emaStackDirection === 1 ? ">" : h1.smc.emaStackDirection === -1 ? "<" : "≈"}EMA50；M15：${stages.sweep ? "已扫流动性" : "待扫流动性"}，${stages.choch ? `已形成${stages.choch.direction > 0 ? "看涨" : "看跌"}CHoCH` : "待CHoCH"}。综合共振 ${stages.overall}/100。`;
+    const trigger = actionable
+      ? `执行条件已完成：价格回踩订单块、流动性扫单后出现同向CHoCH。${stages.optionalMomentum ? "RSI与EMA20辅助确认同步通过。" : "RSI/EMA20仅作辅助，不阻止已确认结构。"} ${levels.levelNote}`
+      : `当前状态 WAIT：${waiting.join("；")}。没有M15结构确认不提前入场。${levels?.levelNote || ""}`;
+    return {
+      bias,
+      candidateBias: bias,
+      strategyType: "primary",
+      strategyLabel: "SMC顺势主策略",
+      actionable,
+      directionLabel: actionable ? direction : `WAIT · 候选${direction}`,
+      priority: actionable ? "A · 多周期SMC共振" : "WAIT · 等待M15确认",
+      score: stages.overall,
+      stageScores: stages,
+      ...(levels || {}),
+      summary,
+      trigger
+    };
+  }
+
+  function buildSmcAlternativeStrategy(results) {
+    const { h4, h1, m15 } = results;
+    const mainSign = h4?.smc?.trendSign;
+    if (!mainSign || !h1?.smc || !m15?.smc) return null;
+    const sign = -mainSign;
+    const bias = sign > 0 ? "bullish" : "bearish";
+    const direction = sign > 0 ? "做多" : "做空";
+    const entryZone = sign > 0
+      ? h1.smc.bullishOrderBlock || h1.smc.bullishFvg || h1.supportLevel
+      : h1.smc.bearishOrderBlock || h1.smc.bearishFvg || h1.resistanceLevel;
+    if (!entryZone) return null;
+    const m15Candles = state.analysisFrames.m15 || [];
+    const zoneTouched = smcZoneTouchedRecently(entryZone, m15Candles, m15.atr, 10);
+    const choch = sign > 0 ? m15.smc.bullishChoch : m15.smc.bearishChoch;
+    const levels = calculateSmcStrategyLevels(sign, entryZone, h4, h1, m15, null);
+    const riskReady = Boolean(levels && levels.rewardRisk1 >= 1.2);
+    const actionable = zoneTouched && Boolean(choch) && riskReady;
+    const score = Math.round((zoneTouched ? 35 : 10) + (choch ? 40 : 0) + (riskReady ? 25 : 0));
+    return {
+      bias,
+      candidateBias: bias,
+      strategyType: "countertrend",
+      strategyLabel: "SMC备选逆势策略",
+      actionable,
+      directionLabel: actionable ? `备选${direction}` : `WAIT · 备选${direction}`,
+      priority: actionable ? "B · 供应/需求区反转" : "WAIT · 等待反向CHoCH",
+      score,
+      ...(levels || {}),
+      summary: `H4主方向仍为${mainSign > 0 ? "做多" : "做空"}；备选${direction}仅关注H1 ${entryZone.source || (sign > 0 ? "需求区" : "供应区")} ${smcZoneLabel(entryZone)}，不视为大趋势反转。`,
+      trigger: actionable
+        ? `价格已进入关注区并出现M15 ${sign > 0 ? "看涨" : "看跌"}CHoCH，可按备选方案执行；触及结构止损立即失效。`
+        : `仅当价格进入 ${smcZoneLabel(entryZone)} 且M15出现${sign > 0 ? "看涨" : "看跌"}CHoCH时执行；当前不逆势提前入场。`
+    };
+  }
+
+  function buildSmcIntradayStrategies(results) {
+    const primary = buildSmcPrimaryStrategy(results);
+    const alternative = buildSmcAlternativeStrategy(results);
+    return [primary, alternative].filter(Boolean).map((strategy) => ({
+      ...strategy,
+      portfolioRule: intradayPortfolioRiskRule()
+    }));
+  }
+
   function strategyPrice(value) {
     return Number.isFinite(value) ? priceFormat.format(value) : "—";
   }
@@ -2779,7 +3228,7 @@
   function renderActiveSupplementalStrategies(records) {
     const container = $("active-intraday-strategies");
     if (!container) return;
-    const supplemental = records.slice(1).filter((record) => record.strategy.actionable);
+    const supplemental = records.slice(1);
     container.hidden = supplemental.length === 0;
     container.innerHTML = supplemental.map((record) => {
       const strategy = record.strategy;
@@ -2787,8 +3236,8 @@
       return `
         <article class="strategy-list-item" data-bias="${escapeStrategyHtml(strategy.bias)}" data-strategy-id="${escapeStrategyHtml(record.id)}">
           <div class="strategy-head">
-            <div><h3>${escapeStrategyHtml(strategy.strategyLabel)}</h3><p>与顺势主策略并列 · 独立止损与失效条件</p></div>
-            <button class="strategy-action primary" type="button" data-lock-strategy-id="${escapeStrategyHtml(record.id)}">${locked ? "更新这条锁定" : "锁定这条策略"}</button>
+            <div><h3>${escapeStrategyHtml(strategy.strategyLabel)}</h3><p>供应/需求区备选方案 · 独立止损与失效条件</p></div>
+            <button class="strategy-action primary" type="button" data-lock-strategy-id="${escapeStrategyHtml(record.id)}" ${strategy.actionable ? "" : "disabled"}>${strategy.actionable ? locked ? "更新这条锁定" : "锁定这条策略" : "等待触发"}</button>
           </div>
           ${strategyMetricsMarkup(strategy)}
           ${strategyNotesMarkup(strategy)}
@@ -2799,24 +3248,27 @@
   function renderIntradayStrategy(results = state.analysisResults) {
     const hasFrames = Boolean(results?.h4 && results?.h1 && results?.m15);
     const entryPrice = Number.isFinite(state.book?.mid) ? state.book.mid : results?.m15?.price;
-    const strategies = buildIntradayStrategies(results || {}, entryPrice);
+    const strategies = buildSmcIntradayStrategies(results || {}, entryPrice);
     const strategy = strategies[0];
+    renderSmcExecutionOverview(results || {}, strategy);
     const records = strategies.map((item) => createIntradayStrategyRecord(item, entryPrice, results?.m15));
     const card = $("intraday-strategy");
     card.dataset.bias = strategy.bias;
     $("primary-intraday-strategy").dataset.bias = strategy.bias;
     $("strategy-direction").textContent = strategy.directionLabel;
     $("strategy-priority").textContent = strategy.priority;
+    $("strategy-score").textContent = Number.isFinite(strategy.score) ? `${Math.round(strategy.score)} / 100` : "—";
     $("strategy-entry").textContent = Number.isFinite(strategy.entryLow) && Number.isFinite(strategy.entryHigh)
       ? `${strategyPrice(strategy.entryLow)}–${strategyPrice(strategy.entryHigh)}`
       : "—";
     $("strategy-stop").textContent = strategyPrice(strategy.stopLoss);
-    const takeProfitValues = [strategy.takeProfit, strategy.target]
+    const takeProfitValues = [strategy.takeProfit, strategy.target, strategy.target3]
       .filter(Number.isFinite)
       .map(strategyPrice);
     $("strategy-take-profit").textContent = takeProfitValues.length ? takeProfitValues.join(" / ") : "—";
-    $("strategy-rr").textContent = Number.isFinite(strategy.rewardRisk1) && Number.isFinite(strategy.rewardRisk2)
-      ? `1:${strategy.rewardRisk1.toFixed(2)} / 1:${strategy.rewardRisk2.toFixed(2)}`
+    const rewardRisks = [strategy.rewardRisk1, strategy.rewardRisk2, strategy.rewardRisk3].filter(Number.isFinite);
+    $("strategy-rr").textContent = rewardRisks.length
+      ? rewardRisks.map((value) => `1:${value.toFixed(2)}`).join(" / ")
       : "—";
     $("strategy-summary").textContent = strategy.summary;
     $("strategy-trigger").textContent = strategy.trigger;
@@ -2829,30 +3281,128 @@
     const activeCopy = activeCount > 1 ? ` · 当前并列${activeCount}条策略` : "";
     const historyCopy = historyCount ? ` · 保留此前${historyCount}条策略` : "";
     $("strategy-status").textContent = hasFrames
-      ? `日内价格行为：H4确定主方向，H1确认位置，M15负责触发；关键支撑压力配合M15反向拒绝时可并列生成逆势回调策略；${Number.isFinite(state.book?.mid) ? "入场区随实时中间价更新" : "暂用M15最近收盘作为入场参考"}${activeCopy}${historyCopy} · ${formatTime(Date.now())}`
+      ? `SMC多周期执行：H4以EMA200＋BOS确定主方向并由RSI/MACD过滤，H1识别Order Block/FVG，M15等待扫流动性＋CHoCH；评分仅展示共振完整度，不单独决定入场${activeCopy}${historyCopy} · ${formatTime(Date.now())}`
       : "等待H4、H1与M15已收盘K线…";
   }
 
+  function smcBreakText(smc) {
+    if (!smc?.lastBreak) return "等待BOS";
+    return `${smc.lastBreak.direction > 0 ? "Bullish" : "Bearish"} ${smc.lastBreak.type}`;
+  }
+
+  function smcMomentumText(smc) {
+    const rsiText = Number.isFinite(smc?.rsi) ? `RSI ${smc.rsi.toFixed(1)}` : "RSI不足";
+    const macdText = smc?.macdDirection > 0 ? "MACD+" : smc?.macdDirection < 0 ? "MACD−" : "MACD中性";
+    return `${rsiText} · ${macdText}`;
+  }
+
+  function smcZoneValue(zone) {
+    if (!zone) return "—";
+    if (Number.isFinite(zone.low) && Number.isFinite(zone.high)) return smcZoneLabel(zone);
+    return Number.isFinite(zone) ? analysisPriceFormat.format(zone) : "—";
+  }
+
+  function smcFrameDisplay(key, result) {
+    const smc = result.smc;
+    if (key === "h4") {
+      const emaRelation = smc.ema200Direction > 0 ? "价格在EMA200上方" : smc.ema200Direction < 0 ? "价格在EMA200下方" : "EMA200数据不足";
+      return {
+        setup: smcBreakText(smc),
+        confidence: smc.momentumPassed ? "趋势过滤通过" : "动能待确认",
+        structure: `${smcBreakText(smc)}；${emaRelation}；摆动结构${smc.swingDirection > 0 ? "抬高" : smc.swingDirection < 0 ? "下移" : "未定"}。`,
+        opportunity: `${smcMomentumText(smc)}；RSI与MACD只负责H4趋势过滤，不负责M15入场。`,
+        levels: `上方外部流动性 ${smcZoneValue(smc.externalHigh)}；下方外部流动性 ${smcZoneValue(smc.externalLow)}；ATR(14) ${analysisPriceFormat.format(result.atr)}。`
+      };
+    }
+    if (key === "h1") {
+      const bullishZone = smc.bullishOrderBlock || smc.bullishFvg;
+      const bearishZone = smc.bearishOrderBlock || smc.bearishFvg;
+      return {
+        setup: bullishZone || bearishZone ? "OB/FVG已识别" : "等待区域",
+        confidence: `EMA20${smc.emaStackDirection > 0 ? ">" : smc.emaStackDirection < 0 ? "<" : "≈"}EMA50`,
+        structure: `需求区 ${smcZoneValue(bullishZone)}；供应区 ${smcZoneValue(bearishZone)}。`,
+        opportunity: `${smcBreakText(smc)}；价格只有回到与H4方向一致的H1订单块后，才进入M15触发观察。`,
+        levels: `成交密集支撑 ${result.analysisSupportZone}；成交密集压力 ${result.analysisResistanceZone}；动态区域用于增强Order Block/FVG可信度。`
+      };
+    }
+    const sweepLabels = [smc.bullishSweep ? "下扫✓" : "下扫○", smc.bearishSweep ? "上扫✓" : "上扫○"];
+    const chochLabels = [smc.bullishChoch ? "看涨CHoCH✓" : "看涨CHoCH○", smc.bearishChoch ? "看跌CHoCH✓" : "看跌CHoCH○"];
+    return {
+      setup: `${sweepLabels.join("/")} · ${smc.bullishChoch || smc.bearishChoch ? "CHoCH已出现" : "待CHoCH"}`,
+      confidence: smcMomentumText(smc),
+      structure: `${sweepLabels.join("，")}；${chochLabels.join("，")}。`,
+      opportunity: "必须先进入H1执行区域，再出现流动性扫单，最后由同向CHoCH确认；顺序不完整则WAIT。",
+      levels: `短线支撑 ${result.analysisSupportZone}；短线压力 ${result.analysisResistanceZone}；ATR(14) ${analysisPriceFormat.format(result.atr)}。`
+    };
+  }
+
+  function renderSmcExecutionOverview(results, strategy) {
+    const zoneList = $("smc-zone-list");
+    const checklist = $("smc-entry-checklist");
+    if (!zoneList || !checklist) return;
+    const { h4, h1, m15 } = results;
+    if (!h4?.smc || !h1?.smc || !m15?.smc) {
+      zoneList.innerHTML = `<div class="smc-zone-row" data-side="current"><div class="smc-zone-copy"><span>等待真实多周期K线</span><small>H4、H1、M15加载完成后生成区域地图</small></div><b>—</b></div>`;
+      checklist.innerHTML = `<li data-ready="false"><span class="smc-check-icon">○</span><span>等待H4、H1、M15数据</span></li>`;
+      $("smc-check-count").textContent = "0 / 5";
+      return;
+    }
+    const items = [];
+    const addPoint = (label, detail, value, side) => {
+      if (!Number.isFinite(value)) return;
+      items.push({ label, detail, low: value, high: value, center: value, side });
+    };
+    const addZone = (label, detail, zone, side) => {
+      if (!zone || !Number.isFinite(zone.low) || !Number.isFinite(zone.high)) return;
+      items.push({ label, detail, low: zone.low, high: zone.high, center: (zone.low + zone.high) / 2, side });
+    };
+    addPoint("H4上方外部流动性", "买方流动性池", h4.smc.externalHigh, "resistance");
+    addZone("H1供应 / FVG", "潜在获利或反转区", h1.smc.bearishFvg || h1.smc.bearishOrderBlock || h1.resistanceLevel, "resistance");
+    addPoint("当前价", "实时中间价 / 最新已收盘价", Number.isFinite(state.book?.mid) ? state.book.mid : m15.price, "current");
+    addZone("H1需求 / Order Block", "主要回踩执行区", h1.smc.bullishOrderBlock || h1.smc.bullishFvg || h1.supportLevel, "support");
+    addPoint("H4下方外部流动性", "卖方流动性池", h4.smc.externalLow, "support");
+    const deduped = items.sort((a, b) => b.center - a.center);
+    zoneList.innerHTML = deduped.map((item) => `
+      <div class="smc-zone-row" data-side="${item.side}">
+        <div class="smc-zone-copy"><span>${item.label}</span><small>${item.detail}</small></div>
+        <b>${item.low === item.high ? analysisPriceFormat.format(item.low) : `${analysisPriceFormat.format(item.low)}–${analysisPriceFormat.format(item.high)}`}</b>
+      </div>`).join("");
+
+    const sign = h4.smc.trendSign || h4.smc.candidateSign || 0;
+    const entryZone = sign > 0 ? h1.smc.bullishOrderBlock : sign < 0 ? h1.smc.bearishOrderBlock : null;
+    const stages = strategy?.stageScores || smcStageScores(sign, h4, h1, m15, entryZone);
+    const checks = [
+      { ready: Boolean(sign && h4.smc.ema200Direction === sign && h4.smc.lastBreak?.type === "BOS" && h4.smc.lastBreak.direction === sign), label: "H4 EMA200与同向BOS确认主方向" },
+      { ready: Boolean(sign && h4.smc.momentumPassed), label: "H4 RSI与MACD趋势过滤通过" },
+      { ready: Boolean(entryZone && stages.h1EmaAligned), label: "H1订单块与EMA20/EMA50方向一致" },
+      { ready: Boolean(stages.zoneTouched && stages.sweep), label: "价格进入执行区并完成流动性扫单" },
+      { ready: Boolean(stages.sequenceConfirmed), label: "M15在扫单后形成同向CHoCH" }
+    ];
+    const readyCount = checks.filter((item) => item.ready).length;
+    $("smc-check-count").textContent = `${readyCount} / ${checks.length}`;
+    checklist.innerHTML = checks.map((item) => `<li data-ready="${item.ready}"><span class="smc-check-icon">${item.ready ? "✓" : "○"}</span><span>${item.label}</span></li>`).join("");
+  }
+
   function renderAnalysisCard(key, result, conclusion) {
-    const view = intradayFrameView(result);
-    const structure = view.structure;
-    $(`${key}-card`).dataset.bias = view.bias;
-    $(`${key}-state`).textContent = structure.label;
-    $(`${key}-direction-score`).textContent = signed(structure.score, 0);
-    $(`${key}-direction-score`).className = structure.sign > 0
+    const smc = result.smc;
+    const display = smcFrameDisplay(key, result);
+    $(`${key}-card`).dataset.bias = smc.bias;
+    $(`${key}-state`).textContent = smc.label;
+    $(`${key}-direction-score`).textContent = `${smc.stageScore.toFixed(1)} / 5`;
+    $(`${key}-direction-score`).className = smc.candidateSign > 0
       ? "bullish"
-      : structure.sign < 0
+      : smc.candidateSign < 0
         ? "bearish"
         : "neutral";
-    $(`${key}-setup-score`).textContent = `多${view.longScore} · 空${view.shortScore}`;
-    $(`${key}-setup-score`).className = view.bias;
-    $(`${key}-setup-score`).dataset.tone = view.tone;
-    $(`${key}-setup-score`).title = structure.label;
-    $(`${key}-confidence`).textContent = view.strength.label;
-    $(`${key}-confidence`).dataset.tone = view.strength.tone;
-    $(`${key}-structure`).textContent = intradayStructureDetail(result);
-    $(`${key}-opportunity`).textContent = intradayOpportunityDetail(result, view);
-    $(`${key}-levels`).textContent = `支撑 ${result.analysisSupportZone}（${describeLevelZone(result.supportLevel)}）；压力 ${result.analysisResistanceZone}（${describeLevelZone(result.resistanceLevel)}）；ATR(14)=${analysisPriceFormat.format(result.atr)}。`;
+    $(`${key}-setup-score`).textContent = display.setup;
+    $(`${key}-setup-score`).className = smc.bias;
+    $(`${key}-setup-score`).dataset.tone = smc.trendSign ? "ready" : "wait";
+    $(`${key}-setup-score`).title = smc.label;
+    $(`${key}-confidence`).textContent = display.confidence;
+    $(`${key}-confidence`).dataset.tone = smc.momentumPassed ? "high" : "low";
+    $(`${key}-structure`).textContent = display.structure;
+    $(`${key}-opportunity`).textContent = display.opportunity;
+    $(`${key}-levels`).textContent = display.levels;
     $(`${key}-conclusion`).textContent = conclusion;
   }
 
@@ -2877,7 +3427,7 @@
         errors[key] = error.message;
       }
     }
-    applyMultiFrameContext(results);
+    applySupportResistanceConfluence(results);
     state.analysisResults = results;
     const conclusions = buildConclusions(results);
     for (const [key, config] of Object.entries(ANALYSIS_FRAMES)) {
@@ -2922,7 +3472,7 @@
     });
     renderAnalysis(errors);
     const failed = Object.keys(errors).length;
-    $("analysis-status").textContent = `${failed ? `${failed}个周期延迟 · ` : ""}${microstructureStatusText()} · 行情卡片与日内策略统一采用成交密集＋结构＋位置＋触发 · ${formatTime(Date.now())}`;
+    $("analysis-status").textContent = `${failed ? `${failed}个周期延迟 · ` : ""}${microstructureStatusText()} · SMC模型：H4趋势、H1区域、M15扫单＋CHoCH触发 · ${formatTime(Date.now())}`;
   }
 
   function indicatorX(index, count, margin, innerW) {

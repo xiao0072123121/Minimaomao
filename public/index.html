@@ -432,6 +432,57 @@
     }
     .analysis-item.conclusion p { color: #fff0c9; }
 
+    .smc-map-section { margin-bottom: 14px; }
+    .smc-map-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 2fr) minmax(280px, .85fr);
+      gap: 14px;
+    }
+    .smc-map-card { padding: 18px; }
+    .smc-zone-list { display: grid; gap: 6px; }
+    .smc-zone-row {
+      position: relative;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 18px;
+      min-height: 54px;
+      padding: 10px 14px;
+      border-left: 3px solid var(--muted);
+      background: rgba(255, 255, 255, .022);
+    }
+    .smc-zone-row[data-side="resistance"] { border-left-color: #ff6070; background: rgba(255, 76, 96, .07); }
+    .smc-zone-row[data-side="support"] { border-left-color: #27d5a1; background: rgba(39, 213, 161, .07); }
+    .smc-zone-row[data-side="current"] {
+      min-height: 36px;
+      border-top: 1px dashed rgba(91, 164, 255, .35);
+      border-bottom: 1px dashed rgba(91, 164, 255, .35);
+      border-left-color: transparent;
+      background: transparent;
+    }
+    .smc-zone-copy span { display: block; color: #d8e3ec; font-size: 12px; }
+    .smc-zone-copy small { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
+    .smc-zone-row b { color: #f3f6f8; font-size: 13px; font-variant-numeric: tabular-nums; }
+    .smc-zone-row[data-side="current"] b { color: #77aaff; }
+    .smc-checklist-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+    .smc-checklist-head h3 { margin: 0; font-size: 14px; }
+    .smc-check-count { padding: 5px 8px; border-radius: 6px; color: #aab8c6; background: rgba(255,255,255,.06); font-size: 11px; }
+    .smc-checklist { display: grid; margin: 0; padding: 0; list-style: none; }
+    .smc-checklist li {
+      display: grid;
+      grid-template-columns: 18px 1fr;
+      gap: 8px;
+      align-items: start;
+      padding: 11px 0;
+      border-bottom: 1px solid rgba(255,255,255,.07);
+      color: #dbe4ec;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+    .smc-checklist li:last-child { border-bottom: 0; }
+    .smc-checklist .smc-check-icon { color: #778898; font-weight: 800; }
+    .smc-checklist li[data-ready="true"] .smc-check-icon { color: #29d3a0; }
+
     .strategy-card {
       min-height: 0;
       margin-bottom: 14px;
@@ -488,7 +539,7 @@
 
     .strategy-metrics {
       display: grid;
-      grid-template-columns: repeat(6, minmax(0, 1fr));
+      grid-template-columns: repeat(7, minmax(0, 1fr));
       gap: 8px;
     }
 
@@ -924,6 +975,7 @@
       .primary-card { grid-column: 1 / -1; }
       .card { min-height: 158px; }
       .analysis-grid { grid-template-columns: 1fr; }
+      .smc-map-grid { grid-template-columns: 1fr; }
       .analysis-card { min-height: auto; }
       .strategy-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .strategy-list-item .strategy-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -1024,45 +1076,67 @@
 
     <section class="analysis-section" aria-labelledby="analysis-title" aria-live="polite">
       <div class="section-heading">
-        <h2 id="analysis-title">多周期量化研判</h2>
+        <h2 id="analysis-title">SMC 多周期共振</h2>
         <p id="analysis-status">正在读取 H4、H1、M15 已收盘K线…</p>
       </div>
       <div class="analysis-grid">
         <article id="h4-card" class="card analysis-card" data-bias="neutral">
           <div class="analysis-card-title"><h3>H4 行情状态</h3><span id="h4-state" class="analysis-state">计算中</span></div>
           <div class="analysis-scores" aria-label="H4量化研判">
-            <div class="analysis-score"><span>结构分</span><b id="h4-direction-score">—</b></div>
-            <div class="analysis-score"><span>多 / 空条件</span><b id="h4-setup-score">—</b></div>
-            <div class="analysis-score" title="价格结构分的绝对强度，不代表历史胜率"><span>结构强度</span><b id="h4-confidence">—</b></div>
+            <div class="analysis-score"><span>阶段评分</span><b id="h4-direction-score">—</b></div>
+            <div class="analysis-score"><span>SMC 结构</span><b id="h4-setup-score">—</b></div>
+            <div class="analysis-score"><span>过滤状态</span><b id="h4-confidence">—</b></div>
           </div>
-          <div class="analysis-item"><span class="analysis-label">价格结构</span><p id="h4-structure">等待4小时K线…</p></div>
-          <div class="analysis-item"><span class="analysis-label">机会判断</span><p id="h4-opportunity">—</p></div>
-          <div class="analysis-item"><span class="analysis-label">支撑 / 压力（成交密集核心）</span><p id="h4-levels">—</p></div>
-          <div class="analysis-item conclusion"><span class="analysis-label">综合判断</span><p id="h4-conclusion">正在生成动态判断…</p></div>
+          <div class="analysis-item"><span class="analysis-label">SMC 结构</span><p id="h4-structure">等待4小时K线…</p></div>
+          <div class="analysis-item"><span class="analysis-label">趋势过滤</span><p id="h4-opportunity">—</p></div>
+          <div class="analysis-item"><span class="analysis-label">外部流动性 / 支撑压力</span><p id="h4-levels">—</p></div>
+          <div class="analysis-item conclusion"><span class="analysis-label">周期结论</span><p id="h4-conclusion">正在生成动态判断…</p></div>
         </article>
         <article id="h1-card" class="card analysis-card" data-bias="neutral">
           <div class="analysis-card-title"><h3>H1 行情状态</h3><span id="h1-state" class="analysis-state">计算中</span></div>
           <div class="analysis-scores" aria-label="H1量化研判">
-            <div class="analysis-score"><span>结构分</span><b id="h1-direction-score">—</b></div>
-            <div class="analysis-score"><span>多 / 空条件</span><b id="h1-setup-score">—</b></div>
-            <div class="analysis-score" title="价格结构分的绝对强度，不代表历史胜率"><span>结构强度</span><b id="h1-confidence">—</b></div>
+            <div class="analysis-score"><span>阶段评分</span><b id="h1-direction-score">—</b></div>
+            <div class="analysis-score"><span>SMC 结构</span><b id="h1-setup-score">—</b></div>
+            <div class="analysis-score"><span>过滤状态</span><b id="h1-confidence">—</b></div>
           </div>
-          <div class="analysis-item"><span class="analysis-label">价格结构</span><p id="h1-structure">等待1小时K线…</p></div>
-          <div class="analysis-item"><span class="analysis-label">机会判断</span><p id="h1-opportunity">—</p></div>
-          <div class="analysis-item"><span class="analysis-label">支撑 / 压力（成交密集核心）</span><p id="h1-levels">—</p></div>
-          <div class="analysis-item conclusion"><span class="analysis-label">综合判断</span><p id="h1-conclusion">正在生成动态判断…</p></div>
+          <div class="analysis-item"><span class="analysis-label">Order Block / FVG</span><p id="h1-structure">等待1小时K线…</p></div>
+          <div class="analysis-item"><span class="analysis-label">区域与趋势过滤</span><p id="h1-opportunity">—</p></div>
+          <div class="analysis-item"><span class="analysis-label">支撑 / 压力（成交密集增强）</span><p id="h1-levels">—</p></div>
+          <div class="analysis-item conclusion"><span class="analysis-label">周期结论</span><p id="h1-conclusion">正在生成动态判断…</p></div>
         </article>
         <article id="m15-card" class="card analysis-card" data-bias="neutral">
           <div class="analysis-card-title"><h3>M15 行情状态</h3><span id="m15-state" class="analysis-state">计算中</span></div>
           <div class="analysis-scores" aria-label="M15量化研判">
-            <div class="analysis-score"><span>结构分</span><b id="m15-direction-score">—</b></div>
-            <div class="analysis-score"><span>多 / 空条件</span><b id="m15-setup-score">—</b></div>
-            <div class="analysis-score" title="价格结构分的绝对强度，不代表历史胜率"><span>结构强度</span><b id="m15-confidence">—</b></div>
+            <div class="analysis-score"><span>阶段评分</span><b id="m15-direction-score">—</b></div>
+            <div class="analysis-score"><span>SMC 触发</span><b id="m15-setup-score">—</b></div>
+            <div class="analysis-score"><span>辅助确认</span><b id="m15-confidence">—</b></div>
           </div>
-          <div class="analysis-item"><span class="analysis-label">价格结构</span><p id="m15-structure">等待15分钟K线…</p></div>
-          <div class="analysis-item"><span class="analysis-label">机会判断</span><p id="m15-opportunity">—</p></div>
-          <div class="analysis-item"><span class="analysis-label">支撑 / 压力（成交密集核心）</span><p id="m15-levels">—</p></div>
-          <div class="analysis-item conclusion"><span class="analysis-label">综合判断</span><p id="m15-conclusion">正在生成动态判断…</p></div>
+          <div class="analysis-item"><span class="analysis-label">流动性扫单 / CHoCH</span><p id="m15-structure">等待15分钟K线…</p></div>
+          <div class="analysis-item"><span class="analysis-label">入场触发</span><p id="m15-opportunity">—</p></div>
+          <div class="analysis-item"><span class="analysis-label">短线支撑 / 压力</span><p id="m15-levels">—</p></div>
+          <div class="analysis-item conclusion"><span class="analysis-label">周期结论</span><p id="m15-conclusion">正在生成动态判断…</p></div>
+        </article>
+      </div>
+    </section>
+
+    <section class="smc-map-section" aria-labelledby="smc-map-title" aria-live="polite">
+      <div class="section-heading">
+        <h2 id="smc-map-title">支撑与压力区域</h2>
+        <p>真实已收盘K线动态识别 · 红色压力/流动性 · 绿色需求/订单块</p>
+      </div>
+      <div class="smc-map-grid">
+        <article class="card smc-map-card">
+          <div id="smc-zone-list" class="smc-zone-list">
+            <div class="smc-zone-row" data-side="resistance"><div class="smc-zone-copy"><span>等待H4外部流动性</span><small>加载真实多周期K线后生成</small></div><b>—</b></div>
+            <div class="smc-zone-row" data-side="current"><div class="smc-zone-copy"><span>当前价</span></div><b>—</b></div>
+            <div class="smc-zone-row" data-side="support"><div class="smc-zone-copy"><span>等待H1订单块</span><small>加载真实多周期K线后生成</small></div><b>—</b></div>
+          </div>
+        </article>
+        <article class="card smc-map-card">
+          <div class="smc-checklist-head"><h3>入场条件清单</h3><span id="smc-check-count" class="smc-check-count">0 / 5</span></div>
+          <ul id="smc-entry-checklist" class="smc-checklist">
+            <li data-ready="false"><span class="smc-check-icon">○</span><span>等待H4、H1、M15数据</span></li>
+          </ul>
         </article>
       </div>
     </section>
@@ -1070,15 +1144,15 @@
     <section id="intraday-strategy" class="card strategy-card" data-bias="neutral" aria-labelledby="strategy-title" aria-live="polite">
       <div class="strategy-head">
         <div>
-          <h2 id="strategy-title">日内交易策略</h2>
+          <h2 id="strategy-title">SMC 多周期交易策略</h2>
           <p id="strategy-status">等待H4、H1与M15已收盘K线…</p>
         </div>
       </div>
       <article id="primary-intraday-strategy" class="strategy-list-item primary-strategy-item" data-bias="neutral" aria-labelledby="primary-strategy-title">
         <div class="strategy-head">
           <div>
-            <h3 id="primary-strategy-title">顺势主策略</h3>
-            <p>H4主方向策略 · 独立止损与失效条件</p>
+            <h3 id="primary-strategy-title">SMC 顺势主策略</h3>
+            <p>H4趋势过滤 · H1订单块 · M15扫流动性与CHoCH</p>
           </div>
           <div class="strategy-head-actions">
             <button id="lock-strategy-button" class="strategy-action primary" type="button" disabled>暂无可锁定策略</button>
@@ -1087,6 +1161,7 @@
         <div class="strategy-metrics" aria-label="日内主策略参数">
           <div class="strategy-metric"><span>方向</span><b id="strategy-direction" class="strategy-direction-value">观望</b></div>
           <div class="strategy-metric"><span>策略优先级</span><b id="strategy-priority">等待</b></div>
+          <div class="strategy-metric"><span>共振评分</span><b id="strategy-score">—</b></div>
           <div class="strategy-metric"><span>入场区域</span><b id="strategy-entry">—</b></div>
           <div class="strategy-metric"><span>止损</span><b id="strategy-stop">—</b></div>
           <div class="strategy-metric"><span>止盈</span><b id="strategy-take-profit">—</b></div>
@@ -1100,7 +1175,7 @@
       </article>
       <div id="active-intraday-strategies" class="strategy-stack" hidden aria-label="当前并列日内策略"></div>
       <div id="intraday-strategy-history" class="strategy-stack" hidden aria-label="此前日内策略"></div>
-      <p class="strategy-disclaimer">日内策略仅使用价格结构、关键位置与已收盘K线触发：H4确定主方向，H1寻找机会，M15负责入场触发；当价格在反向关键区域出现M15拒绝触发时，可并列生成逆势回调策略。成交量、MACD、RSI和策略评分均不参与方向、优先级或信号生成，不构成投资建议。</p>
+      <p class="strategy-disclaimer">策略使用真实已收盘K线动态识别SMC结构：H4以EMA200和BOS确定主方向，RSI/MACD负责趋势过滤；H1识别Order Block与FVG；M15必须完成流动性扫单与CHoCH才允许主方案执行。共振评分只展示条件完整度，不单独触发交易，不构成投资建议。</p>
     </section>
 
     <section id="locked-strategy" class="card strategy-card locked-strategy-card" data-bias="neutral" data-empty="true" aria-labelledby="locked-strategy-title" aria-live="polite">
