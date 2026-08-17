@@ -53,6 +53,11 @@
     intradayMinimumCostAdjustedRewardRiskB: 1,
     intradayMaximumCostToRisk: 0.45
   };
+  const SMC_EXECUTION_RULES = {
+    triggerValidBars: 2,
+    minimumNetRewardRisk: 0.8,
+    minimumNetProfitRate: 0.0005
+  };
 
   const RANGES = {
     "5d": { label: "5日", start: (end) => end - 5 * DAY },
@@ -3126,8 +3131,15 @@
     const sweep = sign > 0 ? m15.smc.bullishSweep : m15.smc.bearishSweep;
     const choch = sign > 0 ? m15.smc.bullishChoch : m15.smc.bearishChoch;
     const touchedBeforeSweep = Boolean(sweep && touchIndexes.some((index) => index <= sweep.index));
-    const standardConfirmed = Boolean(touchedBeforeSweep && choch && choch.index >= sweep.index);
+    const standardSequence = Boolean(touchedBeforeSweep && choch && choch.index >= sweep.index);
+    const standardAgeBars = standardSequence ? candles.length - 1 - choch.index : Number.POSITIVE_INFINITY;
+    const standardConfirmed = standardSequence && standardAgeBars < SMC_EXECUTION_RULES.triggerValidBars;
     const earlyTrigger = detectM15EarlyTrigger(sign, zone, candles, m15.atr);
+    const earlyAgeBars = earlyTrigger ? candles.length - 1 - earlyTrigger.breakIndex : Number.POSITIVE_INFINITY;
+    const earlyConfirmed = Boolean(earlyTrigger && earlyAgeBars < SMC_EXECUTION_RULES.triggerValidBars);
+    const triggerType = standardConfirmed ? "standard" : earlyConfirmed ? "early" : null;
+    const triggerIndex = triggerType === "standard" ? choch.index : triggerType === "early" ? earlyTrigger.breakIndex : null;
+    const triggerTime = Number.isInteger(triggerIndex) ? candles[triggerIndex]?.t : null;
     return {
       zone,
       zoneTouched: touchIndexes.length > 0,
@@ -3136,9 +3148,13 @@
       choch,
       standardConfirmed,
       earlyTrigger,
-      earlyConfirmed: Boolean(earlyTrigger),
-      triggerReady: standardConfirmed || Boolean(earlyTrigger),
-      triggerType: standardConfirmed ? "standard" : earlyTrigger ? "early" : null
+      earlyConfirmed,
+      triggerReady: standardConfirmed || earlyConfirmed,
+      triggerType,
+      triggerIndex,
+      triggerTime,
+      triggerAgeBars: Math.min(standardAgeBars, earlyAgeBars),
+      triggerId: triggerType && Number.isFinite(triggerTime) ? `${triggerType}-${sign}-${triggerTime}` : null
     };
   }
 
@@ -3146,7 +3162,7 @@
     if (!entryZone) return null;
     const entryLow = Math.min(entryZone.low, entryZone.high);
     const entryHigh = Math.max(entryZone.low, entryZone.high);
-    const entry = (entryLow + entryHigh) / 2;
+    const entry = sign > 0 ? entryHigh : entryLow;
     const atr = Math.max(m15.atr, entry * 0.00035);
     const minimumRisk = Math.max(atr * 0.7, h1.atr * 0.15, entry * 0.0008);
     const structuralStop = sign > 0
@@ -3156,17 +3172,23 @@
       ? Math.min(structuralStop, entry - minimumRisk)
       : Math.max(structuralStop, entry + minimumRisk);
     const risk = Math.max(atr * 0.35, Math.abs(entry - stopLoss));
+    const roundTripCost = entry * STRATEGY_FILTERS.estimatedRoundTripCostRate;
+    const minimumTargetDistance = Math.max(
+      atr * 0.2,
+      roundTripCost + risk * SMC_EXECUTION_RULES.minimumNetRewardRisk,
+      entry * (STRATEGY_FILTERS.estimatedRoundTripCostRate + SMC_EXECUTION_RULES.minimumNetProfitRate)
+    );
     const candidatePrices = smcTargetCandidates(sign, h4, h1)
       .map((zone) => sign > 0 ? zone.low : zone.high)
-      .filter((price) => Number.isFinite(price) && (sign > 0 ? price > entry + atr * 0.2 : price < entry - atr * 0.2))
+      .filter((price) => Number.isFinite(price) && (sign > 0 ? price > entry + minimumTargetDistance : price < entry - minimumTargetDistance))
       .sort((a, b) => sign > 0 ? a - b : b - a)
       .filter((price, index, values) => index === 0 || Math.abs(price - values[index - 1]) > atr * 0.18);
-    const projected = (multiple) => entry + sign * risk * multiple;
-    const takeProfit = candidatePrices[0] ?? projected(1.5);
+    const projected = (netMultiple) => entry + sign * (risk * netMultiple + roundTripCost);
+    const takeProfit = candidatePrices[0] ?? projected(1.2);
     const nextStructuralTarget = candidatePrices.find((price) => sign > 0
       ? price > takeProfit + atr * 0.2
       : price < takeProfit - atr * 0.2);
-    const targetCandidate = nextStructuralTarget ?? projected(2.4);
+    const targetCandidate = nextStructuralTarget ?? projected(2.0);
     const target = sign > 0
       ? Math.max(targetCandidate, takeProfit + atr * 0.3)
       : Math.min(targetCandidate, takeProfit - atr * 0.3);
@@ -3175,7 +3197,7 @@
       ? externalLiquidity > target + atr * 0.2
       : externalLiquidity < target - atr * 0.2)
       ? externalLiquidity
-      : projected(3.5);
+      : projected(3.0);
     const target3 = sign > 0
       ? Math.max(target3Candidate, target + atr * 0.3)
       : Math.min(target3Candidate, target - atr * 0.3);
@@ -3186,11 +3208,17 @@
       takeProfit,
       target,
       target3,
+      referenceEntry: entry,
       risk,
-      rewardRisk1: Math.max(0, sign * (takeProfit - entry)) / risk,
-      rewardRisk2: Math.max(0, sign * (target - entry)) / risk,
-      rewardRisk3: Math.max(0, sign * (target3 - entry)) / risk,
-      levelNote: `入场依据H1 ${entryZone.source || "Order Block"} ${smcZoneLabel(entryZone)}；止损置于订单块与扫流动性极值之外；TP1取最近供应/需求区，TP2取下一结构区，TP3取H4外部流动性或3.5R延伸。`
+      estimatedRoundTripCost: roundTripCost,
+      rewardRisk1: Math.max(0, sign * (takeProfit - entry) - roundTripCost) / risk,
+      rewardRisk2: Math.max(0, sign * (target - entry) - roundTripCost) / risk,
+      rewardRisk3: Math.max(0, sign * (target3 - entry) - roundTripCost) / risk,
+      costViable: sign * (takeProfit - entry) - roundTripCost >= Math.max(
+        risk * SMC_EXECUTION_RULES.minimumNetRewardRisk,
+        entry * SMC_EXECUTION_RULES.minimumNetProfitRate
+      ),
+      levelNote: `入场依据H1 ${entryZone.source || "Order Block"} ${smcZoneLabel(entryZone)}；止损置于订单块与扫流动性极值之外；TP1取最近供应/需求区，TP2取下一结构区，TP3取H4外部流动性或3R延伸。`
     };
   }
 
@@ -3224,6 +3252,8 @@
       earlyTrigger: selected?.earlyTrigger || null,
       earlyConfirmed: Boolean(selected?.earlyConfirmed),
       triggerType: selected?.triggerType || null,
+      triggerId: selected?.triggerId || null,
+      triggerAgeBars: selected?.triggerAgeBars ?? null,
       optionalMomentum
     };
   }
@@ -3242,12 +3272,14 @@
     const h4Ready = stages.h4DirectionReady;
     const h1Ready = entryZones.length > 0;
     const triggerReady = stages.triggerReady;
-    const actionable = h4Ready && h1Ready && triggerReady;
+    const costViable = Boolean(levels?.costViable);
+    const actionable = h4Ready && h1Ready && triggerReady && costViable;
     const waiting = [];
     if (!h4Ready) waiting.push("H4等待BOS建立方向");
     if (!entryZones.length) waiting.push("H1等待执行区域");
     if (!stages.zoneTouched) waiting.push("等待价格进入H1主区或次级区");
     if (stages.zoneTouched && !stages.triggerReady) waiting.push("M15等待标准或早期结构触发");
+    if (levels && !costViable) waiting.push("净收益空间不足以覆盖成本");
     const bosText = h4Ready && h4.smc.confirmedBos
       ? `${h4.smc.confirmedBos.direction > 0 ? "Bullish" : "Bearish"} BOS延续`
       : h4.smc.directionInvalidation ? "原方向失效，等待新BOS" : "等待BOS";
@@ -3275,6 +3307,7 @@
       priority: actionable ? "执行 · 结构确认" : "WAIT · 等待条件",
       score: stages.overall,
       stageScores: stages,
+      triggerId: stages.triggerId,
       ...(levels || {}),
       summary,
       trigger
@@ -3338,7 +3371,8 @@
     const choch = evaluation.choch;
     const sequenceConfirmed = evaluation.standardConfirmed;
     const levels = calculateSmcStrategyLevels(sign, entryZone, h4, h1, m15, null);
-    const actionable = zoneTouched && sequenceConfirmed;
+    const costViable = Boolean(levels?.costViable);
+    const actionable = zoneTouched && sequenceConfirmed && costViable;
     const score = Math.round((entryZone ? 25 : 0) + (zoneTouched ? 25 : 0) + (sweep ? 20 : 0) + (sequenceConfirmed ? 30 : 0));
     return {
       bias,
@@ -3349,6 +3383,7 @@
       directionLabel: actionable ? `备选${direction}` : `WAIT · 备选${direction}`,
       priority: actionable ? "备选 · 结构确认" : "WAIT · 等待反向触发",
       score,
+      triggerId: evaluation.triggerId,
       ...(levels || {}),
       summary: `H4主方向${mainSign > 0 ? "做多" : "做空"}；备选${direction}仅关注 ${smcZoneLabel(entryZone)}。`,
       trigger: actionable
@@ -3370,11 +3405,10 @@
   function intradayStrategyFingerprint(strategy, m15) {
     const strategyType = strategy?.strategyType || "primary";
     if (!strategy?.actionable) return `waiting-${strategyType}-${strategy?.candidateBias || "neutral"}`;
+    if (strategy.triggerId) return `${strategyType}-${strategy.bias}-${strategy.triggerId}`;
     const entryCenter = (strategy.entryLow + strategy.entryHigh) / 2;
     const bucketSize = Math.max((m15?.atr || 0) * 0.6, entryCenter * 0.0005, 0.000001);
-    const entryBucket = Math.round(entryCenter / bucketSize);
-    const priorityCode = String(strategy.priority || "").split("·")[0].trim();
-    return `${strategyType}-${strategy.bias}-${priorityCode}-${entryBucket}`;
+    return `${strategyType}-${strategy.bias}-fallback-${Math.round(entryCenter / bucketSize)}`;
   }
 
   function createIntradayStrategyRecord(strategy, entryPrice, m15) {
