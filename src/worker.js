@@ -9,7 +9,6 @@ const BINANCE_API_HOSTS = [
 ];
 const BINANCE_ENDPOINTS = new Set([
   "/fapi/v1/klines",
-  "/fapi/v1/aggTrades",
   "/fapi/v1/ticker/bookTicker",
   "/fapi/v1/ticker/24hr"
 ]);
@@ -140,9 +139,6 @@ function validateBinanceRequest(url) {
 function binanceCacheTtl(endpoint, url) {
   if (endpoint === "/fapi/v1/klines") {
     return url.searchParams.has("startTime") && url.searchParams.has("endTime") ? 60 : 15;
-  }
-  if (endpoint === "/fapi/v1/aggTrades") {
-    return url.searchParams.has("startTime") ? 300 : 10;
   }
   return endpoint === "/fapi/v1/ticker/24hr" ? 5 : 2;
 }

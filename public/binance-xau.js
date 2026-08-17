@@ -2,9 +2,9 @@
   const PAGE_LOCATION = typeof window !== "undefined" ? window.location : null;
   const USE_REST_PROXY = PAGE_LOCATION?.protocol === "https:" &&
     !["localhost", "127.0.0.1"].includes(PAGE_LOCATION.hostname);
-  const REST = USE_REST_PROXY
-    ? `${PAGE_LOCATION.origin}/api/binance`
-    : "https://fapi.binance.com";
+  const DIRECT_REST = "https://fapi.binance.com";
+  const PROXY_REST = USE_REST_PROXY ? `${PAGE_LOCATION.origin}/api/binance` : null;
+  const REST = PROXY_REST || DIRECT_REST;
   const HOUR = 60 * 60 * 1000;
   const DAY = 24 * 60 * 60 * 1000;
   const CACHE_DB = "binance-multi-asset-kline-cache";
@@ -13,9 +13,9 @@
   const CACHE_MAX_AGE = 14 * DAY;
   const MICROSTRUCTURE_CACHE_MAX_AGE = 30 * 60 * 1000;
   const PROFILE_LOOKBACK = 30 * DAY;
-  const AGG_TRADE_LOOKBACK = 6 * 60 * 60 * 1000;
   const DEPTH_HISTORY_WINDOW = 60 * 1000;
-  const MAX_AGG_TRADES = 48000;
+  const PROXY_BLOCK_DURATION = 30 * 60 * 1000;
+  const DIRECT_BLOCK_DURATION = 10 * 60 * 1000;
   const LOCKED_STRATEGY_STORAGE_KEY = "minimaomao-locked-intraday-strategies-v1";
   const MAX_HISTORY_CANDLES = 10000;
 
@@ -152,7 +152,8 @@
   let panRenderFrame = 0;
   let chartPanState = null;
   let resizeRenderFrame = 0;
-  let aggregateTradePollInFlight = false;
+  let proxyBlockedUntil = 0;
+  let directBlockedUntil = 0;
   const pendingJsonRequests = new Map();
   const priceFormat = new Intl.NumberFormat("en-US", {
     minimumFractionDigits: 2,
@@ -630,25 +631,65 @@
     }
   }
 
+  function marketRequestCandidates(requestUrl) {
+    if (!PROXY_REST || !requestUrl.startsWith(PROXY_REST)) {
+      return Date.now() >= directBlockedUntil ? [{ url: requestUrl, route: "direct" }] : [];
+    }
+    const suffix = requestUrl.slice(PROXY_REST.length);
+    const candidates = [];
+    if (Date.now() >= directBlockedUntil) candidates.push({ url: `${DIRECT_REST}${suffix}`, route: "direct" });
+    if (Date.now() >= proxyBlockedUntil) candidates.push({ url: requestUrl, route: "proxy" });
+    return candidates;
+  }
+
+  function blockMarketRoute(route, status, response) {
+    const retryAfterSeconds = Number(response?.headers?.get("Retry-After"));
+    const headerDelay = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+      ? retryAfterSeconds * 1000
+      : 0;
+    const defaultDelay = route === "proxy" ? PROXY_BLOCK_DURATION : DIRECT_BLOCK_DURATION;
+    const blockedUntil = Date.now() + Math.max(headerDelay, defaultDelay);
+    if (route === "proxy") proxyBlockedUntil = Math.max(proxyBlockedUntil, blockedUntil);
+    else directBlockedUntil = Math.max(directBlockedUntil, blockedUntil);
+  }
+
+  function marketBackoffMessage() {
+    const remaining = Math.max(0, Math.min(
+      proxyBlockedUntil || Number.POSITIVE_INFINITY,
+      directBlockedUntil || Number.POSITIVE_INFINITY
+    ) - Date.now());
+    const minutes = Math.max(1, Math.ceil(remaining / 60000));
+    return `Binance接口正在退避保护（约${minutes}分钟后自动重试）`;
+  }
+
   async function fetchJson(url) {
     const requestUrl = String(url);
     if (pendingJsonRequests.has(requestUrl)) return pendingJsonRequests.get(requestUrl);
     const request = (async () => {
-      let response;
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        response = await fetch(requestUrl, { credentials: "same-origin" });
-        if (response.ok) return response.json();
-        if (response.status === 418) {
-          throw new Error("Binance暂时限流（418），代理缓存将在下一次同步时自动重试");
+      const candidates = marketRequestCandidates(requestUrl);
+      if (!candidates.length) throw new Error(marketBackoffMessage());
+      let lastError = null;
+      for (const candidate of candidates) {
+        try {
+          const response = await fetch(candidate.url, {
+            credentials: candidate.route === "proxy" ? "same-origin" : "omit"
+          });
+          if (response.ok) return response.json();
+          lastError = new Error(`${response.status} ${response.statusText}`);
+          if ([403, 418, 429].includes(response.status)) {
+            blockMarketRoute(candidate.route, response.status, response);
+            continue;
+          }
+          if (response.status >= 500) {
+            await new Promise((resolve) => setTimeout(resolve, 800));
+            continue;
+          }
+          throw lastError;
+        } catch (error) {
+          lastError = error;
         }
-        if (attempt === 0 && (response.status === 429 || response.status >= 500)) {
-          const retryAfter = Math.min(3000, Math.max(500, Number(response.headers.get("Retry-After")) * 1000 || 800));
-          await new Promise((resolve) => setTimeout(resolve, retryAfter));
-          continue;
-        }
-        throw new Error(`${response.status} ${response.statusText}`);
       }
-      throw new Error(`${response?.status || "网络"} 历史行情请求失败`);
+      throw lastError || new Error("Binance行情请求失败");
     })();
     pendingJsonRequests.set(requestUrl, request);
     try {
@@ -798,86 +839,6 @@
     );
   }
 
-  function parseAggregateTrade(payload) {
-    const id = Number(payload.a);
-    const price = Number(payload.p);
-    const quantity = Number(payload.q);
-    const time = Number(payload.T);
-    if (![id, price, quantity, time].every(Number.isFinite) || quantity <= 0) return null;
-    return { id, price, quantity, time, buyerMaker: Boolean(payload.m) };
-  }
-
-  function mergeAggregateTrades(...groups) {
-    const byId = new Map();
-    for (const trade of groups.flat()) {
-      if (trade && Number.isFinite(trade.id)) byId.set(trade.id, trade);
-    }
-    return [...byId.values()]
-      .filter((trade) => trade.time >= Date.now() - AGG_TRADE_LOOKBACK)
-      .sort((a, b) => a.time - b.time)
-      .slice(-MAX_AGG_TRADES);
-  }
-
-  async function fetchAggregateTradeHistory(symbol) {
-    const endTime = Date.now();
-    const startTime = endTime - AGG_TRADE_LOOKBACK;
-    const windows = [];
-    for (let cursor = startTime; cursor < endTime; cursor += HOUR) {
-      windows.push({ start: cursor, end: Math.min(endTime, cursor + HOUR - 1) });
-    }
-    const trades = [];
-    let completedWindows = 0;
-    let partialWindows = 0;
-    for (let index = 0; index < windows.length; index += 4) {
-      const batch = windows.slice(index, index + 4);
-      const results = await Promise.all(batch.map(async (windowRange) => {
-        try {
-          const url = new URL(`${REST}/fapi/v1/aggTrades`);
-          url.searchParams.set("symbol", symbol);
-          url.searchParams.set("startTime", String(windowRange.start));
-          url.searchParams.set("endTime", String(windowRange.end));
-          url.searchParams.set("limit", "1000");
-          const payload = await fetchJson(url);
-          return { payload, ok: true };
-        } catch (_) {
-          return { payload: [], ok: false };
-        }
-      }));
-      for (const result of results) {
-        if (!result.ok) continue;
-        completedWindows += 1;
-        if (result.payload.length >= 1000) partialWindows += 1;
-        trades.push(...result.payload.map(parseAggregateTrade).filter(Boolean));
-      }
-    }
-    return {
-      trades: mergeAggregateTrades(trades),
-      coverageHours: completedWindows,
-      partialWindows
-    };
-  }
-
-  async function refreshRecentAggregateTrades() {
-    if (aggregateTradePollInFlight) return;
-    aggregateTradePollInFlight = true;
-    const symbol = state.symbol;
-    try {
-      const url = new URL(`${REST}/fapi/v1/aggTrades`);
-      url.searchParams.set("symbol", symbol);
-      url.searchParams.set("limit", "1000");
-      const payload = await fetchJson(url);
-      if (symbol !== state.symbol) return;
-      state.marketMicrostructure.aggregateTrades = mergeAggregateTrades(
-        state.marketMicrostructure.aggregateTrades,
-        payload.map(parseAggregateTrade).filter(Boolean)
-      );
-    } catch (_) {
-      // Historical profile and the existing structure model remain available.
-    } finally {
-      aggregateTradePollInFlight = false;
-    }
-  }
-
   function parseDepthLevels(levels) {
     return (levels || []).map(([price, quantity]) => ({
       price: Number(price),
@@ -898,13 +859,8 @@
 
   function microstructureStatusText() {
     const micro = state.marketMicrostructure;
-    if (micro.profileStatus === "ready") {
-      const exact = micro.tradeCoverageHours
-        ? `真实成交已采样${micro.tradeCoverageHours}个小时窗口${micro.tradeWindowsPartial ? `（${micro.tradeWindowsPartial}个窗口达到1000条上限）` : ""}`
-        : "真实成交等待补充";
-      return `30日成交分布已加载 · ${exact}`;
-    }
-    if (micro.profileCandles.length) return "已使用本地成交分布缓存 · 正在同步真实成交";
+    if (micro.profileStatus === "ready") return "30日K线成交分布已加载";
+    if (micro.profileCandles.length) return "已使用本地K线成交分布缓存";
     return "成交分布加载中 · 暂用价格结构降级判断";
   }
 
@@ -919,49 +875,29 @@
     const token = ++state.microstructureLoadToken;
     const symbol = state.symbol;
     const candleKey = `micro:${symbol}:5m30d:v1`;
-    const tradeKey = `micro:${symbol}:agg48h:v1`;
-    const [cachedCandles, cachedTrades] = await Promise.all([
-      readDatasetCache(candleKey),
-      readDatasetCache(tradeKey)
-    ]);
+    const cachedCandles = await readDatasetCache(candleKey, CACHE_MAX_AGE);
     if (token !== state.microstructureLoadToken || symbol !== state.symbol) return;
     if (Array.isArray(cachedCandles)) state.marketMicrostructure.profileCandles = cachedCandles;
-    if (cachedTrades?.trades) {
-      state.marketMicrostructure.aggregateTrades = mergeAggregateTrades(cachedTrades.trades);
-      state.marketMicrostructure.tradeCoverageHours = cachedTrades.coverageHours || 0;
-      state.marketMicrostructure.tradeWindowsPartial = cachedTrades.partialWindows || 0;
-    }
     if (state.marketMicrostructure.profileCandles.length) {
       state.marketMicrostructure.profileStatus = "ready";
       refreshAnalysisForMicrostructure();
     }
-    if (Array.isArray(cachedCandles) && cachedCandles.length >= 500 && cachedTrades?.trades?.length) return;
 
     const endTime = Date.now();
-    const [candleResult, tradeResult] = await Promise.allSettled([
-      fetchCandles(symbol, "5m", endTime - PROFILE_LOOKBACK, endTime),
-      fetchAggregateTradeHistory(symbol)
-    ]);
+    const cachedTail = Array.isArray(cachedCandles) && cachedCandles.length
+      ? cachedCandles[cachedCandles.length - 1].t - 10 * 60 * 1000
+      : endTime - PROFILE_LOOKBACK;
+    const candleResult = await fetchCandles(symbol, "5m", Math.max(endTime - PROFILE_LOOKBACK, cachedTail), endTime)
+      .then((value) => ({ status: "fulfilled", value }))
+      .catch((reason) => ({ status: "rejected", reason }));
     if (token !== state.microstructureLoadToken || symbol !== state.symbol) return;
-    if (candleResult.status === "fulfilled" && candleResult.value.length >= 500) {
-      state.marketMicrostructure.profileCandles = candleResult.value;
+    if (candleResult.status === "fulfilled" && candleResult.value.length) {
+      state.marketMicrostructure.profileCandles = mergeCandles(cachedCandles || [], candleResult.value)
+        .filter((candle) => candle.t >= endTime - PROFILE_LOOKBACK);
       state.marketMicrostructure.profileStatus = "ready";
-      writeDatasetCache(candleKey, candleResult.value);
+      writeDatasetCache(candleKey, state.marketMicrostructure.profileCandles);
     } else {
       state.marketMicrostructure.profileStatus = state.marketMicrostructure.profileCandles.length ? "ready" : "degraded";
-    }
-    if (tradeResult.status === "fulfilled") {
-      state.marketMicrostructure.aggregateTrades = mergeAggregateTrades(
-        tradeResult.value.trades,
-        state.marketMicrostructure.aggregateTrades
-      );
-      state.marketMicrostructure.tradeCoverageHours = tradeResult.value.coverageHours;
-      state.marketMicrostructure.tradeWindowsPartial = tradeResult.value.partialWindows;
-      writeDatasetCache(tradeKey, {
-        trades: state.marketMicrostructure.aggregateTrades,
-        coverageHours: tradeResult.value.coverageHours,
-        partialWindows: tradeResult.value.partialWindows
-      });
     }
     refreshAnalysisForMicrostructure();
   }
@@ -1040,6 +976,14 @@
     return index >= 0 && index < RANGE_ORDER.length - 1 ? RANGE_ORDER[index + 1] : null;
   }
 
+  function mergeCandles(...groups) {
+    const byTime = new Map();
+    for (const candle of groups.flat()) {
+      if (candle && Number.isFinite(candle.t)) byTime.set(candle.t, candle);
+    }
+    return [...byTime.values()].sort((a, b) => a.t - b.t);
+  }
+
   async function expandHistoryRange() {
     const nextRange = getNextHistoryRange();
     const now = Date.now();
@@ -1059,7 +1003,7 @@
     return true;
   }
 
-  async function loadHistory({ anchorLatest = false } = {}) {
+  async function loadHistory({ anchorLatest = false, incremental = false } = {}) {
     const viewport = captureChartViewport();
     if (viewport && anchorLatest) viewport.followLatest = true;
     const token = ++state.loadToken;
@@ -1072,35 +1016,39 @@
     const startTime = Math.max(requestedStart, protectedStart);
     state.historyLimited = startTime > requestedStart;
     const cacheKey = historyCacheKey(symbol, state.range, interval);
-    const cachePromise = readCandleCache(cacheKey);
-    const networkPromise = fetchCandles(symbol, interval, startTime, endTime)
-      .then((candles) => ({ candles, error: null }))
-      .catch((error) => ({ candles: null, error }));
-    state.candles = [];
-    state.timelineStart = 0;
-    state.timelineEnd = 100;
-    syncTimelineInputs();
-    renderChart();
-    $("empty-state").textContent = "正在加载历史行情…";
-    $("empty-state").style.display = "grid";
+    const existingCandles = incremental ? state.candles.slice() : [];
+    if (!incremental) {
+      state.candles = [];
+      state.timelineStart = 0;
+      state.timelineEnd = 100;
+      syncTimelineInputs();
+      renderChart();
+      $("empty-state").textContent = "正在加载历史行情…";
+      $("empty-state").style.display = "grid";
+    }
     updateChartCopy();
 
     try {
-      const cached = await cachePromise;
-      if (cached && token === state.loadToken && symbol === state.symbol && interval === state.interval) {
-        state.candles = cached.candles;
+      const cached = incremental ? null : await readCandleCache(cacheKey);
+      const baseCandles = existingCandles.length ? existingCandles : cached?.candles || [];
+      if (baseCandles.length && token === state.loadToken && symbol === state.symbol && interval === state.interval) {
+        state.candles = baseCandles;
         restoreChartViewport(viewport);
         renderChart();
-        $("chart-subtitle").textContent = `${range.label} · ${INTERVALS[interval].label} · ${symbol} · 本地缓存，正在同步${state.historyLimited ? ` · 最近${MAX_HISTORY_CANDLES.toLocaleString("en-US")}根` : ""}`;
+        $("chart-subtitle").textContent = `${range.label} · ${INTERVALS[interval].label} · ${symbol} · 本地缓存，正在增量同步${state.historyLimited ? ` · 最近${MAX_HISTORY_CANDLES.toLocaleString("en-US")}根` : ""}`;
       }
-      const networkResult = await networkPromise;
-      if (networkResult.error) throw networkResult.error;
-      const candles = networkResult.candles;
+      const incrementalStart = baseCandles.length
+        ? Math.max(startTime, baseCandles[baseCandles.length - 1].t - INTERVALS[interval].ms * 2)
+        : startTime;
+      const freshCandles = await fetchCandles(symbol, interval, incrementalStart, endTime);
       if (token !== state.loadToken || symbol !== state.symbol) return;
-      state.candles = candles;
+      state.candles = mergeCandles(baseCandles, freshCandles)
+        .filter((candle) => candle.t >= startTime && candle.t <= endTime)
+        .slice(-MAX_HISTORY_CANDLES);
       restoreChartViewport(viewport);
       renderChart();
-      writeCandleCache(cacheKey, candles);
+      updateChartCopy();
+      writeCandleCache(cacheKey, state.candles);
       setError("");
     } catch (error) {
       if (token !== state.loadToken || symbol !== state.symbol) return;
@@ -1108,7 +1056,12 @@
         state.candles = [];
         renderChart();
       }
-      setError(`历史行情同步失败：${error.message}。${state.candles.length ? "当前显示本地缓存。" : "实时报价仍会继续更新。"}`);
+      if (state.candles.length) {
+        setError("");
+        $("chart-subtitle").textContent = `${range.label} · ${INTERVALS[interval].label} · ${symbol} · 本地缓存可用，在线增量同步将在退避后自动重试`;
+      } else {
+        setError(`历史行情暂时不可用：${error.message}。实时报价仍会继续更新。`);
+      }
     }
   }
 
@@ -3794,10 +3747,9 @@
   connectBinance();
   setInterval(() => {
     if (!state.wsOk) seedCurrentData();
-  }, 5000);
+  }, 15000);
   setInterval(setLiveStatus, 1000);
   setInterval(refreshAnalysisForMicrostructure, 10000);
-  setInterval(refreshRecentAggregateTrades, 15000);
-  setInterval(loadHistory, 60000);
+  setInterval(() => loadHistory({ incremental: true }), 60000);
   setInterval(loadAnalysis, 60000);
 })();
