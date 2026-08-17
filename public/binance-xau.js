@@ -3547,7 +3547,7 @@
     const { h4, h1, m15 } = results;
     if (!h4?.smc || !h1?.smc || !m15?.smc) {
       zoneList.innerHTML = `<div class="smc-zone-row" data-side="current"><div class="smc-zone-copy"><span>等待真实多周期K线</span><small>H4、H1、M15加载完成后生成区域地图</small></div><b>—</b></div>`;
-      checklist.innerHTML = `<li data-ready="false"><span class="smc-check-icon" role="img" aria-label="等待确认" title="等待确认">⏳</span><span>等待H4、H1、M15数据</span></li>`;
+      checklist.innerHTML = `<li data-ready="false"><span class="smc-check-icon">等待</span><span>等待H4、H1、M15数据</span></li>`;
       $("smc-check-count").textContent = "0 / 4";
       return;
     }
@@ -3593,7 +3593,7 @@
     ];
     const readyCount = checks.filter((item) => item.ready).length;
     $("smc-check-count").textContent = `${readyCount} / ${checks.length}`;
-    checklist.innerHTML = checks.map((item) => `<li data-ready="${item.ready}"><span class="smc-check-icon" role="img" aria-label="${item.ready ? "条件完成" : "等待确认"}" title="${item.ready ? "条件完成" : "等待确认"}">${item.ready ? "✅" : "⏳"}</span><span>${item.label}</span></li>`).join("");
+    checklist.innerHTML = checks.map((item) => `<li data-ready="${item.ready}"><span class="smc-check-icon">${item.ready ? "完成" : "等待"}</span><span>${item.label}</span></li>`).join("");
   }
 
   function renderAnalysisCard(key, result, conclusion) {
