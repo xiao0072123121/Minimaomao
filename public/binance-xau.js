@@ -863,7 +863,7 @@
   function refreshAnalysisForMicrostructure() {
     if (state.analysisFrames.h4 && state.analysisFrames.h1 && state.analysisFrames.m15) {
       renderAnalysis();
-      $("analysis-status").textContent = `${microstructureStatusText()} · 成交密集定位置，H4定方向，H1选区域，M15确认入场 · ${formatTime(Date.now())}`;
+      $("analysis-status").textContent = `${microstructureStatusText()} · H4方向延续，H1主/次执行区，M15双路径确认 · ${formatTime(Date.now())}`;
     }
   }
 
@@ -1680,7 +1680,7 @@
   function detectSmcBreakEvents(candles, pivots, atr) {
     const events = [];
     const broken = new Set();
-    const startIndex = Math.max(5, candles.length - 90);
+    const startIndex = 5;
     let marketDirection = smcSwingDirection(pivots, startIndex);
     for (let index = startIndex; index < candles.length; index += 1) {
       const previous = candles[index - 1];
@@ -1784,6 +1784,28 @@
     return latest;
   }
 
+  function maintainH4Direction(breakEvents, ema200Direction) {
+    let sign = 0;
+    let confirmedBos = null;
+    let invalidation = null;
+    for (const event of breakEvents) {
+      if (event.type === "BOS") {
+        sign = event.direction;
+        confirmedBos = event;
+        invalidation = null;
+        continue;
+      }
+      if (sign && event.direction === -sign) {
+        sign = 0;
+        invalidation = event;
+      }
+    }
+    if (sign && ema200Direction !== sign) {
+      return { sign: 0, confirmedBos, invalidation: { type: "EMA200", direction: ema200Direction } };
+    }
+    return { sign, confirmedBos, invalidation };
+  }
+
   function analyzeSmcFrame(candles, atr, levels, key) {
     const closes = candles.map((candle) => candle.close);
     const last = candles[candles.length - 1];
@@ -1802,7 +1824,10 @@
     const ema200Direction = Number.isFinite(ema200)
       ? last.close > ema200 ? 1 : last.close < ema200 ? -1 : 0
       : 0;
-    const trendSign = structuralDirection && structuralDirection === ema200Direction ? structuralDirection : 0;
+    const maintainedH4 = key === "h4" ? maintainH4Direction(breakEvents, ema200Direction) : null;
+    const trendSign = key === "h4"
+      ? maintainedH4.sign
+      : structuralDirection && structuralDirection === ema200Direction ? structuralDirection : 0;
     const emaStackDirection = ema20 > ema50 ? 1 : ema20 < ema50 ? -1 : 0;
     const rsiDirection = Number.isFinite(rsi) ? rsi >= 50 ? 1 : -1 : 0;
     const macdDirection = macd && macd.dif > macd.signal && macd.histogram >= 0
@@ -1815,7 +1840,7 @@
     let stageScore = 0;
     if (candidateSign && ema200Direction === candidateSign) stageScore += 1.5;
     const structureConfirmed = key === "h4"
-      ? lastBreak?.type === "BOS" && lastBreak.direction === candidateSign
+      ? maintainedH4?.confirmedBos?.direction === candidateSign && maintainedH4.sign === candidateSign
       : structuralDirection === candidateSign;
     if (candidateSign && structureConfirmed) stageScore += 1.5;
     else if (candidateSign && structuralDirection === candidateSign) stageScore += 0.5;
@@ -1839,10 +1864,12 @@
     const lowPivots = pivots.filter((pivot) => pivot.type === "low");
     const bias = trendSign > 0 ? "bullish" : trendSign < 0 ? "bearish" : "neutral";
     const label = trendSign > 0
-      ? lastBreak?.type !== "BOS" ? "SMC偏多·等待BOS" : momentumPassed ? "SMC多头趋势" : "SMC偏多·动能待确认"
+      ? key === "h4" ? "H4多头方向延续" : "SMC多头结构"
       : trendSign < 0
-        ? lastBreak?.type !== "BOS" ? "SMC偏空·等待BOS" : momentumPassed ? "SMC空头趋势" : "SMC偏空·动能待确认"
-        : "SMC结构未共振";
+        ? key === "h4" ? "H4空头方向延续" : "SMC空头结构"
+        : key === "h4" && maintainedH4?.invalidation
+          ? "H4原方向已失效"
+          : "SMC结构未共振";
     return {
       key,
       bias,
@@ -1864,6 +1891,8 @@
       rsiDirection,
       macdDirection,
       trendSign,
+      confirmedBos: maintainedH4?.confirmedBos || null,
+      directionInvalidation: maintainedH4?.invalidation || null,
       momentumPassed,
       candidateSign,
       stageScore: Math.min(5, stageScore),
@@ -2475,27 +2504,30 @@
     const conclusions = {};
     if (h4) {
       const smc = h4.smc;
-      const breakText = smc.lastBreak
-        ? `${smc.lastBreak.direction > 0 ? "Bullish" : "Bearish"} ${smc.lastBreak.type}`
+      const confirmation = smc.confirmedBos
+        ? `${smc.confirmedBos.direction > 0 ? "Bullish" : "Bearish"} BOS已建立方向`
         : "尚无有效BOS";
-      const direction = smc.trendSign > 0 ? "H4主方向偏多" : smc.trendSign < 0 ? "H4主方向偏空" : "H4方向尚未共振";
-      conclusions.h4 = `${direction}：${breakText}，价格${smc.ema200Direction > 0 ? "位于EMA200上方" : smc.ema200Direction < 0 ? "位于EMA200下方" : "尚无足够EMA200数据"}。RSI与MACD仅作动能观察。`;
+      const direction = smc.trendSign > 0 ? "H4主方向偏多并延续" : smc.trendSign < 0 ? "H4主方向偏空并延续" : "H4尚无有效主方向";
+      const invalidation = smc.directionInvalidation
+        ? smc.directionInvalidation.type === "EMA200" ? "，原方向已因穿越EMA200失效" : "，原方向已被反向CHoCH破坏"
+        : "";
+      conclusions.h4 = `${direction}：${confirmation}${invalidation}。新BOS出现前不重复要求确认；RSI与MACD仅作观察。`;
     }
     if (h1) {
       const mainSign = h4?.smc?.trendSign || h4?.smc?.candidateSign || 0;
-      const executionZone = buildH1ExecutionZone(mainSign, h1);
-      conclusions.h1 = executionZone
-        ? `H1已选出唯一执行区：${executionZone.source} ${smcZoneLabel(executionZone)}。均线排列只作观察，不参与区域筛选。`
+      const executionZones = buildH1ExecutionZones(mainSign, h1);
+      conclusions.h1 = executionZones.length
+        ? `H1主执行区 ${smcZoneLabel(executionZones[0])}${executionZones[1] ? `；临近次级区 ${smcZoneLabel(executionZones[1])}` : ""}。价格进入任一区域后转由M15确认。`
         : `H1尚未选出与H4方向对应的执行区，继续等待成交密集区与结构区域形成。`;
     }
     if (m15) {
       const mainSign = h4?.smc?.trendSign || h4?.smc?.candidateSign || 0;
-      const sweep = mainSign > 0 ? m15.smc.bullishSweep : mainSign < 0 ? m15.smc.bearishSweep : null;
-      const choch = mainSign > 0 ? m15.smc.bullishChoch : mainSign < 0 ? m15.smc.bearishChoch : null;
-      const sequence = Boolean(sweep && choch && choch.index >= sweep.index);
-      conclusions.m15 = sequence
-        ? `M15已在${mainSign > 0 ? "下方" : "上方"}流动性扫单后形成${mainSign > 0 ? "看涨" : "看跌"}CHoCH，结构触发完成；仍需同时通过入场区域与风险回报检查。`
-        : `M15尚未完成“进入H1区域 → 流动性扫单 → ${mainSign > 0 ? "看涨" : mainSign < 0 ? "看跌" : "同向"}CHoCH”的完整顺序，执行状态保持WAIT。`;
+      const executionZones = buildH1ExecutionZones(mainSign, h1);
+      const triggers = executionZones.map((zone) => evaluateM15ZoneTrigger(mainSign, zone, m15));
+      const confirmed = triggers.find((item) => item.triggerReady);
+      conclusions.m15 = confirmed
+        ? `M15已在H1${confirmed.zone.role === "secondary" ? "次级区" : "主区"}完成${confirmed.triggerType === "early" ? "拒绝K线＋微结构突破" : "扫单＋同向CHoCH"}，入场触发成立。`
+        : `M15等待两种触发之一：扫单＋同向CHoCH，或执行区拒绝K线＋微结构突破。未完成则保持WAIT。`;
     }
     return conclusions;
   }
@@ -2965,14 +2997,6 @@
     return zone ? `${analysisPriceFormat.format(zone.low)}–${analysisPriceFormat.format(zone.high)}` : "尚未识别";
   }
 
-  function smcZoneTouchedRecently(zone, candles, atr, lookback = 12) {
-    if (!zone || !candles?.length) return false;
-    const tolerance = atr * 0.18;
-    return candles.slice(-lookback).some((candle) =>
-      candle.low <= zone.high + tolerance && candle.high >= zone.low - tolerance
-    );
-  }
-
   function smcTargetCandidates(sign, h4, h1) {
     const primary = sign > 0
       ? [h1.smc.bearishFvg, h1.smc.bearishOrderBlock, ...(h1.resistanceLevels || []), ...(h4.resistanceLevels || [])]
@@ -3024,6 +3048,98 @@
       h1.atr,
       `${positionSource}＋${structureZone.source}`
     );
+  }
+
+  function buildH1ExecutionZones(sign, h1) {
+    const primary = buildH1ExecutionZone(sign, h1);
+    if (!primary) return [];
+    const primaryZone = { ...primary, role: "primary" };
+    const profileZones = sign > 0 ? h1.supportLevels || [] : h1.resistanceLevels || [];
+    const orderBlock = sign > 0 ? h1.smc.bullishOrderBlock : h1.smc.bearishOrderBlock;
+    const fvg = sign > 0 ? h1.smc.bullishFvg : h1.smc.bearishFvg;
+    const structureZone = mergeExecutionZones(
+      orderBlock,
+      fvg,
+      h1.atr,
+      `${sign > 0 ? "看涨" : "看跌"}Order Block＋FVG`
+    );
+    const primaryDistance = distanceToLevelZone(h1.price, primaryZone);
+    const separation = Math.max(h1.atr * 0.35, h1.price * 0.00025);
+    const secondary = [...profileZones, structureZone]
+      .filter(Boolean)
+      .map((zone) => ({ ...zone, center: Number.isFinite(zone.center) ? zone.center : (zone.low + zone.high) / 2 }))
+      .filter((zone) => sign > 0 ? zone.center <= h1.price + h1.atr * 0.2 : zone.center >= h1.price - h1.atr * 0.2)
+      .filter((zone) => Math.abs(zone.center - primaryZone.center) > separation)
+      .filter((zone) => distanceToLevelZone(h1.price, zone) + h1.atr * 0.05 < primaryDistance)
+      .sort((a, b) => distanceToLevelZone(h1.price, a) - distanceToLevelZone(h1.price, b))[0];
+    return secondary
+      ? [primaryZone, { ...secondary, role: "secondary", source: `临近${secondary.source || "结构区"}` }]
+      : [primaryZone];
+  }
+
+  function recentZoneTouchIndexes(zone, candles, atr, lookback = 14) {
+    if (!zone || !candles?.length) return [];
+    const tolerance = atr * 0.12;
+    const start = Math.max(0, candles.length - lookback);
+    const indexes = [];
+    for (let index = start; index < candles.length; index += 1) {
+      const candle = candles[index];
+      if (candle.low <= zone.high + tolerance && candle.high >= zone.low - tolerance) indexes.push(index);
+    }
+    return indexes;
+  }
+
+  function detectM15EarlyTrigger(sign, zone, candles, atr, lookback = 14) {
+    if (!sign || !zone || !candles?.length) return null;
+    const start = Math.max(3, candles.length - lookback);
+    let latest = null;
+    for (let index = start; index < candles.length - 1; index += 1) {
+      const candle = candles[index];
+      const touchesZone = candle.low <= zone.high + atr * 0.12 && candle.high >= zone.low - atr * 0.12;
+      if (!touchesZone) continue;
+      const range = Math.max(candle.high - candle.low, atr * 0.03);
+      const body = Math.max(Math.abs(candle.close - candle.open), atr * 0.02);
+      const lowerWick = Math.min(candle.open, candle.close) - candle.low;
+      const upperWick = candle.high - Math.max(candle.open, candle.close);
+      const strongClose = sign > 0
+        ? (candle.close - candle.low) / range >= 0.62
+        : (candle.high - candle.close) / range >= 0.62;
+      const rejectionWick = sign > 0 ? lowerWick : upperWick;
+      if (!strongClose || rejectionWick < Math.max(body * 0.9, range * 0.24)) continue;
+      const local = candles.slice(Math.max(0, index - 3), index + 1);
+      const breakLevel = sign > 0
+        ? Math.max(...local.map((item) => item.high))
+        : Math.min(...local.map((item) => item.low));
+      const breakIndex = candles.findIndex((item, candidateIndex) => candidateIndex > index && (
+        sign > 0 ? item.close > breakLevel + atr * 0.02 : item.close < breakLevel - atr * 0.02
+      ));
+      if (breakIndex > index) {
+        latest = { direction: sign, rejectionIndex: index, breakIndex, breakLevel, time: candles[breakIndex].t };
+      }
+    }
+    return latest;
+  }
+
+  function evaluateM15ZoneTrigger(sign, zone, m15) {
+    const candles = state.analysisFrames.m15 || [];
+    const touchIndexes = recentZoneTouchIndexes(zone, candles, m15.atr);
+    const sweep = sign > 0 ? m15.smc.bullishSweep : m15.smc.bearishSweep;
+    const choch = sign > 0 ? m15.smc.bullishChoch : m15.smc.bearishChoch;
+    const touchedBeforeSweep = Boolean(sweep && touchIndexes.some((index) => index <= sweep.index));
+    const standardConfirmed = Boolean(touchedBeforeSweep && choch && choch.index >= sweep.index);
+    const earlyTrigger = detectM15EarlyTrigger(sign, zone, candles, m15.atr);
+    return {
+      zone,
+      zoneTouched: touchIndexes.length > 0,
+      touchIndexes,
+      sweep,
+      choch,
+      standardConfirmed,
+      earlyTrigger,
+      earlyConfirmed: Boolean(earlyTrigger),
+      triggerReady: standardConfirmed || Boolean(earlyTrigger),
+      triggerType: standardConfirmed ? "standard" : earlyTrigger ? "early" : null
+    };
   }
 
   function calculateSmcStrategyLevels(sign, entryZone, h4, h1, m15, sweep = null) {
@@ -3078,21 +3194,18 @@
     };
   }
 
-  function smcStageScores(sign, h4, h1, m15, entryZone) {
-    const m15Candles = state.analysisFrames.m15 || [];
-    const zoneTouched = smcZoneTouchedRecently(entryZone, m15Candles, m15.atr);
-    const sweep = sign > 0 ? m15.smc.bullishSweep : m15.smc.bearishSweep;
-    const choch = sign > 0 ? m15.smc.bullishChoch : m15.smc.bearishChoch;
-    const sequenceConfirmed = Boolean(sweep && choch && choch.index >= sweep.index);
+  function smcStageScores(sign, h4, h1, m15, entryZones) {
+    const zones = (Array.isArray(entryZones) ? entryZones : [entryZones]).filter(Boolean);
+    const evaluations = zones.map((zone) => evaluateM15ZoneTrigger(sign, zone, m15));
+    const selected = evaluations.find((item) => item.triggerReady) || evaluations.find((item) => item.zoneTouched) || evaluations[0] || null;
+    const zoneTouched = evaluations.some((item) => item.zoneTouched);
+    const triggerReady = evaluations.some((item) => item.triggerReady);
     const optionalMomentum = sign > 0
       ? m15.smc.rsi >= 50 && m15.smc.rsi >= m15.smc.previousRsi && m15.price >= m15.smc.ema20
       : m15.smc.rsi <= 50 && m15.smc.rsi <= m15.smc.previousRsi && m15.price <= m15.smc.ema20;
-    const h4DirectionReady = Boolean(sign && h4.smc.ema200Direction === sign && h4.smc.lastBreak?.type === "BOS" && h4.smc.lastBreak.direction === sign);
-    const h1Score = entryZone ? zoneTouched ? 5 : 3.5 : 0;
-    const m15Score = Math.min(5,
-      (sweep ? 2 : 0) +
-      (sequenceConfirmed ? 3 : 0)
-    );
+    const h4DirectionReady = Boolean(sign && h4.smc.trendSign === sign && h4.smc.confirmedBos?.direction === sign);
+    const h1Score = zones.length ? zoneTouched ? 5 : zones.length > 1 ? 4 : 3.5 : 0;
+    const m15Score = triggerReady ? 5 : zoneTouched ? 2 : 0;
     const h4Score = h4DirectionReady ? 5 : sign ? 2.5 : 0;
     return {
       h4Score,
@@ -3101,9 +3214,16 @@
       overall: Math.round(h4Score / 5 * 35 + h1Score / 5 * 30 + m15Score / 5 * 35),
       h4DirectionReady,
       zoneTouched,
-      sweep,
-      choch,
-      sequenceConfirmed,
+      triggerReady,
+      entryZone: selected?.zone || zones[0] || null,
+      selectedZoneRole: selected?.zone?.role || "primary",
+      zoneEvaluations: evaluations,
+      sweep: selected?.sweep || null,
+      choch: selected?.choch || null,
+      sequenceConfirmed: Boolean(selected?.standardConfirmed),
+      earlyTrigger: selected?.earlyTrigger || null,
+      earlyConfirmed: Boolean(selected?.earlyConfirmed),
+      triggerType: selected?.triggerType || null,
       optionalMomentum
     };
   }
@@ -3115,27 +3235,35 @@
     if (!sign) return emptyIntradayStrategy("H4价格与EMA200、BOS方向尚未形成共振，暂不选择主方向。");
     const bias = sign > 0 ? "bullish" : "bearish";
     const direction = sign > 0 ? "做多" : "做空";
-    const entryZone = buildH1ExecutionZone(sign, h1);
-    const stages = smcStageScores(sign, h4, h1, m15, entryZone);
+    const entryZones = buildH1ExecutionZones(sign, h1);
+    const stages = smcStageScores(sign, h4, h1, m15, entryZones);
+    const entryZone = stages.entryZone;
     const levels = calculateSmcStrategyLevels(sign, entryZone, h4, h1, m15, stages.sweep);
     const h4Ready = stages.h4DirectionReady;
-    const h1Ready = Boolean(entryZone);
-    const triggerReady = stages.zoneTouched && stages.sequenceConfirmed;
+    const h1Ready = entryZones.length > 0;
+    const triggerReady = stages.triggerReady;
     const actionable = h4Ready && h1Ready && triggerReady;
     const waiting = [];
-    if (!h4Ready) waiting.push("H4等待EMA200与同向BOS确认");
-    if (!entryZone) waiting.push("H1等待执行区域");
-    if (!stages.zoneTouched) waiting.push("等待价格进入H1区");
-    if (!stages.sweep) waiting.push(`M15等待${sign > 0 ? "下方" : "上方"}扫单`);
-    if (!stages.choch || !stages.sequenceConfirmed) waiting.push(`M15等待${sign > 0 ? "看涨" : "看跌"}CHoCH`);
-    const bosText = h4.smc.lastBreak
-      ? `${h4.smc.lastBreak.direction > 0 ? "Bullish" : "Bearish"} ${h4.smc.lastBreak.type}`
-      : "等待BOS";
-    const summary = `H4候选${direction}（${bosText}）；H1 ${entryZone ? `${entryZone.source} ${smcZoneLabel(entryZone)}` : "等待执行区"}；M15 ${stages.sweep ? "已扫单" : "待扫单"}、${stages.choch ? "CHoCH已确认" : "待CHoCH"}。`;
+    if (!h4Ready) waiting.push("H4等待BOS建立方向");
+    if (!entryZones.length) waiting.push("H1等待执行区域");
+    if (!stages.zoneTouched) waiting.push("等待价格进入H1主区或次级区");
+    if (stages.zoneTouched && !stages.triggerReady) waiting.push("M15等待标准或早期结构触发");
+    const bosText = h4Ready && h4.smc.confirmedBos
+      ? `${h4.smc.confirmedBos.direction > 0 ? "Bullish" : "Bearish"} BOS延续`
+      : h4.smc.directionInvalidation ? "原方向失效，等待新BOS" : "等待BOS";
+    const zoneSummary = entryZones.length
+      ? entryZones.map((zone) => `${zone.role === "secondary" ? "次级" : "主区"}${smcZoneLabel(zone)}`).join("；")
+      : "等待执行区";
+    const triggerSummary = stages.triggerType === "standard"
+      ? "扫单＋CHoCH已确认"
+      : stages.triggerType === "early"
+        ? "拒绝K线＋微结构突破已确认"
+        : "等待两类触发之一";
+    const summary = `H4候选${direction}（${bosText}）；H1 ${zoneSummary}；M15 ${triggerSummary}。`;
     const waitingText = `${waiting.slice(0, 3).join("；")}${waiting.length > 3 ? `；另${waiting.length - 3}项待确认` : ""}`;
     const invalidationText = Number.isFinite(levels?.stopLoss) ? `失效：触及止损 ${strategyPrice(levels.stopLoss)}。` : "";
     const trigger = actionable
-      ? `执行：H1回踩后，M15已完成扫单＋同向CHoCH。${invalidationText}`
+      ? `执行：价格进入H1${stages.selectedZoneRole === "secondary" ? "次级区" : "主区"}后，M15已完成${stages.triggerType === "early" ? "拒绝K线＋微结构突破" : "扫单＋同向CHoCH"}。${invalidationText}`
       : `等待：${waitingText || "多周期条件完成"}。${invalidationText}`;
     return {
       bias,
@@ -3162,11 +3290,11 @@
     const direction = sign > 0 ? "做多" : "做空";
     const entryZone = buildH1ExecutionZone(sign, h1);
     if (!entryZone) return null;
-    const m15Candles = state.analysisFrames.m15 || [];
-    const zoneTouched = smcZoneTouchedRecently(entryZone, m15Candles, m15.atr, 10);
-    const sweep = sign > 0 ? m15.smc.bullishSweep : m15.smc.bearishSweep;
-    const choch = sign > 0 ? m15.smc.bullishChoch : m15.smc.bearishChoch;
-    const sequenceConfirmed = Boolean(sweep && choch && choch.index >= sweep.index);
+    const evaluation = evaluateM15ZoneTrigger(sign, entryZone, m15);
+    const zoneTouched = evaluation.zoneTouched;
+    const sweep = evaluation.sweep;
+    const choch = evaluation.choch;
+    const sequenceConfirmed = evaluation.standardConfirmed;
     const levels = calculateSmcStrategyLevels(sign, entryZone, h4, h1, m15, null);
     const actionable = zoneTouched && sequenceConfirmed;
     const score = Math.round((entryZone ? 25 : 0) + (zoneTouched ? 25 : 0) + (sweep ? 20 : 0) + (sequenceConfirmed ? 30 : 0));
@@ -3308,7 +3436,7 @@
     const activeCopy = activeCount > 1 ? ` · 当前并列${activeCount}条策略` : "";
     const historyCopy = historyCount ? ` · 保留此前${historyCount}条策略` : "";
     $("strategy-status").textContent = hasFrames
-      ? `简化执行：成交密集定位置，H4以EMA200＋BOS定方向，H1合并Order Block/FVG选执行区，M15以扫单＋CHoCH确认入场；其余指标只展示${activeCopy}${historyCopy} · ${formatTime(Date.now())}`
+      ? `执行框架：H4方向确认后延续，H1提供主区与临近次级区，M15以扫单＋CHoCH或拒绝K线＋微结构突破确认；其余指标只展示${activeCopy}${historyCopy} · ${formatTime(Date.now())}`
       : "等待H4、H1与M15已收盘K线…";
   }
 
@@ -3333,10 +3461,13 @@
     const smc = result.smc;
     if (key === "h4") {
       const emaRelation = smc.ema200Direction > 0 ? "价格在EMA200上方" : smc.ema200Direction < 0 ? "价格在EMA200下方" : "EMA200数据不足";
+      const directionState = smc.trendSign
+        ? `${smc.trendSign > 0 ? "多头" : "空头"}方向延续`
+        : smc.directionInvalidation ? "原方向已失效" : "等待BOS确认";
       return {
-        setup: smcBreakText(smc),
+        setup: smc.confirmedBos ? `${smc.confirmedBos.direction > 0 ? "Bullish" : "Bearish"} BOS` : "等待BOS",
         confidence: smc.momentumPassed ? "动能同向" : "动能分歧",
-        structure: `${smcBreakText(smc)}；${emaRelation}；摆动结构${smc.swingDirection > 0 ? "抬高" : smc.swingDirection < 0 ? "下移" : "未定"}。`,
+        structure: `${directionState}；${emaRelation}；反向CHoCH或穿越EMA200时失效。`,
         opportunity: `${smcMomentumText(smc)}；RSI与MACD只作动能观察，不参与方向确认。`,
         levels: `上方外部流动性 ${smcZoneValue(smc.externalHigh)}；下方外部流动性 ${smcZoneValue(smc.externalLow)}；ATR(14) ${analysisPriceFormat.format(result.atr)}。`
       };
@@ -3344,13 +3475,14 @@
     if (key === "h1") {
       const bullishZone = smc.bullishOrderBlock || smc.bullishFvg;
       const bearishZone = smc.bearishOrderBlock || smc.bearishFvg;
-      const bullishExecution = buildH1ExecutionZone(1, result);
-      const bearishExecution = buildH1ExecutionZone(-1, result);
+      const bullishExecution = buildH1ExecutionZones(1, result);
+      const bearishExecution = buildH1ExecutionZones(-1, result);
+      const maxZones = Math.max(bullishExecution.length, bearishExecution.length);
       return {
         setup: bullishZone || bearishZone ? "OB/FVG已识别" : "等待区域",
-        confidence: bullishExecution || bearishExecution ? "执行区已选" : "等待执行区",
+        confidence: maxZones > 1 ? "主区＋次级区" : maxZones ? "主区已选" : "等待执行区",
         structure: `需求区 ${smcZoneValue(bullishZone)}；供应区 ${smcZoneValue(bearishZone)}。`,
-        opportunity: `按H4方向，将Order Block/FVG与成交密集区合并成唯一执行区；均线排列不参与筛选。`,
+        opportunity: `按H4方向保留主执行区，并在存在更近有效区域时增加次级区；价格进入任一区域后交给M15确认。`,
         levels: `成交密集支撑 ${result.analysisSupportZone}；成交密集压力 ${result.analysisResistanceZone}；Order Block/FVG只在附近用于收窄执行区。`
       };
     }
@@ -3360,7 +3492,7 @@
       setup: `${sweepLabels.join("/")} · ${smc.bullishChoch || smc.bearishChoch ? "CHoCH已出现" : "待CHoCH"}`,
       confidence: smcMomentumText(smc),
       structure: `${sweepLabels.join("，")}；${chochLabels.join("，")}。`,
-      opportunity: "必须先进入H1执行区域，再出现流动性扫单，最后由同向CHoCH确认；顺序不完整则WAIT。",
+      opportunity: "进入H1区域后，扫单＋同向CHoCH为标准触发；明显拒绝K线＋微结构突破为早期触发。",
       levels: `短线支撑 ${result.analysisSupportZone}；短线压力 ${result.analysisResistanceZone}；ATR(14) ${analysisPriceFormat.format(result.atr)}。`
     };
   }
@@ -3373,7 +3505,7 @@
     if (!h4?.smc || !h1?.smc || !m15?.smc) {
       zoneList.innerHTML = `<div class="smc-zone-row" data-side="current"><div class="smc-zone-copy"><span>等待真实多周期K线</span><small>H4、H1、M15加载完成后生成区域地图</small></div><b>—</b></div>`;
       checklist.innerHTML = `<li data-ready="false"><span class="smc-check-icon">○</span><span>等待H4、H1、M15数据</span></li>`;
-      $("smc-check-count").textContent = "0 / 5";
+      $("smc-check-count").textContent = "0 / 4";
       return;
     }
     const items = [];
@@ -3386,9 +3518,19 @@
       items.push({ label, detail, low: zone.low, high: zone.high, center: (zone.low + zone.high) / 2, side });
     };
     addPoint("H4上方外部流动性", "买方流动性池", h4.smc.externalHigh, "resistance");
-    addZone("H1做空执行区", "压力成交密集＋H1结构筛选", buildH1ExecutionZone(-1, h1), "resistance");
+    buildH1ExecutionZones(-1, h1).forEach((zone) => addZone(
+      `H1做空${zone.role === "secondary" ? "次级区" : "主区"}`,
+      zone.role === "secondary" ? "更靠近现价的候选压力区" : "压力成交密集＋H1结构筛选",
+      zone,
+      "resistance"
+    ));
     addPoint("当前价", "实时中间价 / 最新已收盘价", Number.isFinite(state.book?.mid) ? state.book.mid : m15.price, "current");
-    addZone("H1做多执行区", "支撑成交密集＋H1结构筛选", buildH1ExecutionZone(1, h1), "support");
+    buildH1ExecutionZones(1, h1).forEach((zone) => addZone(
+      `H1做多${zone.role === "secondary" ? "次级区" : "主区"}`,
+      zone.role === "secondary" ? "更靠近现价的候选支撑区" : "支撑成交密集＋H1结构筛选",
+      zone,
+      "support"
+    ));
     addPoint("H4下方外部流动性", "卖方流动性池", h4.smc.externalLow, "support");
     const deduped = items.sort((a, b) => b.center - a.center);
     zoneList.innerHTML = deduped.map((item) => `
@@ -3398,14 +3540,13 @@
       </div>`).join("");
 
     const sign = h4.smc.trendSign || h4.smc.candidateSign || 0;
-    const entryZone = buildH1ExecutionZone(sign, h1);
-    const stages = strategy?.stageScores || smcStageScores(sign, h4, h1, m15, entryZone);
+    const entryZones = buildH1ExecutionZones(sign, h1);
+    const stages = strategy?.stageScores || smcStageScores(sign, h4, h1, m15, entryZones);
     const checks = [
-      { ready: Boolean(sign && h4.smc.ema200Direction === sign && h4.smc.lastBreak?.type === "BOS" && h4.smc.lastBreak.direction === sign), label: "H4 EMA200与同向BOS确认主方向" },
-      { ready: Boolean(entryZone), label: "H1已选出唯一执行区域" },
-      { ready: Boolean(stages.zoneTouched), label: "价格已进入H1执行区" },
-      { ready: Boolean(stages.sweep), label: "M15已完成对应方向流动性扫单" },
-      { ready: Boolean(stages.sequenceConfirmed), label: "M15在扫单后形成同向CHoCH" }
+      { ready: Boolean(sign && h4.smc.trendSign === sign && h4.smc.confirmedBos?.direction === sign), label: "H4已由BOS建立且保持主方向" },
+      { ready: entryZones.length > 0, label: `H1已选主执行区${entryZones[1] ? "与临近次级区" : ""}` },
+      { ready: Boolean(stages.zoneTouched), label: "价格已进入H1主区或次级区" },
+      { ready: Boolean(stages.triggerReady), label: "M15标准触发或早期触发已完成" }
     ];
     const readyCount = checks.filter((item) => item.ready).length;
     $("smc-check-count").textContent = `${readyCount} / ${checks.length}`;
@@ -3415,9 +3556,9 @@
   function renderAnalysisCard(key, result, conclusion) {
     const smc = result.smc;
     const display = smcFrameDisplay(key, result);
-    const hasH1ExecutionZone = key === "h1" && Boolean(buildH1ExecutionZone(1, result) || buildH1ExecutionZone(-1, result));
+    const hasH1ExecutionZone = key === "h1" && Boolean(buildH1ExecutionZones(1, result).length || buildH1ExecutionZones(-1, result).length);
     const simplifiedStageScore = key === "h4"
-      ? smc.ema200Direction && smc.lastBreak?.type === "BOS" && smc.lastBreak.direction === smc.ema200Direction ? 5 : smc.candidateSign ? 2.5 : 0
+      ? smc.trendSign && smc.confirmedBos?.direction === smc.trendSign ? 5 : smc.candidateSign ? 2.5 : 0
       : key === "h1"
         ? hasH1ExecutionZone ? 3.5 : 0
         : smc.bullishChoch || smc.bearishChoch ? 5 : smc.bullishSweep || smc.bearishSweep ? 2.5 : 0;
@@ -3507,7 +3648,7 @@
     });
     renderAnalysis(errors);
     const failed = Object.keys(errors).length;
-    $("analysis-status").textContent = `${failed ? `${failed}个周期延迟 · ` : ""}${microstructureStatusText()} · 成交密集定位置，H4定方向，H1选区域，M15确认入场 · ${formatTime(Date.now())}`;
+    $("analysis-status").textContent = `${failed ? `${failed}个周期延迟 · ` : ""}${microstructureStatusText()} · H4方向延续，H1主/次执行区，M15双路径确认 · ${formatTime(Date.now())}`;
   }
 
   function indicatorX(index, count, margin, innerW) {

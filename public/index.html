@@ -1131,7 +1131,7 @@
           </div>
         </article>
         <article class="card smc-map-card">
-          <div class="smc-checklist-head"><h3>入场条件清单</h3><span id="smc-check-count" class="smc-check-count">0 / 5</span></div>
+          <div class="smc-checklist-head"><h3>入场条件清单</h3><span id="smc-check-count" class="smc-check-count">0 / 4</span></div>
           <ul id="smc-entry-checklist" class="smc-checklist">
             <li data-ready="false"><span class="smc-check-icon">○</span><span>等待H4、H1、M15数据</span></li>
           </ul>
@@ -1150,7 +1150,7 @@
         <div class="strategy-head">
           <div>
             <h3 id="primary-strategy-title">SMC 顺势主策略</h3>
-            <p>成交密集定位置 · H4定方向 · H1选区域 · M15确认入场</p>
+            <p>H4方向延续 · H1主/次执行区 · M15双路径确认</p>
           </div>
           <div class="strategy-head-actions">
             <button id="lock-strategy-button" class="strategy-action primary" type="button" disabled>暂无可锁定策略</button>
@@ -1172,7 +1172,7 @@
       </article>
       <div id="active-intraday-strategies" class="strategy-stack" hidden aria-label="当前并列日内策略"></div>
       <div id="intraday-strategy-history" class="strategy-stack" hidden aria-label="此前日内策略"></div>
-      <p class="strategy-disclaimer">简化执行逻辑：成交密集区确定位置，H4以EMA200＋BOS确定方向，H1合并Order Block/FVG选出唯一执行区，M15完成进区后的流动性扫单＋CHoCH才确认入场。RSI、MACD、均线排列和盈亏比只作展示，不阻止结构信号，不构成投资建议。</p>
+      <p class="strategy-disclaimer">执行逻辑：成交密集区确定位置；H4由EMA200＋BOS建立方向，并延续至反向CHoCH或穿越EMA200；H1保留主执行区和更靠近现价的次级区；M15以“扫单＋CHoCH”或“拒绝K线＋微结构突破”确认入场。其余指标只作展示，不构成投资建议。</p>
     </section>
 
     <section id="locked-strategy" class="card strategy-card locked-strategy-card" data-bias="neutral" data-empty="true" aria-labelledby="locked-strategy-title" aria-live="polite">
