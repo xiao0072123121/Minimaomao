@@ -51,10 +51,7 @@
     intradayFirstTargetCapRewardRisk: 1.5,
     intradayMinimumCostAdjustedRewardRiskA: 1.15,
     intradayMinimumCostAdjustedRewardRiskB: 1,
-    intradayMaximumCostToRisk: 0.45,
-    portfolioRiskPerTradeRate: 0.01,
-    maximumPortfolioStopRiskRate: 0.04,
-    maximumPortfolioGrossLeverage: 4
+    intradayMaximumCostToRisk: 0.45
   };
 
   const RANGES = {
@@ -326,8 +323,7 @@
       score: strategy.score,
       summary: strategy.summary,
       trigger: strategy.trigger,
-      levelNote: strategy.levelNote || "",
-      portfolioRule: strategy.portfolioRule || intradayPortfolioRiskRule()
+      levelNote: strategy.levelNote || ""
     };
   }
 
@@ -360,7 +356,7 @@
     const takeProfit = [strategy.takeProfit, strategy.target, strategy.target3].filter(Number.isFinite).map(strategyPrice).join(" / ") || "—";
     const rewardRisks = [strategy.rewardRisk1, strategy.rewardRisk2, strategy.rewardRisk3].filter(Number.isFinite);
     const rewardRisk = rewardRisks.length
-      ? rewardRisks.map((value) => `1:${value.toFixed(2)}`).join(" / ")
+      ? rewardRisks.map((value) => `1:${Math.round(value)}`).join(" / ")
       : "—";
     return `
       <div class="strategy-metrics" aria-label="日内策略参数">
@@ -376,11 +372,20 @@
 
   function strategyNotesMarkup(strategy, locked = false) {
     const prefix = locked ? "锁定时" : "生成时";
+    const entry = Number.isFinite(strategy.entryLow) && Number.isFinite(strategy.entryHigh)
+      ? `${strategyPrice(strategy.entryLow)}–${strategyPrice(strategy.entryHigh)}`
+      : "入场区";
+    const direction = strategy.candidateBias === "bullish" ? "做多" : strategy.candidateBias === "bearish" ? "做空" : "观望";
+    const fallbackSummary = strategy.strategyType === "countertrend"
+      ? `H4主方向不变；备选${direction}仅关注 ${entry}。`
+      : `H4确定主方向，H1提供 ${entry}，M15负责入场确认。`;
+    const fallbackTrigger = `${strategy.actionable ? "执行" : "等待"}：价格进入 ${entry}，M15扫流动性后出现同向CHoCH。${Number.isFinite(strategy.stopLoss) ? `失效：触及止损 ${strategyPrice(strategy.stopLoss)}。` : ""}`;
+    const summary = strategy.summary?.length <= 130 ? strategy.summary : fallbackSummary;
+    const trigger = strategy.trigger?.length <= 130 ? strategy.trigger : fallbackTrigger;
     return `
       <div class="strategy-body">
-        <div class="strategy-note"><span>${prefix}策略依据</span><p>${escapeStrategyHtml(strategy.summary)}</p></div>
-        <div class="strategy-note"><span>${prefix}执行与失效条件</span><p>${escapeStrategyHtml(strategy.trigger)}</p></div>
-        <div class="strategy-note strategy-portfolio"><span>${prefix}组合风险规则</span><p>${escapeStrategyHtml(strategy.portfolioRule || intradayPortfolioRiskRule())}</p></div>
+        <div class="strategy-note"><span>${prefix}策略依据</span><p>${escapeStrategyHtml(summary || fallbackSummary)}</p></div>
+        <div class="strategy-note"><span>${prefix}执行与失效条件</span><p>${escapeStrategyHtml(trigger || fallbackTrigger)}</p></div>
       </div>`;
   }
 
@@ -2635,10 +2640,6 @@
     };
   }
 
-  function intradayPortfolioRiskRule() {
-    return `组合执行上限：单笔风险预算最高${(STRATEGY_FILTERS.portfolioRiskPerTradeRate * 100).toFixed(0)}%，新订单进入时同时止损风险不超过${(STRATEGY_FILTERS.maximumPortfolioStopRiskRate * 100).toFixed(0)}%，总名义杠杆不超过${STRATEGY_FILTERS.maximumPortfolioGrossLeverage.toFixed(0)}倍。新信号仍会展示；额度不足时按剩余额度缩小新仓，额度为零时等待。`;
-  }
-
   function intradayConditionScore(frame, sign) {
     const structure = frame.intradayStructure;
     let baseScore = 50 + sign * structure.baseScore * 0.42;
@@ -2954,10 +2955,7 @@
       strategyLabel: "顺势主策略"
     };
     const counterTrend = buildCounterTrendIntradayStrategy(results, entryPrice);
-    return (counterTrend ? [primary, counterTrend] : [primary]).map((strategy) => ({
-      ...strategy,
-      portfolioRule: intradayPortfolioRiskRule()
-    }));
+    return counterTrend ? [primary, counterTrend] : [primary];
   }
 
   function smcZoneLabel(zone) {
@@ -3087,24 +3085,22 @@
     const riskReady = Boolean(levels && levels.rewardRisk1 >= 1.3);
     const actionable = h4Ready && h1Ready && triggerReady && riskReady;
     const waiting = [];
-    if (!h4Ready) waiting.push("H4需由EMA200、同向BOS、RSI与MACD完成趋势过滤");
-    if (!entryZone) waiting.push(`H1尚未识别有效${sign > 0 ? "看涨" : "看跌"}订单块`);
-    else if (!stages.h1EmaAligned) waiting.push(`H1 EMA20尚未${sign > 0 ? "上穿" : "下穿"}EMA50`);
-    if (!stages.zoneTouched) waiting.push("价格尚未进入H1订单块");
-    if (!stages.sweep) waiting.push(`M15尚未出现${sign > 0 ? "下方" : "上方"}流动性扫单`);
-    if (!stages.choch || !stages.sequenceConfirmed) waiting.push(`M15尚未在扫单后形成${sign > 0 ? "看涨" : "看跌"}CHoCH`);
-    if (levels && !riskReady) waiting.push("第一目标的原始盈亏比低于1:1.30");
+    if (!h4Ready) waiting.push("H4等待同向BOS与动能确认");
+    if (!entryZone) waiting.push(`H1等待${sign > 0 ? "看涨" : "看跌"}订单块`);
+    else if (!stages.h1EmaAligned) waiting.push("H1均线方向未配合");
+    if (!stages.zoneTouched) waiting.push("等待价格进入H1区");
+    if (!stages.sweep) waiting.push(`M15等待${sign > 0 ? "下方" : "上方"}扫单`);
+    if (!stages.choch || !stages.sequenceConfirmed) waiting.push(`M15等待${sign > 0 ? "看涨" : "看跌"}CHoCH`);
+    if (levels && !riskReady) waiting.push("TP1盈亏比不足1:1.30");
     const bosText = h4.smc.lastBreak
       ? `${h4.smc.lastBreak.direction > 0 ? "Bullish" : "Bearish"} ${h4.smc.lastBreak.type}`
       : "等待BOS";
-    const rsiText = Number.isFinite(h4.smc.rsi) ? h4.smc.rsi.toFixed(1) : "数据不足";
-    const ema200Text = Number.isFinite(h4.smc.ema200)
-      ? h4.price >= h4.smc.ema200 ? "位于EMA200上方" : "位于EMA200下方"
-      : "尚无足够K线计算EMA200";
-    const summary = `H4：价格${ema200Text}，${bosText}，RSI ${rsiText}，MACD${h4.smc.macdDirection === sign ? "同向" : "未同向"}；H1：${entryZone ? `${entryZone.source} ${smcZoneLabel(entryZone)}` : "订单块待确认"}，EMA20${h1.smc.emaStackDirection === 1 ? ">" : h1.smc.emaStackDirection === -1 ? "<" : "≈"}EMA50；M15：${stages.sweep ? "已扫流动性" : "待扫流动性"}，${stages.choch ? `已形成${stages.choch.direction > 0 ? "看涨" : "看跌"}CHoCH` : "待CHoCH"}。综合共振 ${stages.overall}/100。`;
+    const summary = `H4候选${direction}（${bosText}，${h4.smc.momentumPassed ? "动能通过" : "动能待确认"}）；H1 ${entryZone ? `${entryZone.source} ${smcZoneLabel(entryZone)}` : "等待订单块"}；M15 ${stages.sweep ? "已扫单" : "待扫单"}、${stages.choch ? "CHoCH已确认" : "待CHoCH"}。`;
+    const waitingText = `${waiting.slice(0, 3).join("；")}${waiting.length > 3 ? `；另${waiting.length - 3}项待确认` : ""}`;
+    const invalidationText = Number.isFinite(levels?.stopLoss) ? `失效：触及止损 ${strategyPrice(levels.stopLoss)}。` : "";
     const trigger = actionable
-      ? `执行条件已完成：价格回踩订单块、流动性扫单后出现同向CHoCH。${stages.optionalMomentum ? "RSI与EMA20辅助确认同步通过。" : "RSI/EMA20仅作辅助，不阻止已确认结构。"} ${levels.levelNote}`
-      : `当前状态 WAIT：${waiting.join("；")}。没有M15结构确认不提前入场。${levels?.levelNote || ""}`;
+      ? `执行：H1回踩后，M15已完成扫单＋同向CHoCH。${invalidationText}`
+      : `等待：${waitingText || "多周期条件完成"}。${invalidationText}`;
     return {
       bias,
       candidateBias: bias,
@@ -3149,24 +3145,21 @@
       priority: actionable ? "B · 供应/需求区反转" : "WAIT · 等待反向CHoCH",
       score,
       ...(levels || {}),
-      summary: `H4主方向仍为${mainSign > 0 ? "做多" : "做空"}；备选${direction}仅关注H1 ${entryZone.source || (sign > 0 ? "需求区" : "供应区")} ${smcZoneLabel(entryZone)}，不视为大趋势反转。`,
+      summary: `H4主方向${mainSign > 0 ? "做多" : "做空"}；备选${direction}仅关注 ${smcZoneLabel(entryZone)}。`,
       trigger: actionable
-        ? `价格已进入关注区并出现M15 ${sign > 0 ? "看涨" : "看跌"}CHoCH，可按备选方案执行；触及结构止损立即失效。`
-        : `仅当价格进入 ${smcZoneLabel(entryZone)} 且M15出现${sign > 0 ? "看涨" : "看跌"}CHoCH时执行；当前不逆势提前入场。`
+        ? `执行：价格进入关注区并出现M15 ${sign > 0 ? "看涨" : "看跌"}CHoCH。失效：触及止损 ${strategyPrice(levels?.stopLoss)}。`
+        : `等待：价格进入关注区并出现M15 ${sign > 0 ? "看涨" : "看跌"}CHoCH。失效：触及止损 ${strategyPrice(levels?.stopLoss)}。`
     };
   }
 
   function buildSmcIntradayStrategies(results) {
     const primary = buildSmcPrimaryStrategy(results);
     const alternative = buildSmcAlternativeStrategy(results);
-    return [primary, alternative].filter(Boolean).map((strategy) => ({
-      ...strategy,
-      portfolioRule: intradayPortfolioRiskRule()
-    }));
+    return [primary, alternative].filter(Boolean);
   }
 
   function strategyPrice(value) {
-    return Number.isFinite(value) ? priceFormat.format(value) : "—";
+    return Number.isFinite(value) ? analysisPriceFormat.format(value) : "—";
   }
 
   function intradayStrategyFingerprint(strategy, m15) {
@@ -3268,11 +3261,10 @@
     $("strategy-take-profit").textContent = takeProfitValues.length ? takeProfitValues.join(" / ") : "—";
     const rewardRisks = [strategy.rewardRisk1, strategy.rewardRisk2, strategy.rewardRisk3].filter(Number.isFinite);
     $("strategy-rr").textContent = rewardRisks.length
-      ? rewardRisks.map((value) => `1:${value.toFixed(2)}`).join(" / ")
+      ? rewardRisks.map((value) => `1:${Math.round(value)}`).join(" / ")
       : "—";
     $("strategy-summary").textContent = strategy.summary;
     $("strategy-trigger").textContent = strategy.trigger;
-    $("strategy-portfolio-rule").textContent = strategy.portfolioRule || intradayPortfolioRiskRule();
     updateIntradayStrategyFeed(records);
     renderActiveSupplementalStrategies(state.currentIntradayStrategies);
     updateLockStrategyButton();
