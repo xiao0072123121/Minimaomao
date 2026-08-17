@@ -470,7 +470,7 @@
     .smc-checklist { display: grid; margin: 0; padding: 0; list-style: none; }
     .smc-checklist li {
       display: grid;
-      grid-template-columns: 18px 1fr;
+      grid-template-columns: 44px 1fr;
       gap: 8px;
       align-items: start;
       padding: 11px 0;
@@ -480,8 +480,25 @@
       line-height: 1.55;
     }
     .smc-checklist li:last-child { border-bottom: 0; }
-    .smc-checklist .smc-check-icon { color: #778898; font-weight: 800; }
-    .smc-checklist li[data-ready="true"] .smc-check-icon { color: #29d3a0; }
+    .smc-checklist .smc-check-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 22px;
+      padding: 2px 6px;
+      border: 1px solid rgba(255, 191, 71, .28);
+      border-radius: 999px;
+      color: #ffbf47;
+      background: rgba(255, 191, 71, .08);
+      font-size: 10px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+    .smc-checklist li[data-ready="true"] .smc-check-icon {
+      border-color: rgba(41, 211, 160, .3);
+      color: #29d3a0;
+      background: rgba(41, 211, 160, .09);
+    }
 
     .strategy-card {
       min-height: 0;
@@ -1133,7 +1150,7 @@
         <article class="card smc-map-card">
           <div class="smc-checklist-head"><h3>入场条件清单</h3><span id="smc-check-count" class="smc-check-count">0 / 4</span></div>
           <ul id="smc-entry-checklist" class="smc-checklist">
-            <li data-ready="false"><span class="smc-check-icon">○</span><span>等待H4、H1、M15数据</span></li>
+            <li data-ready="false"><span class="smc-check-icon">等待</span><span>等待H4、H1、M15数据</span></li>
           </ul>
         </article>
       </div>

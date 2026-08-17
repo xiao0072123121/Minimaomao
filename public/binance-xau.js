@@ -3528,10 +3528,11 @@
         levels: `成交密集支撑 ${result.analysisSupportZone}；成交密集压力 ${result.analysisResistanceZone}；Order Block/FVG只在附近用于收窄执行区。`
       };
     }
-    const sweepLabels = [smc.bullishSweep ? "下扫✓" : "下扫○", smc.bearishSweep ? "上扫✓" : "上扫○"];
-    const chochLabels = [smc.bullishChoch ? "看涨CHoCH✓" : "看涨CHoCH○", smc.bearishChoch ? "看跌CHoCH✓" : "看跌CHoCH○"];
+    const conditionText = (ready) => ready ? "已确认" : "待确认";
+    const sweepLabels = [`下方扫单：${conditionText(smc.bullishSweep)}`, `上方扫单：${conditionText(smc.bearishSweep)}`];
+    const chochLabels = [`看涨CHoCH：${conditionText(smc.bullishChoch)}`, `看跌CHoCH：${conditionText(smc.bearishChoch)}`];
     return {
-      setup: `${sweepLabels.join("/")} · ${smc.bullishChoch || smc.bearishChoch ? "CHoCH已出现" : "待CHoCH"}`,
+      setup: `下扫：${conditionText(smc.bullishSweep)} / 上扫：${conditionText(smc.bearishSweep)} · CHoCH：${smc.bullishChoch || smc.bearishChoch ? "已出现" : "待确认"}`,
       confidence: smcMomentumText(smc),
       structure: `${sweepLabels.join("，")}；${chochLabels.join("，")}。`,
       opportunity: "进入H1区域后，扫单＋同向CHoCH为标准触发；明显拒绝K线＋微结构突破为早期触发。",
@@ -3546,7 +3547,7 @@
     const { h4, h1, m15 } = results;
     if (!h4?.smc || !h1?.smc || !m15?.smc) {
       zoneList.innerHTML = `<div class="smc-zone-row" data-side="current"><div class="smc-zone-copy"><span>等待真实多周期K线</span><small>H4、H1、M15加载完成后生成区域地图</small></div><b>—</b></div>`;
-      checklist.innerHTML = `<li data-ready="false"><span class="smc-check-icon">○</span><span>等待H4、H1、M15数据</span></li>`;
+      checklist.innerHTML = `<li data-ready="false"><span class="smc-check-icon">等待</span><span>等待H4、H1、M15数据</span></li>`;
       $("smc-check-count").textContent = "0 / 4";
       return;
     }
@@ -3592,7 +3593,7 @@
     ];
     const readyCount = checks.filter((item) => item.ready).length;
     $("smc-check-count").textContent = `${readyCount} / ${checks.length}`;
-    checklist.innerHTML = checks.map((item) => `<li data-ready="${item.ready}"><span class="smc-check-icon">${item.ready ? "✓" : "○"}</span><span>${item.label}</span></li>`).join("");
+    checklist.innerHTML = checks.map((item) => `<li data-ready="${item.ready}"><span class="smc-check-icon">${item.ready ? "完成" : "等待"}</span><span>${item.label}</span></li>`).join("");
   }
 
   function renderAnalysisCard(key, result, conclusion) {
