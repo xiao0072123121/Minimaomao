@@ -58,6 +58,19 @@
     minimumNetRewardRisk: 0.8,
     minimumNetProfitRate: 0.0005
   };
+  const KEY_ZONE_RULES = {
+    minimumStrength: 60,
+    strongStrength: 75,
+    mergeAtr: 0.25,
+    mergePriceRate: 0.001,
+    minimumWidthAtr: 0.2,
+    maximumWidthAtr: 0.6,
+    breakBufferAtr: 0.15,
+    reactionBars: 3,
+    reactionThresholdAtr: 0.6,
+    pivotBars: { d1: 2, h4: 3, h1: 2, m15: 2 },
+    minimumDepartureAtr: { d1: 0.7, h4: 0.8, h1: 0.65, m15: 0.55 }
+  };
 
   const RANGES = {
     "5d": { label: "5日", start: (end) => end - 5 * DAY },
@@ -101,9 +114,10 @@
   const RANGE_ORDER = ["5d", "1mo", "3mo", "6mo", "1y", "all"];
 
   const ANALYSIS_FRAMES = {
-    h4: { label: "H4", interval: "4h", lookback: 45 },
-    h1: { label: "H1", interval: "1h", lookback: 60 },
-    m15: { label: "M15", interval: "15m", lookback: 80 }
+    d1: { label: "D1", interval: "1d", lookback: 120, hidden: true },
+    h4: { label: "H4", interval: "4h", lookback: 90 },
+    h1: { label: "H1", interval: "1h", lookback: 120 },
+    m15: { label: "M15", interval: "15m", lookback: 160 }
   };
 
   const state = {
@@ -574,7 +588,7 @@
     $("change-value").textContent = "—";
     $("change-value").classList.remove("positive", "negative");
     ["last-price", "day-high", "day-low", "day-volume"].forEach((id) => $(id).textContent = "—");
-    $("analysis-status").textContent = "正在读取 H4、H1、M15 已收盘K线…";
+    $("analysis-status").textContent = "正在读取 D1、H4、H1、M15 已收盘K线…";
     for (const [key, config] of Object.entries(ANALYSIS_FRAMES)) {
       if (config.hidden) continue;
       $(`${key}-card`).dataset.bias = "neutral";
@@ -605,7 +619,6 @@
     seedCurrentData();
     loadHistory();
     loadAnalysis();
-    loadMicrostructure();
   }
 
   function setLiveStatus() {
@@ -727,17 +740,26 @@
 
   async function seedCurrentData() {
     const symbol = state.symbol;
-    try {
-      const bookPayload = await fetchJson(`${REST}/fapi/v1/ticker/bookTicker?symbol=${symbol}`);
-      if (symbol !== state.symbol) return;
-      state.book = parseBook(bookPayload) ?? state.book;
-      state.quoteAt = Number(bookPayload.time) || Date.now();
-      updateQuoteUI();
-      setError("");
-    } catch (error) {
-      if (symbol !== state.symbol) return;
-      setError(`实时行情获取失败：${error.message}。页面将继续尝试连接。`);
+    const [bookResult, statsResult] = await Promise.allSettled([
+      fetchJson(`${REST}/fapi/v1/ticker/bookTicker?symbol=${symbol}`),
+      fetchJson(`${REST}/fapi/v1/ticker/24hr?symbol=${symbol}`)
+    ]);
+    if (symbol !== state.symbol) return;
+    if (bookResult.status === "fulfilled") {
+      state.book = parseBook(bookResult.value) ?? state.book;
+      state.quoteAt = Number(bookResult.value.time) || Date.now();
     }
+    if (statsResult.status === "fulfilled") {
+      const payload = statsResult.value;
+      const open = Number(payload.openPrice);
+      const high = Number(payload.highPrice);
+      const low = Number(payload.lowPrice);
+      const volume = Number(payload.volume);
+      if ([open, high, low, volume].every(Number.isFinite)) state.dayStats = { open, high, low, volume };
+    }
+    updateQuoteUI();
+    if (bookResult.status === "fulfilled") setError("");
+    else setError(`实时行情获取失败：${bookResult.reason?.message || "未知错误"}。页面将继续尝试连接。`);
   }
 
   function connectBinance() {
@@ -749,7 +771,7 @@
       state.socket = null;
     }
     const streamSymbol = symbol.toLowerCase();
-    const socket = new WebSocket(`wss://fstream.binance.com/stream?streams=${streamSymbol}@bookTicker/${streamSymbol}@depth20@500ms`);
+    const socket = new WebSocket(`wss://fstream.binance.com/stream?streams=${streamSymbol}@bookTicker`);
     state.socket = socket;
 
     socket.addEventListener("open", () => {
@@ -770,8 +792,6 @@
           state.book = parseBook(payload) ?? state.book;
           state.quoteAt = Number(payload.E) || Date.now();
           quoteChanged = true;
-        } else if (stream.includes("@depth20")) {
-          recordDepthSnapshot(payload);
         }
         if (quoteChanged) updateQuoteUI();
       } catch (_) {}
@@ -859,16 +879,13 @@
   }
 
   function microstructureStatusText() {
-    const micro = state.marketMicrostructure;
-    if (micro.profileStatus === "ready") return "30日K线成交分布已加载";
-    if (micro.profileCandles.length) return "已使用本地K线成交分布缓存";
-    return "成交分布加载中 · 暂用价格结构降级判断";
+    return "D1/H4价格结构关键区域已启用";
   }
 
   function refreshAnalysisForMicrostructure() {
     if (state.analysisFrames.h4 && state.analysisFrames.h1 && state.analysisFrames.m15) {
       renderAnalysis();
-      $("analysis-status").textContent = `${microstructureStatusText()} · H4方向延续，H1主/次执行区，M15双路径确认 · ${formatTime(Date.now())}`;
+      $("analysis-status").textContent = `${microstructureStatusText()} · H4方向，H1执行区，M15双路径确认 · ${formatTime(Date.now())}`;
     }
   }
 
@@ -1444,65 +1461,194 @@
     return candidates;
   }
 
-  function clusterLevelPoints(points, candles, price, atr, lookback, side) {
+  function weightedMedian(points) {
+    const sorted = points.filter((point) => Number.isFinite(point.price)).sort((a, b) => a.price - b.price);
+    if (!sorted.length) return 0;
+    const totalWeight = sorted.reduce((sum, point) => sum + Math.max(0.01, point.weight || 1), 0);
+    let cumulative = 0;
+    for (const point of sorted) {
+      cumulative += Math.max(0.01, point.weight || 1);
+      if (cumulative >= totalWeight / 2) return point.price;
+    }
+    return sorted[sorted.length - 1].price;
+  }
+
+  function utcDayStart(time) {
+    const date = new Date(time);
+    return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+  }
+
+  function utcWeekStart(time) {
+    const dayStart = utcDayStart(time);
+    const day = new Date(dayStart).getUTCDay();
+    return dayStart - ((day + 6) % 7) * DAY;
+  }
+
+  function previousPeriodLevelPoints(candles) {
+    if (!candles.length) return [];
+    const referenceTime = (candles[candles.length - 1].closeTime || candles[candles.length - 1].t) + 1;
+    const currentDay = utcDayStart(referenceTime);
+    const currentWeek = utcWeekStart(referenceTime);
+    const groups = (periodStart) => {
+      const map = new Map();
+      candles.forEach((candle, index) => {
+        const key = periodStart(candle.t);
+        const group = map.get(key) || { key, candles: [], indexes: [] };
+        group.candles.push(candle);
+        group.indexes.push(index);
+        map.set(key, group);
+      });
+      return [...map.values()].sort((a, b) => a.key - b.key);
+    };
+    const previousDay = groups(utcDayStart).filter((group) => group.key < currentDay).at(-1);
+    const previousWeek = groups(utcWeekStart).filter((group) => group.key < currentWeek).at(-1);
+    const points = [];
+    const addGroup = (group, prefix, weight, minimumCoverage) => {
+      if (!group?.candles.length) return;
+      const first = group.candles[0];
+      const last = group.candles[group.candles.length - 1];
+      const coverage = (last.closeTime || last.t) - first.t;
+      if (coverage < minimumCoverage) return;
+      const high = group.candles.reduce((best, candle, index) => candle.high > best.price
+        ? { price: candle.high, index: group.indexes[index] }
+        : best, { price: -Infinity, index: group.indexes[0] });
+      const low = group.candles.reduce((best, candle, index) => candle.low < best.price
+        ? { price: candle.low, index: group.indexes[index] }
+        : best, { price: Infinity, index: group.indexes[0] });
+      points.push({ type: "high", ...high, weight, source: `${prefix}高点`, reference: true });
+      points.push({ type: "low", ...low, weight, source: `${prefix}低点`, reference: true });
+    };
+    addGroup(previousDay, "前日", 1.8, 20 * HOUR);
+    addGroup(previousWeek, "前周", 2.2, 4 * DAY);
+    return points;
+  }
+
+  function pivotReaction(candles, index, type, atr, frameKey) {
+    const reaction = candles.slice(index + 1, index + 1 + KEY_ZONE_RULES.reactionBars);
+    if (!reaction.length) return null;
+    const pivot = candles[index];
+    const favorableMove = type === "low"
+      ? Math.max(...reaction.map((candle) => candle.high)) - pivot.low
+      : pivot.high - Math.min(...reaction.map((candle) => candle.low));
+    const departureAtr = favorableMove / Math.max(atr, 0.000001);
+    const directionalCandles = reaction.filter((candle) => type === "low"
+      ? candle.close > candle.open
+      : candle.close < candle.open).length;
+    const hasExpansion = reaction.some((candle) => {
+      const directional = type === "low" ? candle.close > candle.open : candle.close < candle.open;
+      return directional && candle.high - candle.low >= atr * 0.9;
+    });
+    const threshold = KEY_ZONE_RULES.minimumDepartureAtr[frameKey] || KEY_ZONE_RULES.reactionThresholdAtr;
+    if (departureAtr < threshold || (directionalCandles < 2 && !hasExpansion)) return null;
+    return { departureAtr, favorableMove };
+  }
+
+  function confirmedRoleReversal(candles, pivot, side, atr, tolerance) {
+    const breakBuffer = atr * KEY_ZONE_RULES.breakBufferAtr;
+    const breakoutIndex = candles.findIndex((candle, index) => index > pivot.index && (
+      side === "support" ? candle.close > pivot.price + breakBuffer : candle.close < pivot.price - breakBuffer
+    ));
+    if (breakoutIndex < 0) return null;
+    for (let index = breakoutIndex + 1; index < candles.length - 1; index += 1) {
+      const candle = candles[index];
+      const touched = candle.low <= pivot.price + tolerance && candle.high >= pivot.price - tolerance;
+      const held = side === "support" ? candle.close >= pivot.price : candle.close <= pivot.price;
+      if (!touched || !held) continue;
+      const reaction = candles.slice(index + 1, index + 1 + KEY_ZONE_RULES.reactionBars);
+      if (!reaction.length) return null;
+      const favorableMove = side === "support"
+        ? Math.max(...reaction.map((item) => item.high)) - pivot.price
+        : pivot.price - Math.min(...reaction.map((item) => item.low));
+      const departureAtr = favorableMove / Math.max(atr, 0.000001);
+      if (departureAtr >= KEY_ZONE_RULES.reactionThresholdAtr) return { index, departureAtr };
+    }
+    return null;
+  }
+
+  function clusterLevelPoints(points, candles, price, atr, lookback, side, frameKey) {
     if (!points.length) return [];
-    const clusterDistance = Math.max(atr * 0.28, price * 0.00035);
-    const padding = Math.max(atr * 0.08, price * 0.0001);
+    const clusterDistance = Math.max(atr * KEY_ZONE_RULES.mergeAtr, price * KEY_ZONE_RULES.mergePriceRate);
     const sorted = [...points].sort((a, b) => a.price - b.price);
     const clusters = [];
     for (const point of sorted) {
-      const cluster = clusters[clusters.length - 1];
-      if (!cluster || Math.abs(point.price - cluster.center) > clusterDistance) {
+      const cluster = clusters.find((candidate) => Math.abs(point.price - candidate.center) <= clusterDistance);
+      if (!cluster) {
         clusters.push({ center: point.price, points: [point] });
         continue;
       }
       cluster.points.push(point);
-      const totalWeight = cluster.points.reduce((sum, item) => sum + item.weight, 0);
-      cluster.center = cluster.points.reduce((sum, item) => sum + item.price * item.weight, 0) / totalWeight;
+      cluster.center = weightedMedian(cluster.points);
     }
     return clusters.map((cluster) => {
-      const uniqueIndexes = [...new Set(cluster.points.map((point) => point.index))];
-      const latestIndex = Math.max(...uniqueIndexes);
-      const age = Math.max(0, candles.length - 1 - latestIndex);
-      const recencyScore = 20 * Math.exp(-age / Math.max(1, lookback * 0.35));
-      let rejections = 0;
-      for (const index of uniqueIndexes) {
-        const reaction = candles.slice(index + 1, Math.min(candles.length, index + 4));
-        if (!reaction.length) continue;
-        const favorableMove = side === "support"
-          ? Math.max(...reaction.map((candle) => candle.high)) - cluster.center
-          : cluster.center - Math.min(...reaction.map((candle) => candle.low));
-        if (favorableMove >= atr * 0.55) rejections += 1;
-      }
-      const volumeRatios = cluster.points.map((point) => point.volumeRatio).filter(Number.isFinite);
-      const averageVolumeRatio = volumeRatios.length
-        ? volumeRatios.reduce((sum, value) => sum + value, 0) / volumeRatios.length
-        : 1;
-      const touchScore = Math.min(30, uniqueIndexes.length * 8);
-      const rejectionScore = Math.min(25, rejections * 8);
-      const volumeScore = clamp((averageVolumeRatio - 1) * 10, 0, 10);
+      const center = weightedMedian(cluster.points);
+      const minimumWidth = atr * KEY_ZONE_RULES.minimumWidthAtr;
+      const maximumWidth = atr * KEY_ZONE_RULES.maximumWidthAtr;
+      const rawLow = Math.min(...cluster.points.map((point) => point.price));
+      const rawHigh = Math.max(...cluster.points.map((point) => point.price));
+      const desiredWidth = clamp(rawHigh - rawLow + atr * 0.12, minimumWidth, maximumWidth);
+      const low = center - desiredWidth / 2;
+      const high = center + desiredWidth / 2;
+      const reactionPoints = cluster.points.filter((point) => Number.isFinite(point.departureAtr));
+      const uniqueReactionIndexes = [...new Set(reactionPoints.map((point) => point.index))];
+      const touches = uniqueReactionIndexes.length;
+      const reactionStrength = reactionPoints.length ? median(reactionPoints.map((point) => point.departureAtr)) : 0;
+      const reactionScore = Math.round(clamp(reactionStrength / 1.2 * 30, 0, 30));
+      const touchScore = touches <= 1 ? 5 : touches === 2 ? 14 : touches <= 4 ? 20 : Math.max(4, 20 - (touches - 4) * 4);
       const roleReversal = cluster.points.some((point) => point.roleReversal);
-      const distance = Math.abs(price - cluster.center);
-      const proximityScore = clamp(15 - distance / Math.max(atr * 4, 0.000001) * 15, 0, 15);
-      const strength = Math.round(clamp(
-        touchScore + rejectionScore + recencyScore + volumeScore + (roleReversal ? 12 : 0) + proximityScore,
+      const roleScore = roleReversal ? 15 : 0;
+      const referenceScore = Math.min(10, cluster.points.filter((point) => point.reference).reduce((sum, point) => sum + point.weight * 3, 0));
+      const latestIndex = Math.max(...cluster.points.map((point) => point.index));
+      const latestTime = candles[latestIndex]?.t || candles[candles.length - 1].t;
+      const ageMs = Math.max(0, candles[candles.length - 1].t - latestTime);
+      const recencyScore = Math.round(15 * Math.pow(0.5, ageMs / (10 * DAY)));
+      let breachCount = 0;
+      let maximumBreachStreak = 0;
+      let breachStreak = 0;
+      for (const candle of candles.slice(latestIndex + 1)) {
+        const breached = side === "support"
+          ? candle.close < low - atr * KEY_ZONE_RULES.breakBufferAtr
+          : candle.close > high + atr * KEY_ZONE_RULES.breakBufferAtr;
+        breachStreak = breached ? breachStreak + 1 : 0;
+        if (breached) breachCount += 1;
+        maximumBreachStreak = Math.max(maximumBreachStreak, breachStreak);
+      }
+      const broken = maximumBreachStreak >= 2;
+      const breachPenalty = Math.min(30, breachCount * 15);
+      const baseStrength = Math.round(clamp(
+        reactionScore + touchScore + roleScore + referenceScore + recencyScore - breachPenalty,
         0,
         100
       ));
+      const sources = [...new Set(cluster.points.map((point) => point.source).filter(Boolean))];
       return {
         side,
-        center: cluster.center,
-        low: Math.min(...cluster.points.map((point) => point.price)) - padding,
-        high: Math.max(...cluster.points.map((point) => point.price)) + padding,
-        strength,
-        touches: uniqueIndexes.length,
-        rejections,
-        age,
+        timeframe: frameKey,
+        center,
+        low,
+        high,
+        strength: baseStrength,
+        baseStrength,
+        touches,
+        rejections: reactionPoints.length,
+        reactionStrength,
+        age: Math.max(0, candles.length - 1 - latestIndex),
+        ageMs,
         roleReversal,
-        averageVolumeRatio,
-        source: roleReversal ? "角色互换" : "摆动聚类"
+        breachCount,
+        broken,
+        eligible: !broken && baseStrength >= KEY_ZONE_RULES.minimumStrength,
+        source: sources.join("＋") || "确认摆动聚类",
+        scoreComponents: {
+          reaction: reactionScore,
+          touches: touchScore,
+          role: roleScore,
+          recency: recencyScore,
+          reference: Math.round(referenceScore),
+          breach: -breachPenalty,
+          multiFrame: 0
+        }
       };
-    });
+    }).filter((zone) => !zone.broken);
   }
 
   function fallbackLevelZone(level, atr, side) {
@@ -1513,17 +1659,21 @@
       low: bounds.low,
       high: bounds.high,
       strength: 20,
+      baseStrength: 20,
       touches: 1,
       rejections: 0,
       age: 0,
       roleReversal: false,
       averageVolumeRatio: 1,
-      source: "区间备用"
+      eligible: false,
+      source: "区间备用（不触发开仓）"
     };
   }
 
   function selectPrimaryLevelZone(zones, price, atr) {
-    return [...zones].sort((a, b) => {
+    const eligible = zones.filter((zone) => zone.eligible);
+    const candidates = eligible.length ? eligible : zones;
+    return [...candidates].sort((a, b) => {
       const distancePenaltyA = Math.min(35, distanceToLevelZone(price, a) / Math.max(atr, 0.000001) * 7);
       const distancePenaltyB = Math.min(35, distanceToLevelZone(price, b) / Math.max(atr, 0.000001) * 7);
       const rankA = a.strength - distancePenaltyA;
@@ -1532,46 +1682,45 @@
     })[0];
   }
 
-  function findLevels(candles, price, atr, lookback, microstructure = null, frameKey = "h1") {
+  function findLevels(candles, price, atr, lookback, frameKey = "h1") {
     const recent = candles.slice(-lookback);
-    const validVolumes = recent
-      .map((candle) => candle.volume)
-      .filter((value) => Number.isFinite(value) && value > 0);
-    const averageVolume = validVolumes.length
-      ? validVolumes.reduce((sum, value) => sum + value, 0) / validVolumes.length
-      : 0;
-    const pivots = [];
-    for (let index = 2; index < recent.length - 2; index += 1) {
+    const pivotBars = KEY_ZONE_RULES.pivotBars[frameKey] || 2;
+    const pivots = previousPeriodLevelPoints(recent);
+    for (let index = pivotBars; index < recent.length - pivotBars; index += 1) {
       const candle = recent[index];
-      const neighbors = [recent[index - 2], recent[index - 1], recent[index + 1], recent[index + 2]];
-      const volumeRatio = averageVolume > 0 && Number.isFinite(candle.volume) ? candle.volume / averageVolume : 1;
+      const neighbors = recent.slice(index - pivotBars, index).concat(recent.slice(index + 1, index + 1 + pivotBars));
       if (neighbors.every((item) => candle.low <= item.low)) {
-        pivots.push({ type: "low", price: candle.low, index, volumeRatio });
+        const reaction = pivotReaction(recent, index, "low", atr, frameKey);
+        if (reaction) pivots.push({ type: "low", price: candle.low, index, weight: 1 + Math.min(1.5, reaction.departureAtr), source: `${frameKey.toUpperCase()}确认摆动低点`, ...reaction });
       }
       if (neighbors.every((item) => candle.high >= item.high)) {
-        pivots.push({ type: "high", price: candle.high, index, volumeRatio });
+        const reaction = pivotReaction(recent, index, "high", atr, frameKey);
+        if (reaction) pivots.push({ type: "high", price: candle.high, index, weight: 1 + Math.min(1.5, reaction.departureAtr), source: `${frameKey.toUpperCase()}确认摆动高点`, ...reaction });
       }
     }
     const separation = Math.max(atr * 0.12, price * 0.0002);
+    const reversalTolerance = Math.max(atr * KEY_ZONE_RULES.mergeAtr, price * KEY_ZONE_RULES.mergePriceRate);
     const supportPoints = [];
     const resistancePoints = [];
     for (const pivot of pivots) {
-      const ageWeight = 1 + Math.max(0, 1 - (recent.length - 1 - pivot.index) / Math.max(1, lookback));
-      const point = { ...pivot, weight: ageWeight + Math.min(1, pivot.volumeRatio / 2), roleReversal: false };
+      const referenceReaction = pivot.reference
+        ? pivotReaction(recent, pivot.index, pivot.type, atr, frameKey)
+        : null;
+      const point = { ...pivot, ...(referenceReaction || {}), weight: pivot.weight || 1, roleReversal: false };
       if (pivot.type === "low" && pivot.price < price + separation) supportPoints.push(point);
       if (pivot.type === "high" && pivot.price > price - separation) resistancePoints.push(point);
       if (pivot.type === "high" && pivot.price < price - separation) {
-        const broken = recent.slice(pivot.index + 1).some((candle) => candle.close > pivot.price + atr * 0.12);
-        if (broken) supportPoints.push({ ...point, roleReversal: true });
+        const reversal = confirmedRoleReversal(recent, pivot, "support", atr, reversalTolerance);
+        if (reversal) supportPoints.push({ ...point, ...reversal, weight: point.weight + 1, roleReversal: true, source: `${pivot.source}突破回踩` });
       }
       if (pivot.type === "low" && pivot.price > price + separation) {
-        const broken = recent.slice(pivot.index + 1).some((candle) => candle.close < pivot.price - atr * 0.12);
-        if (broken) resistancePoints.push({ ...point, roleReversal: true });
+        const reversal = confirmedRoleReversal(recent, pivot, "resistance", atr, reversalTolerance);
+        if (reversal) resistancePoints.push({ ...point, ...reversal, weight: point.weight + 1, roleReversal: true, source: `${pivot.source}跌破反抽` });
       }
     }
-    let supportZones = clusterLevelPoints(supportPoints, recent, price, atr, lookback, "support")
+    let supportZones = clusterLevelPoints(supportPoints, recent, price, atr, lookback, "support", frameKey)
       .filter((zone) => zone.center < price + separation);
-    let resistanceZones = clusterLevelPoints(resistancePoints, recent, price, atr, lookback, "resistance")
+    let resistanceZones = clusterLevelPoints(resistancePoints, recent, price, atr, lookback, "resistance", frameKey)
       .filter((zone) => zone.center > price - separation);
     if (!supportZones.length) {
       const low = Math.min(...recent.map((candle) => candle.low));
@@ -1581,23 +1730,6 @@
       const high = Math.max(...recent.map((candle) => candle.high));
       resistanceZones = [fallbackLevelZone(high > price ? high : price + atr * 1.5, atr, "resistance")];
     }
-    const volumeProfile = buildVolumeProfile(microstructure, price, atr, frameKey);
-    supportZones = combineStructureAndProfileZones(
-      supportZones,
-      volumeProfile,
-      "support",
-      price,
-      atr,
-      microstructure?.depthHistory
-    );
-    resistanceZones = combineStructureAndProfileZones(
-      resistanceZones,
-      volumeProfile,
-      "resistance",
-      price,
-      atr,
-      microstructure?.depthHistory
-    );
     const supportZone = selectPrimaryLevelZone(supportZones, price, atr);
     const resistanceZone = selectPrimaryLevelZone(resistanceZones, price, atr);
     return {
@@ -1607,7 +1739,7 @@
       resistanceZone,
       supportZones,
       resistanceZones,
-      volumeProfile
+      volumeProfile: { available: false, zones: [], mode: "price-structure-only" }
     };
   }
 
@@ -2316,7 +2448,7 @@
     if (![price, ma20, ma60, atr].every(Number.isFinite)) {
       throw new Error(`${config.label}价格结构计算失败`);
     }
-    const levels = findLevels(candles, price, atr, config.lookback, state.marketMicrostructure, config.key);
+    const levels = findLevels(candles, price, atr, config.lookback, config.key);
     const ma20Series = calculateSmaSeries(candles, 20);
     const ma60Series = calculateSmaSeries(candles, 60);
     const lastIndex = candles.length - 1;
@@ -2425,7 +2557,8 @@
   }
 
   function applySupportResistanceConfluence(results) {
-    const frames = [results.h4, results.h1, results.m15].filter(Boolean);
+    const frames = [results.d1, results.h4, results.h1, results.m15].filter(Boolean);
+    const timeframeBonus = { d1: 20, h4: 18, h1: 8, m15: 4 };
     for (const frame of frames) {
       for (const side of ["support", "resistance"]) {
         const zones = side === "support" ? frame.supportLevels : frame.resistanceLevels;
@@ -2435,20 +2568,40 @@
           for (const other of frames) {
             if (other.key === frame.key) continue;
             const otherZones = side === "support" ? other.supportLevels : other.resistanceLevels;
-            const threshold = Math.max(frame.atr * 0.55, other.atr * 0.35, frame.price * 0.0003);
+            const threshold = Math.max(Math.min(frame.atr, other.atr) * 0.35, frame.price * 0.001);
             if ((otherZones || []).some((candidate) => Math.abs(candidate.center - zone.center) <= threshold)) {
               alignedFrames.add(other.key);
             }
           }
           zone.timeframes = [...alignedFrames];
           zone.confluence = alignedFrames.size;
-          zone.scoreComponents.multiFrame = 0;
+          const multiFrameBonus = Math.min(20, [...alignedFrames]
+            .filter((key) => key !== frame.key)
+            .reduce((sum, key) => sum + (timeframeBonus[key] || 0), 0));
+          zone.scoreComponents.multiFrame = multiFrameBonus;
           zone.strength = Math.round(clamp(
-            zone.baseStrength + (zone.depthAdjustment || 0),
+            zone.baseStrength + multiFrameBonus,
             0,
             100
           ));
+          zone.eligible = !zone.broken && zone.strength >= KEY_ZONE_RULES.minimumStrength;
         }
+      }
+      const support = selectPrimaryLevelZone(frame.supportLevels || [], frame.price, frame.atr);
+      const resistance = selectPrimaryLevelZone(frame.resistanceLevels || [], frame.price, frame.atr);
+      if (support) {
+        frame.support = support.center;
+        frame.supportLevel = support;
+        frame.supportZone = formatZone(support, frame.atr);
+        frame.analysisSupportZone = formatAnalysisZone(support, frame.atr);
+        frame.nearSupport = distanceToLevelZone(frame.price, support) <= Math.max(frame.atr * 0.35, frame.price * 0.0005);
+      }
+      if (resistance) {
+        frame.resistance = resistance.center;
+        frame.resistanceLevel = resistance;
+        frame.resistanceZone = formatZone(resistance, frame.atr);
+        frame.analysisResistanceZone = formatAnalysisZone(resistance, frame.atr);
+        frame.nearResistance = distanceToLevelZone(frame.price, resistance) <= Math.max(frame.atr * 0.35, frame.price * 0.0005);
       }
     }
   }
@@ -2523,7 +2676,7 @@
       const executionZones = buildH1ExecutionZones(mainSign, h1);
       conclusions.h1 = executionZones.length
         ? `H1主执行区 ${smcZoneLabel(executionZones[0])}${executionZones[1] ? `；临近次级区 ${smcZoneLabel(executionZones[1])}` : ""}。价格进入任一区域后转由M15确认。`
-        : `H1尚未选出与H4方向对应的执行区，继续等待成交密集区与结构区域形成。`;
+        : `H1尚未选出与H4方向对应的强关键区，继续等待结构区域形成。`;
     }
     if (m15) {
       const mainSign = h4?.smc?.trendSign || h4?.smc?.candidateSign || 0;
@@ -2568,7 +2721,8 @@
     const candidates = availableFrames.flatMap((frame) => {
       const zones = side === "support" ? frame.supportLevels : frame.resistanceLevels;
       return (zones || []).map((zone) => ({ ...zone, timeframe: frame.key }));
-    }).filter((zone) => side === "support" ? zone.center < entry : zone.center > entry);
+    }).filter((zone) => zone.eligible && zone.strength >= KEY_ZONE_RULES.minimumStrength)
+      .filter((zone) => side === "support" ? zone.center < entry : zone.center > entry);
     const ranked = candidates.map((zone) => {
       const nearbyFrames = new Set(candidates
         .filter((candidate) => Math.abs(candidate.center - zone.center) <= confluenceDistance)
@@ -2809,9 +2963,7 @@
     if (!zone) return "强度未知";
     if (zone.scoreComponents) {
       const components = zone.scoreComponents;
-      const depth = components.depth > 0 ? `+${components.depth}` : String(components.depth || 0);
-      const node = zone.nodeType ? `${zone.nodeType} · ` : "";
-      return `${node}强度${zone.strength}/100，成交密集${components.volumeProfile}/40、价格反应${components.reaction}/25、角色/时效${components.roleRecency}/15、深度${depth}（${zone.depthLabel || "中性"}）`;
+      return `强度${zone.strength}/100：价格反应${components.reaction}/30、有效触碰${components.touches}/20、角色互换${components.role}/15、时效${components.recency}/15、前日/前周${components.reference}/10、多周期共振${components.multiFrame}/20、突破扣分${components.breach}`;
     }
     const role = zone.roleReversal ? "，包含突破后角色互换" : "";
     return `结构降级：强度${zone.strength}/100，触碰${zone.touches}次、有效反应${zone.rejections}次${role}`;
@@ -3028,7 +3180,7 @@
       high,
       center: (low + high) / 2,
       source,
-      confluenceSource: secondary.source || secondary.nodeType || "成交密集区"
+      confluenceSource: secondary.source || "关键结构区"
     };
   }
 
@@ -3036,14 +3188,17 @@
     if (!sign || !h1?.smc) return null;
     const orderBlock = sign > 0 ? h1.smc.bullishOrderBlock : h1.smc.bearishOrderBlock;
     const fvg = sign > 0 ? h1.smc.bullishFvg : h1.smc.bearishFvg;
-    const positionZone = sign > 0 ? h1.supportLevel : h1.resistanceLevel;
+    const candidatePositionZone = sign > 0 ? h1.supportLevel : h1.resistanceLevel;
+    const positionZone = candidatePositionZone?.eligible && candidatePositionZone.strength >= KEY_ZONE_RULES.minimumStrength
+      ? candidatePositionZone
+      : null;
     const structureZone = mergeExecutionZones(
       orderBlock,
       fvg,
       h1.atr,
       `${sign > 0 ? "看涨" : "看跌"}Order Block＋FVG`
     );
-    const positionSource = `${sign > 0 ? "支撑" : "压力"}成交密集区`;
+    const positionSource = `${sign > 0 ? "支撑" : "压力"}关键结构区`;
     if (!positionZone) return structureZone;
     const coreZone = { ...positionZone, source: positionSource };
     if (!structureZone) return coreZone;
@@ -3059,7 +3214,8 @@
     const primary = buildH1ExecutionZone(sign, h1);
     if (!primary) return [];
     const primaryZone = { ...primary, role: "primary" };
-    const profileZones = sign > 0 ? h1.supportLevels || [] : h1.resistanceLevels || [];
+    const profileZones = (sign > 0 ? h1.supportLevels || [] : h1.resistanceLevels || [])
+      .filter((zone) => zone.eligible && zone.strength >= KEY_ZONE_RULES.minimumStrength);
     const orderBlock = sign > 0 ? h1.smc.bullishOrderBlock : h1.smc.bearishOrderBlock;
     const fvg = sign > 0 ? h1.smc.bullishFvg : h1.smc.bearishFvg;
     const structureZone = mergeExecutionZones(
@@ -3559,7 +3715,7 @@
         confidence: maxZones > 1 ? "主区＋次级区" : maxZones ? "主区已选" : "等待执行区",
         structure: `需求区 ${smcZoneValue(bullishZone)}；供应区 ${smcZoneValue(bearishZone)}。`,
         opportunity: `按H4方向保留主执行区，并在存在更近有效区域时增加次级区；价格进入任一区域后交给M15确认。`,
-        levels: `成交密集支撑 ${result.analysisSupportZone}；成交密集压力 ${result.analysisResistanceZone}；Order Block/FVG只在附近用于收窄执行区。`
+        levels: `关键结构支撑 ${result.analysisSupportZone}；关键结构压力 ${result.analysisResistanceZone}；Order Block/FVG只在附近用于收窄执行区。`
       };
     }
     const conditionText = (ready) => ready ? "✅" : "⏳";
@@ -3597,14 +3753,14 @@
     addPoint("H4上方外部流动性", "买方流动性池", h4.smc.externalHigh, "resistance");
     buildH1ExecutionZones(-1, h1).forEach((zone) => addZone(
       `H1做空${zone.role === "secondary" ? "次级区" : "主区"}`,
-      zone.role === "secondary" ? "更靠近现价的候选压力区" : "压力成交密集＋H1结构筛选",
+      zone.role === "secondary" ? "更靠近现价的候选压力区" : "强压力区＋H1结构筛选",
       zone,
       "resistance"
     ));
     addPoint("当前价", "实时中间价 / 最新已收盘价", Number.isFinite(state.book?.mid) ? state.book.mid : m15.price, "current");
     buildH1ExecutionZones(1, h1).forEach((zone) => addZone(
       `H1做多${zone.role === "secondary" ? "次级区" : "主区"}`,
-      zone.role === "secondary" ? "更靠近现价的候选支撑区" : "支撑成交密集＋H1结构筛选",
+      zone.role === "secondary" ? "更靠近现价的候选支撑区" : "强支撑区＋H1结构筛选",
       zone,
       "support"
     ));
@@ -3694,7 +3850,7 @@
   async function loadAnalysis() {
     const token = ++state.analysisLoadToken;
     const symbol = state.symbol;
-    $("analysis-status").textContent = "正在更新 H4、H1、M15 已收盘K线…";
+    $("analysis-status").textContent = "正在更新 D1、H4、H1、M15 已收盘K线…";
     const entries = Object.entries(ANALYSIS_FRAMES);
     const cached = await Promise.all(entries.map(([, config]) =>
       readCandleCache(analysisCacheKey(symbol, config.interval))
@@ -3725,7 +3881,7 @@
     });
     renderAnalysis(errors);
     const failed = Object.keys(errors).length;
-    $("analysis-status").textContent = `${failed ? `${failed}个周期延迟 · ` : ""}${microstructureStatusText()} · H4方向延续，H1主/次执行区，M15双路径确认 · ${formatTime(Date.now())}`;
+    $("analysis-status").textContent = `${failed ? `${failed}个周期延迟 · ` : ""}${microstructureStatusText()} · H4方向，H1主/次执行区，M15双路径确认 · ${formatTime(Date.now())}`;
   }
 
   function indicatorX(index, count, margin, innerW) {
@@ -4549,14 +4705,11 @@
   seedCurrentData();
   loadHistory();
   loadAnalysis();
-  loadMicrostructure();
   connectBinance();
   setInterval(() => {
     if (!state.wsOk) seedCurrentData();
   }, 15000);
   setInterval(setLiveStatus, 1000);
-  setInterval(rebuildDayStatsFromProfile, 60000);
-  setInterval(refreshAnalysisForMicrostructure, 10000);
   setInterval(() => loadHistory({ incremental: true }), 60000);
   setInterval(loadAnalysis, 60000);
 })();
