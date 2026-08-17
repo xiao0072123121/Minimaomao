@@ -107,7 +107,7 @@
   const state = {
     symbol: "XAUUSDT",
     book: null,
-    ticker: null,
+    dayStats: null,
     quoteAt: 0,
     wsOk: false,
     retryCount: 0,
@@ -531,7 +531,7 @@
 
   function resetSymbolDataUI() {
     state.book = null;
-    state.ticker = null;
+    state.dayStats = null;
     state.quoteAt = 0;
     state.wsOk = false;
     state.candles = [];
@@ -608,18 +608,22 @@
       $("mid-price").textContent = priceFormat.format(state.book.mid);
       $("book-price").textContent = `买 ${priceFormat.format(state.book.bid)} · 卖 ${priceFormat.format(state.book.ask)}`;
       $("quote-time").textContent = formatTime(state.quoteAt);
+      $("last-price").textContent = priceFormat.format(state.book.mid);
     }
 
-    if (state.ticker) {
-      const change = state.ticker.changePct;
+    if (state.dayStats && state.book) {
+      state.dayStats.high = Math.max(state.dayStats.high, state.book.mid);
+      state.dayStats.low = Math.min(state.dayStats.low, state.book.mid);
+      const change = state.dayStats.open > 0
+        ? (state.book.mid / state.dayStats.open - 1) * 100
+        : 0;
       const changeElement = $("change-value");
       changeElement.textContent = `${signed(change)}%`;
       changeElement.classList.toggle("positive", change > 0);
       changeElement.classList.toggle("negative", change < 0);
-      $("last-price").textContent = priceFormat.format(state.ticker.last);
-      $("day-high").textContent = `${priceFormat.format(state.ticker.high)} USDT`;
-      $("day-low").textContent = `${priceFormat.format(state.ticker.low)} USDT`;
-      $("day-volume").textContent = `${volumeFormat.format(state.ticker.volume)} ${currentSymbolConfig().base}`;
+      $("day-high").textContent = `${priceFormat.format(state.dayStats.high)} USDT`;
+      $("day-low").textContent = `${priceFormat.format(state.dayStats.low)} USDT`;
+      $("day-volume").textContent = `${volumeFormat.format(state.dayStats.volume)} ${currentSymbolConfig().base}`;
     }
 
     setLiveStatus();
@@ -706,26 +710,12 @@
     return { bid, ask, mid: (bid + ask) / 2 };
   }
 
-  function parseTicker(payload) {
-    const last = Number(payload.lastPrice ?? payload.c);
-    const high = Number(payload.highPrice ?? payload.h);
-    const low = Number(payload.lowPrice ?? payload.l);
-    const volume = Number(payload.volume ?? payload.v);
-    const changePct = Number(payload.priceChangePercent ?? payload.P);
-    if (![last, high, low, volume, changePct].every(Number.isFinite)) return null;
-    return { last, high, low, volume, changePct };
-  }
-
   async function seedCurrentData() {
     const symbol = state.symbol;
     try {
-      const [bookPayload, tickerPayload] = await Promise.all([
-        fetchJson(`${REST}/fapi/v1/ticker/bookTicker?symbol=${symbol}`),
-        fetchJson(`${REST}/fapi/v1/ticker/24hr?symbol=${symbol}`)
-      ]);
+      const bookPayload = await fetchJson(`${REST}/fapi/v1/ticker/bookTicker?symbol=${symbol}`);
       if (symbol !== state.symbol) return;
       state.book = parseBook(bookPayload) ?? state.book;
-      state.ticker = parseTicker(tickerPayload) ?? state.ticker;
       state.quoteAt = Number(bookPayload.time) || Date.now();
       updateQuoteUI();
       setError("");
@@ -744,7 +734,7 @@
       state.socket = null;
     }
     const streamSymbol = symbol.toLowerCase();
-    const socket = new WebSocket(`wss://fstream.binance.com/stream?streams=${streamSymbol}@bookTicker/${streamSymbol}@ticker/${streamSymbol}@depth20@500ms`);
+    const socket = new WebSocket(`wss://fstream.binance.com/stream?streams=${streamSymbol}@bookTicker/${streamSymbol}@depth20@500ms`);
     state.socket = socket;
 
     socket.addEventListener("open", () => {
@@ -764,10 +754,6 @@
         if (stream.endsWith("@bookTicker")) {
           state.book = parseBook(payload) ?? state.book;
           state.quoteAt = Number(payload.E) || Date.now();
-          quoteChanged = true;
-        } else if (stream.endsWith("@ticker")) {
-          state.ticker = parseTicker(payload) ?? state.ticker;
-          state.quoteAt = Number(payload.E) || state.quoteAt || Date.now();
           quoteChanged = true;
         } else if (stream.includes("@depth20")) {
           recordDepthSnapshot(payload);
@@ -871,6 +857,21 @@
     }
   }
 
+  function rebuildDayStatsFromProfile() {
+    const cutoff = Date.now() - DAY;
+    const candles = state.marketMicrostructure.profileCandles
+      .filter((candle) => candle.t >= cutoff)
+      .sort((a, b) => a.t - b.t);
+    if (!candles.length) return;
+    state.dayStats = {
+      open: candles[0].open,
+      high: Math.max(...candles.map((candle) => candle.high)),
+      low: Math.min(...candles.map((candle) => candle.low)),
+      volume: candles.reduce((sum, candle) => sum + (Number(candle.volume) || 0), 0)
+    };
+    updateQuoteUI();
+  }
+
   async function loadMicrostructure() {
     const token = ++state.microstructureLoadToken;
     const symbol = state.symbol;
@@ -880,6 +881,7 @@
     if (Array.isArray(cachedCandles)) state.marketMicrostructure.profileCandles = cachedCandles;
     if (state.marketMicrostructure.profileCandles.length) {
       state.marketMicrostructure.profileStatus = "ready";
+      rebuildDayStatsFromProfile();
       refreshAnalysisForMicrostructure();
     }
 
@@ -899,6 +901,7 @@
     } else {
       state.marketMicrostructure.profileStatus = state.marketMicrostructure.profileCandles.length ? "ready" : "degraded";
     }
+    rebuildDayStatsFromProfile();
     refreshAnalysisForMicrostructure();
   }
 
@@ -3749,6 +3752,7 @@
     if (!state.wsOk) seedCurrentData();
   }, 15000);
   setInterval(setLiveStatus, 1000);
+  setInterval(rebuildDayStatsFromProfile, 60000);
   setInterval(refreshAnalysisForMicrostructure, 10000);
   setInterval(() => loadHistory({ incremental: true }), 60000);
   setInterval(loadAnalysis, 60000);
