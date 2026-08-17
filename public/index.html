@@ -1074,7 +1074,7 @@
 
     <section class="analysis-section" aria-labelledby="analysis-title" aria-live="polite">
       <div class="section-heading">
-        <h2 id="analysis-title">SMC 多周期共振</h2>
+        <h2 id="analysis-title">SMC 四层执行</h2>
         <p id="analysis-status">正在读取 H4、H1、M15 已收盘K线…</p>
       </div>
       <div class="analysis-grid">
@@ -1083,10 +1083,10 @@
           <div class="analysis-scores" aria-label="H4量化研判">
             <div class="analysis-score"><span>阶段评分</span><b id="h4-direction-score">—</b></div>
             <div class="analysis-score"><span>SMC 结构</span><b id="h4-setup-score">—</b></div>
-            <div class="analysis-score"><span>过滤状态</span><b id="h4-confidence">—</b></div>
+            <div class="analysis-score"><span>辅助观察</span><b id="h4-confidence">—</b></div>
           </div>
           <div class="analysis-item"><span class="analysis-label">SMC 结构</span><p id="h4-structure">等待4小时K线…</p></div>
-          <div class="analysis-item"><span class="analysis-label">趋势过滤</span><p id="h4-opportunity">—</p></div>
+          <div class="analysis-item"><span class="analysis-label">动能观察</span><p id="h4-opportunity">—</p></div>
           <div class="analysis-item"><span class="analysis-label">外部流动性 / 支撑压力</span><p id="h4-levels">—</p></div>
           <div class="analysis-item conclusion"><span class="analysis-label">周期结论</span><p id="h4-conclusion">正在生成动态判断…</p></div>
         </article>
@@ -1095,10 +1095,10 @@
           <div class="analysis-scores" aria-label="H1量化研判">
             <div class="analysis-score"><span>阶段评分</span><b id="h1-direction-score">—</b></div>
             <div class="analysis-score"><span>SMC 结构</span><b id="h1-setup-score">—</b></div>
-            <div class="analysis-score"><span>过滤状态</span><b id="h1-confidence">—</b></div>
+            <div class="analysis-score"><span>执行区域</span><b id="h1-confidence">—</b></div>
           </div>
           <div class="analysis-item"><span class="analysis-label">Order Block / FVG</span><p id="h1-structure">等待1小时K线…</p></div>
-          <div class="analysis-item"><span class="analysis-label">区域与趋势过滤</span><p id="h1-opportunity">—</p></div>
+          <div class="analysis-item"><span class="analysis-label">执行区选择</span><p id="h1-opportunity">—</p></div>
           <div class="analysis-item"><span class="analysis-label">支撑 / 压力（成交密集增强）</span><p id="h1-levels">—</p></div>
           <div class="analysis-item conclusion"><span class="analysis-label">周期结论</span><p id="h1-conclusion">正在生成动态判断…</p></div>
         </article>
@@ -1150,7 +1150,7 @@
         <div class="strategy-head">
           <div>
             <h3 id="primary-strategy-title">SMC 顺势主策略</h3>
-            <p>H4趋势过滤 · H1订单块 · M15扫流动性与CHoCH</p>
+            <p>成交密集定位置 · H4定方向 · H1选区域 · M15确认入场</p>
           </div>
           <div class="strategy-head-actions">
             <button id="lock-strategy-button" class="strategy-action primary" type="button" disabled>暂无可锁定策略</button>
@@ -1159,7 +1159,7 @@
         <div class="strategy-metrics" aria-label="日内主策略参数">
           <div class="strategy-metric"><span>方向</span><b id="strategy-direction" class="strategy-direction-value">观望</b></div>
           <div class="strategy-metric"><span>策略优先级</span><b id="strategy-priority">等待</b></div>
-          <div class="strategy-metric"><span>共振评分</span><b id="strategy-score">—</b></div>
+          <div class="strategy-metric"><span>条件完成度</span><b id="strategy-score">—</b></div>
           <div class="strategy-metric"><span>入场区域</span><b id="strategy-entry">—</b></div>
           <div class="strategy-metric"><span>止损</span><b id="strategy-stop">—</b></div>
           <div class="strategy-metric"><span>止盈</span><b id="strategy-take-profit">—</b></div>
@@ -1172,7 +1172,7 @@
       </article>
       <div id="active-intraday-strategies" class="strategy-stack" hidden aria-label="当前并列日内策略"></div>
       <div id="intraday-strategy-history" class="strategy-stack" hidden aria-label="此前日内策略"></div>
-      <p class="strategy-disclaimer">策略使用真实已收盘K线动态识别SMC结构：H4以EMA200和BOS确定主方向，RSI/MACD负责趋势过滤；H1识别Order Block与FVG；M15必须完成流动性扫单与CHoCH才允许主方案执行。共振评分只展示条件完整度，不单独触发交易，不构成投资建议。</p>
+      <p class="strategy-disclaimer">简化执行逻辑：成交密集区确定位置，H4以EMA200＋BOS确定方向，H1合并Order Block/FVG选出唯一执行区，M15完成进区后的流动性扫单＋CHoCH才确认入场。RSI、MACD、均线排列和盈亏比只作展示，不阻止结构信号，不构成投资建议。</p>
     </section>
 
     <section id="locked-strategy" class="card strategy-card locked-strategy-card" data-bias="neutral" data-empty="true" aria-labelledby="locked-strategy-title" aria-live="polite">
