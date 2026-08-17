@@ -534,7 +534,9 @@
 
     .strategy-note span { display: block; margin-bottom: 4px; color: var(--muted); font-size: 11px; }
     .strategy-note p { margin: 0; color: #d8e0e8; font-size: 13px; line-height: 1.7; }
-    .strategy-note.strategy-risk { grid-column: 1 / -1; }
+    .strategy-note.strategy-risk,
+    .strategy-note.strategy-portfolio { grid-column: 1 / -1; }
+    .strategy-note.strategy-portfolio p { color: #9fc9ff; }
     .strategy-note.strategy-risk[data-tone="warning"] p { color: #ffd479; }
     .strategy-note.strategy-risk[data-tone="danger"] p { color: #ff9297; }
     .strategy-note.strategy-risk[data-tone="cool"] p { color: #70ddb5; }
@@ -1105,6 +1107,7 @@
         <div class="strategy-body">
           <div class="strategy-note"><span>策略依据</span><p id="strategy-summary">等待多周期判断完成。</p></div>
           <div class="strategy-note"><span>执行与失效条件</span><p id="strategy-trigger">方向、位置与触发周期一致后再生成执行参数。</p></div>
+          <div class="strategy-note strategy-portfolio"><span>组合风险规则</span><p id="strategy-portfolio-rule">单笔风险最高1%；新订单进入时同时止损风险不超过4%、总名义杠杆不超过4倍，额度不足时缩小新仓。</p></div>
           <div id="strategy-rsi-risk-box" class="strategy-note strategy-risk" data-tone="neutral"><span>RSI 风险提示（不计分）</span><p id="strategy-rsi-risk">等待M15 RSI数据。</p></div>
         </div>
       </article>

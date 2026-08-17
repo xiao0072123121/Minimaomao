@@ -49,6 +49,9 @@
     intradayMinimumCostAdjustedRewardRiskA: 1.15,
     intradayMinimumCostAdjustedRewardRiskB: 1,
     intradayMaximumCostToRisk: 0.45,
+    portfolioRiskPerTradeRate: 0.01,
+    maximumPortfolioStopRiskRate: 0.04,
+    maximumPortfolioGrossLeverage: 4,
     positionMinimumBaseScore: 55,
     positionMinimumScoreEdge: 10,
     positionMinimumExecutionScore: 85
@@ -323,6 +326,7 @@
       summary: strategy.summary,
       trigger: strategy.trigger,
       levelNote: strategy.levelNote || "",
+      portfolioRule: strategy.portfolioRule || intradayPortfolioRiskRule(),
       rsiRisk: rsiRisk?.text || "—",
       rsiTone: rsiRisk?.tone || "neutral"
     };
@@ -377,6 +381,7 @@
       <div class="strategy-body">
         <div class="strategy-note"><span>${prefix}策略依据</span><p>${escapeStrategyHtml(strategy.summary)}</p></div>
         <div class="strategy-note"><span>${prefix}执行与失效条件</span><p>${escapeStrategyHtml(strategy.trigger)}</p></div>
+        <div class="strategy-note strategy-portfolio"><span>${prefix}组合风险规则</span><p>${escapeStrategyHtml(strategy.portfolioRule || intradayPortfolioRiskRule())}</p></div>
         <div class="strategy-note strategy-risk" data-tone="${escapeStrategyHtml(rsiRisk?.tone || strategy.rsiTone || "neutral")}"><span>${prefix}RSI风险提示</span><p>${escapeStrategyHtml(rsiRisk?.text || strategy.rsiRisk || "—")}</p></div>
       </div>`;
   }
@@ -2653,6 +2658,10 @@
     };
   }
 
+  function intradayPortfolioRiskRule() {
+    return `组合执行上限：单笔风险预算最高${(STRATEGY_FILTERS.portfolioRiskPerTradeRate * 100).toFixed(0)}%，新订单进入时同时止损风险不超过${(STRATEGY_FILTERS.maximumPortfolioStopRiskRate * 100).toFixed(0)}%，总名义杠杆不超过${STRATEGY_FILTERS.maximumPortfolioGrossLeverage.toFixed(0)}倍。新信号仍会展示；额度不足时按剩余额度缩小新仓，额度为零时等待。`;
+  }
+
   function intradayConditionScore(frame, sign) {
     const structure = frame.intradayStructure;
     let baseScore = 50 + sign * structure.baseScore * 0.42;
@@ -3062,7 +3071,10 @@
       strategyLabel: "顺势主策略"
     };
     const counterTrend = buildCounterTrendIntradayStrategy(results, entryPrice);
-    return counterTrend ? [primary, counterTrend] : [primary];
+    return (counterTrend ? [primary, counterTrend] : [primary]).map((strategy) => ({
+      ...strategy,
+      portfolioRule: intradayPortfolioRiskRule()
+    }));
   }
 
   function strategyPrice(value) {
@@ -3219,6 +3231,7 @@
       : "—";
     $("strategy-summary").textContent = strategy.summary;
     $("strategy-trigger").textContent = strategy.trigger;
+    $("strategy-portfolio-rule").textContent = strategy.portfolioRule || intradayPortfolioRiskRule();
     const rsiRisk = records[0].rsiRisk;
     $("strategy-rsi-risk-box").dataset.tone = rsiRisk.tone;
     $("strategy-rsi-risk").textContent = rsiRisk.text;
