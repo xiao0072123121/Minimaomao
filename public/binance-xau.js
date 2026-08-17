@@ -3281,15 +3281,57 @@
     };
   }
 
+  function waitingSmcAlternative(reason, sign = 0, mainSign = 0) {
+    const direction = sign > 0 ? "做多" : sign < 0 ? "做空" : "";
+    const bias = sign > 0 ? "bullish" : sign < 0 ? "bearish" : "neutral";
+    return {
+      bias,
+      candidateBias: bias,
+      strategyType: "countertrend",
+      strategyLabel: "SMC备选逆势策略",
+      actionable: false,
+      directionLabel: sign ? `WAIT · 备选${direction}` : "WAIT · 等待H4方向",
+      priority: mainSign ? "WAIT · 等待反向触发" : "WAIT · 等待主方向",
+      score: 0,
+      entryLow: null,
+      entryHigh: null,
+      stopLoss: null,
+      takeProfit: null,
+      target: null,
+      target3: null,
+      rewardRisk1: null,
+      rewardRisk2: null,
+      rewardRisk3: null,
+      summary: reason,
+      trigger: mainSign
+        ? "等待反向H1执行区形成，之后再由M15扫单＋反向CHoCH确认。"
+        : "等待H4由新BOS重新建立主方向；主方向明确后才定义逆势方向与点位。"
+    };
+  }
+
   function buildSmcAlternativeStrategy(results) {
     const { h4, h1, m15 } = results;
+    if (!h4?.smc || !h1?.smc || !m15?.smc) {
+      return waitingSmcAlternative("等待H4、H1与M15数据，逆势策略卡保持显示。");
+    }
     const mainSign = h4?.smc?.trendSign;
-    if (!mainSign || !h1?.smc || !m15?.smc) return null;
+    if (!mainSign) {
+      const reason = h4.smc.directionInvalidation
+        ? "H4原方向已经失效，正在等待新BOS；当前不提前定义逆势方向。"
+        : "H4尚未建立有效主方向，当前无法定义逆势方向。";
+      return waitingSmcAlternative(reason);
+    }
     const sign = -mainSign;
     const bias = sign > 0 ? "bullish" : "bearish";
     const direction = sign > 0 ? "做多" : "做空";
     const entryZone = buildH1ExecutionZone(sign, h1);
-    if (!entryZone) return null;
+    if (!entryZone) {
+      return waitingSmcAlternative(
+        `H4主方向${mainSign > 0 ? "做多" : "做空"}，但H1尚未形成可用的反向执行区。`,
+        sign,
+        mainSign
+      );
+    }
     const evaluation = evaluateM15ZoneTrigger(sign, entryZone, m15);
     const zoneTouched = evaluation.zoneTouched;
     const sweep = evaluation.sweep;
