@@ -1890,6 +1890,25 @@
       const closeLocation = ((candle.close - candle.low) / range) * 2 - 1;
       return sum + bodyDirection * 0.6 + closeLocation * 0.4;
     }, 0) / Math.max(1, recent.length);
+    const regimeCandles = candles.slice(-13);
+    let pathTravel = 0;
+    let overlapTotal = 0;
+    let overlapPairs = 0;
+    for (let index = 1; index < regimeCandles.length; index += 1) {
+      const current = regimeCandles[index];
+      const prior = regimeCandles[index - 1];
+      pathTravel += Math.abs(current.close - prior.close);
+      const currentRange = Math.max(current.high - current.low, atr * 0.04, 0.000001);
+      const priorRange = Math.max(prior.high - prior.low, atr * 0.04, 0.000001);
+      const overlap = Math.max(0, Math.min(current.high, prior.high) - Math.max(current.low, prior.low));
+      overlapTotal += overlap / Math.max(0.000001, Math.min(currentRange, priorRange));
+      overlapPairs += 1;
+    }
+    const regimeStart = regimeCandles[0] || last;
+    const efficiencyRatio = pathTravel > 0
+      ? Math.abs(last.close - regimeStart.close) / pathTravel
+      : 0;
+    const overlapRatio = overlapPairs ? overlapTotal / overlapPairs : 0;
     const lastRange = Math.max(last.high - last.low, atr * 0.04, 0.000001);
     const lastBodyRatio = Math.abs(last.close - last.open) / lastRange;
     const lastCloseLocation = (last.close - last.low) / lastRange;
@@ -1910,6 +1929,21 @@
     const pressureContribution = clamp(pressure, -1, 1) * 15;
     const breakoutContribution = breakoutDirection * 25;
     const rejectionContribution = (supportRejection ? 16 : 0) - (resistanceRejection ? 16 : 0);
+    const chopScore = Math.round(clamp(
+      (efficiencyRatio < 0.3 ? 35 : efficiencyRatio < 0.42 ? 18 : 0) +
+      (overlapRatio > 0.58 ? 30 : overlapRatio > 0.45 ? 15 : 0) +
+      (Math.abs(netMoveAtr) < 0.7 ? 20 : Math.abs(netMoveAtr) < 1 ? 10 : 0) +
+      (!swing.direction ? 15 : 0) -
+      (breakoutDirection ? 25 : 0) -
+      (supportRejection || resistanceRejection ? 15 : 0),
+      0,
+      100
+    ));
+    const rangeRegime = chopScore >= 65
+      ? "compression"
+      : chopScore >= 45
+        ? "range"
+        : "directional";
     let baseScore = swingContribution + netMoveContribution + rangeContribution + pressureContribution + breakoutContribution + rejectionContribution;
     baseScore = Math.round(clamp(baseScore, -100, 100));
     const volumeContribution = volumeDirection * volumeStrength;
@@ -2066,6 +2100,10 @@
       rangeContribution,
       pressure,
       pressureContribution,
+      efficiencyRatio,
+      overlapRatio,
+      chopScore,
+      rangeRegime,
       contextHigh,
       contextLow,
       breakoutDirection,
@@ -2626,12 +2664,36 @@
     if (sign < 0 && structure.resistanceRejection) baseScore += 16;
     if (sign > 0 && structure.resistanceRejection) baseScore -= 16;
     if (sign < 0 && structure.supportRejection) baseScore -= 16;
+    const favorableBoundary = sign > 0 ? frame.nearSupport : frame.nearResistance;
+    const matchingTrigger = structure.triggerDirection === sign;
+    const protectedTrigger = matchingTrigger &&
+      (structure.setupType === "breakout-retest" || structure.setupType === "level-rejection");
+    let rangePenalty = structure.rangeRegime === "compression"
+      ? 10
+      : structure.rangeRegime === "range"
+        ? 4
+        : 0;
+    if (structure.rangePosition >= 0.32 && structure.rangePosition <= 0.68) rangePenalty += 4;
+    if (favorableBoundary) rangePenalty = Math.max(0, rangePenalty - 5);
+    if (protectedTrigger) rangePenalty = Math.max(0, rangePenalty - 5);
+    const triggerQuality = frame.key === "m15" && matchingTrigger
+      ? structure.setupType === "breakout-retest"
+        ? 8
+        : structure.setupType === "pullback-continuation"
+          ? 6
+          : structure.setupType === "level-rejection"
+            ? 6
+            : 0
+      : 0;
+    baseScore += triggerQuality - rangePenalty;
     baseScore = Math.round(clamp(baseScore, 0, 100));
     const volumeAdjustment = sign > 0 ? frame.volume.longAdjustment : frame.volume.shortAdjustment;
     return {
       baseScore,
       score: Math.round(clamp(baseScore + volumeAdjustment, 0, 100)),
-      volumeAdjustment
+      volumeAdjustment,
+      rangePenalty,
+      triggerQuality
     };
   }
 
@@ -2679,7 +2741,12 @@
     const volumeLabel = Math.abs(structure.volumeContribution) >= 0.5
       ? `量能确认${signed(structure.volumeContribution, 0)}分`
       : "量能本次不改变结构分";
-    return `摆动结构：${result.swing.label}（${signed(structure.swingContribution, 0)}）；近8根净变动${signed(structure.netMoveAtr, 2)} ATR（${signed(structure.netMoveContribution, 0)}）；收盘位于前24根区间${Math.round(structure.rangePosition * 100)}%位置（${signed(structure.rangeContribution, 0)}）；近6根为${pressureLabel}（${signed(structure.pressureContribution, 0)}）。${breakoutLabel}（${signed(structure.breakoutContribution, 0)}）；${rejectionLabel}（${signed(structure.rejectionContribution, 0)}）；${volumeLabel}。`;
+    const regimeLabel = structure.rangeRegime === "compression"
+      ? "压缩震荡"
+      : structure.rangeRegime === "range"
+        ? "区间震荡"
+        : "方向行情";
+    return `摆动结构：${result.swing.label}（${signed(structure.swingContribution, 0)}）；近8根净变动${signed(structure.netMoveAtr, 2)} ATR（${signed(structure.netMoveContribution, 0)}）；收盘位于前24根区间${Math.round(structure.rangePosition * 100)}%位置（${signed(structure.rangeContribution, 0)}）；近6根为${pressureLabel}（${signed(structure.pressureContribution, 0)}）。路径效率${Math.round(structure.efficiencyRatio * 100)}%、相邻K线重叠${Math.round(structure.overlapRatio * 100)}%，判定为${regimeLabel}（震荡分${structure.chopScore}）。${breakoutLabel}（${signed(structure.breakoutContribution, 0)}）；${rejectionLabel}（${signed(structure.rejectionContribution, 0)}）；${volumeLabel}。`;
   }
 
   function intradayOpportunityDetail(result, view = intradayFrameView(result)) {
@@ -2763,12 +2830,16 @@
       intradayConditionScore(h1, -1),
       intradayConditionScore(m15, -1)
     ];
-    const combine = (parts, field) => Math.round(parts[0][field] * 0.45 + parts[1][field] * 0.4 + parts[2][field] * 0.15);
+    const combine = (parts, field) => Math.round(parts[0][field] * 0.45 + parts[1][field] * 0.35 + parts[2][field] * 0.2);
     const baseLongScore = combine(longParts, "baseScore");
     const baseShortScore = combine(shortParts, "baseScore");
     const longScore = combine(longParts, "score");
     const shortScore = combine(shortParts, "score");
-    const scoreEdge = Math.abs(baseLongScore - baseShortScore);
+    const scoreEdge = candidateSign > 0
+      ? baseLongScore - baseShortScore
+      : candidateSign < 0
+        ? baseShortScore - baseLongScore
+        : 0;
     const directionName = candidateSign > 0 ? "做多" : candidateSign < 0 ? "做空" : "等待";
     const candidateBias = candidateSign > 0 ? "bullish" : candidateSign < 0 ? "bearish" : "neutral";
     const compositeScore = candidateSign > 0 ? longScore : candidateSign < 0 ? shortScore : Math.max(longScore, shortScore);
@@ -2783,6 +2854,10 @@
       shortScore,
       trigger
     });
+    const h1RangeNoise = h1Structure.rangeRegime !== "directional" &&
+      m15Structure.setupType === "level-rejection";
+    const m15RangeNoise = m15Structure.rangeRegime !== "directional" &&
+      m15Structure.setupType !== "breakout-retest";
 
     if (!candidateSign) {
       return waitForCandidate(
@@ -2796,11 +2871,19 @@
         `等待H1价格结构转为${candidateSign > 0 ? "偏多" : "偏空"}，再由M15确认触发。`
       );
     }
+    if (h1RangeNoise || m15RangeNoise) {
+      return waitForCandidate(
+        `${stateSummary} 当前触发仍处于${h1RangeNoise ? "H1区间噪声" : "M15区间噪声"}中，尚未形成可执行的脱离确认。`,
+        candidateSign > 0
+          ? "等待H1恢复方向结构，或M15有效向上突破后完成回测收复；单次区间内拒绝不执行。"
+          : "等待H1恢复方向结构，或M15有效向下跌破后完成回测转弱；单次区间内拒绝不执行。"
+      );
+    }
     if (baseCompositeScore < STRATEGY_FILTERS.intradayMinimumBaseScore ||
         scoreEdge < STRATEGY_FILTERS.intradayMinimumScoreEdge) {
       return waitForCandidate(
         `${stateSummary} 当前价格结构优势不足，暂不强行选择方向。`,
-        `等待结构分达到${STRATEGY_FILTERS.intradayMinimumBaseScore}分，且多空分差扩大到${STRATEGY_FILTERS.intradayMinimumScoreEdge}分以上。`
+        `等待结构分达到${STRATEGY_FILTERS.intradayMinimumBaseScore}分，且候选方向真实领先另一方向${STRATEGY_FILTERS.intradayMinimumScoreEdge}分以上。`
       );
     }
     if (h1Structure.sign !== candidateSign) {
