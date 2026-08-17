@@ -470,7 +470,7 @@
     .smc-checklist { display: grid; margin: 0; padding: 0; list-style: none; }
     .smc-checklist li {
       display: grid;
-      grid-template-columns: 44px 1fr;
+      grid-template-columns: 34px 1fr;
       gap: 8px;
       align-items: start;
       padding: 11px 0;
@@ -484,13 +484,14 @@
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      min-height: 22px;
-      padding: 2px 6px;
+      width: 28px;
+      min-height: 28px;
+      padding: 0;
       border: 1px solid rgba(255, 191, 71, .28);
       border-radius: 999px;
       color: #ffbf47;
       background: rgba(255, 191, 71, .08);
-      font-size: 10px;
+      font-size: 17px;
       font-weight: 800;
       white-space: nowrap;
     }
@@ -1150,7 +1151,7 @@
         <article class="card smc-map-card">
           <div class="smc-checklist-head"><h3>入场条件清单</h3><span id="smc-check-count" class="smc-check-count">0 / 4</span></div>
           <ul id="smc-entry-checklist" class="smc-checklist">
-            <li data-ready="false"><span class="smc-check-icon">等待</span><span>等待H4、H1、M15数据</span></li>
+            <li data-ready="false"><span class="smc-check-icon" role="img" aria-label="等待确认" title="等待确认">⏳</span><span>等待H4、H1、M15数据</span></li>
           </ul>
         </article>
       </div>
