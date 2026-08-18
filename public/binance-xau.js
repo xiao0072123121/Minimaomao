@@ -1,5 +1,10 @@
 (() => {
-  const REST = "https://fapi.binance.com";
+  const PAGE_LOCATION = typeof window !== "undefined" ? window.location : null;
+  const USE_REST_PROXY = PAGE_LOCATION?.protocol === "https:" &&
+    !["localhost", "127.0.0.1"].includes(PAGE_LOCATION.hostname);
+  const DIRECT_REST = "https://fapi.binance.com";
+  const PROXY_REST = USE_REST_PROXY ? `${PAGE_LOCATION.origin}/api/binance` : null;
+  const REST = PROXY_REST || DIRECT_REST;
   const HOUR = 60 * 60 * 1000;
   const DAY = 24 * 60 * 60 * 1000;
   const CACHE_DB = "binance-multi-asset-kline-cache";
@@ -8,9 +13,9 @@
   const CACHE_MAX_AGE = 14 * DAY;
   const MICROSTRUCTURE_CACHE_MAX_AGE = 30 * 60 * 1000;
   const PROFILE_LOOKBACK = 30 * DAY;
-  const AGG_TRADE_LOOKBACK = 48 * 60 * 60 * 1000;
   const DEPTH_HISTORY_WINDOW = 60 * 1000;
-  const MAX_AGG_TRADES = 48000;
+  const PROXY_BLOCK_DURATION = 30 * 60 * 1000;
+  const DIRECT_BLOCK_DURATION = 10 * 60 * 1000;
   const LOCKED_STRATEGY_STORAGE_KEY = "minimaomao-locked-intraday-strategies-v1";
   const MAX_HISTORY_CANDLES = 10000;
 
@@ -41,20 +46,30 @@
   const MAX_RIGHT_BLANK_RATIO = 0.22;
   const STRATEGY_FILTERS = {
     estimatedRoundTripCostRate: 0.0014,
-    intradayMinimumBaseScore: 50,
-    intradayMinimumScoreEdge: 6,
     intradayMinimumRawRewardRiskA: 1.5,
     intradayMinimumRawRewardRiskB: 1.3,
     intradayFirstTargetCapRewardRisk: 1.5,
     intradayMinimumCostAdjustedRewardRiskA: 1.15,
     intradayMinimumCostAdjustedRewardRiskB: 1,
-    intradayMaximumCostToRisk: 0.45,
-    portfolioRiskPerTradeRate: 0.01,
-    maximumPortfolioStopRiskRate: 0.04,
-    maximumPortfolioGrossLeverage: 4,
-    positionMinimumBaseScore: 55,
-    positionMinimumScoreEdge: 10,
-    positionMinimumExecutionScore: 85
+    intradayMaximumCostToRisk: 0.45
+  };
+  const SMC_EXECUTION_RULES = {
+    triggerValidBars: 2,
+    minimumNetRewardRisk: 0.8,
+    minimumNetProfitRate: 0.0005
+  };
+  const KEY_ZONE_RULES = {
+    minimumStrength: 60,
+    strongStrength: 75,
+    mergeAtr: 0.25,
+    mergePriceRate: 0.001,
+    minimumWidthAtr: 0.2,
+    maximumWidthAtr: 0.6,
+    breakBufferAtr: 0.15,
+    reactionBars: 3,
+    reactionThresholdAtr: 0.6,
+    pivotBars: { d1: 2, h4: 3, h1: 2, m15: 2 },
+    minimumDepartureAtr: { d1: 0.7, h4: 0.8, h1: 0.65, m15: 0.55 }
   };
 
   const RANGES = {
@@ -100,15 +115,15 @@
 
   const ANALYSIS_FRAMES = {
     d1: { label: "D1", interval: "1d", lookback: 120, hidden: true },
-    h4: { label: "H4", interval: "4h", lookback: 45 },
-    h1: { label: "H1", interval: "1h", lookback: 60 },
-    m15: { label: "M15", interval: "15m", lookback: 80 }
+    h4: { label: "H4", interval: "4h", lookback: 90 },
+    h1: { label: "H1", interval: "1h", lookback: 120 },
+    m15: { label: "M15", interval: "15m", lookback: 160 }
   };
 
   const state = {
     symbol: "XAUUSDT",
     book: null,
-    ticker: null,
+    dayStats: null,
     quoteAt: 0,
     wsOk: false,
     retryCount: 0,
@@ -153,7 +168,9 @@
   let panRenderFrame = 0;
   let chartPanState = null;
   let resizeRenderFrame = 0;
-  let aggregateTradePollInFlight = false;
+  let proxyBlockedUntil = 0;
+  let directBlockedUntil = 0;
+  const pendingJsonRequests = new Map();
   const priceFormat = new Intl.NumberFormat("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2
@@ -298,7 +315,7 @@
     }
   }
 
-  function createLockedStrategySnapshot(strategy, rsiRisk, symbol, lockedAt, referencePrice, sourceId = "", sourceFingerprint = "") {
+  function createLockedStrategySnapshot(strategy, symbol, lockedAt, referencePrice, sourceId = "", sourceFingerprint = "") {
     return {
       version: 2,
       id: `locked-${symbol}-${lockedAt}-${Math.random().toString(36).slice(2, 7)}`,
@@ -313,22 +330,19 @@
       strategyLabel: strategy.strategyLabel || "日内策略",
       directionLabel: strategy.directionLabel,
       priority: strategy.priority,
-      score: strategy.score,
-      longScore: strategy.longScore,
-      shortScore: strategy.shortScore,
       entryLow: strategy.entryLow,
       entryHigh: strategy.entryHigh,
       stopLoss: strategy.stopLoss,
       takeProfit: strategy.takeProfit,
       target: strategy.target,
+      target3: strategy.target3,
       rewardRisk1: strategy.rewardRisk1,
       rewardRisk2: strategy.rewardRisk2,
+      rewardRisk3: strategy.rewardRisk3,
+      score: strategy.score,
       summary: strategy.summary,
       trigger: strategy.trigger,
-      levelNote: strategy.levelNote || "",
-      portfolioRule: strategy.portfolioRule || intradayPortfolioRiskRule(),
-      rsiRisk: rsiRisk?.text || "—",
-      rsiTone: rsiRisk?.tone || "neutral"
+      levelNote: strategy.levelNote || ""
     };
   }
 
@@ -358,31 +372,39 @@
     const entry = Number.isFinite(strategy.entryLow) && Number.isFinite(strategy.entryHigh)
       ? `${strategyPrice(strategy.entryLow)}–${strategyPrice(strategy.entryHigh)}`
       : "—";
-    const takeProfit = [strategy.takeProfit, strategy.target].filter(Number.isFinite).map(strategyPrice).join(" / ") || "—";
-    const rewardRisk = Number.isFinite(strategy.rewardRisk1) && Number.isFinite(strategy.rewardRisk2)
-      ? `1:${strategy.rewardRisk1.toFixed(2)} / 1:${strategy.rewardRisk2.toFixed(2)}`
+    const takeProfit = [strategy.takeProfit, strategy.target, strategy.target3].filter(Number.isFinite).map(strategyPrice).join(" / ") || "—";
+    const rewardRisks = [strategy.rewardRisk1, strategy.rewardRisk2, strategy.rewardRisk3].filter(Number.isFinite);
+    const rewardRisk = rewardRisks.length
+      ? rewardRisks.map((value) => `1:${Math.round(value)}`).join(" / ")
       : "—";
-    const score = Number.isFinite(strategy.score) ? `${strategy.score} / 100` : "—";
     return `
       <div class="strategy-metrics" aria-label="日内策略参数">
         <div class="strategy-metric"><span>方向</span><b class="strategy-direction-value">${escapeStrategyHtml(strategy.directionLabel)}</b></div>
         <div class="strategy-metric"><span>策略优先级</span><b>${escapeStrategyHtml(strategy.priority)}</b></div>
+        <div class="strategy-metric"><span>条件完成度</span><b>${Number.isFinite(strategy.score) ? `${Math.round(strategy.score)} / 100` : "—"}</b></div>
         <div class="strategy-metric"><span>入场区域</span><b>${escapeStrategyHtml(entry)}</b></div>
         <div class="strategy-metric"><span>止损</span><b>${escapeStrategyHtml(strategyPrice(strategy.stopLoss))}</b></div>
         <div class="strategy-metric"><span>止盈</span><b>${escapeStrategyHtml(takeProfit)}</b></div>
         <div class="strategy-metric"><span>盈亏比</span><b>${escapeStrategyHtml(rewardRisk)}</b></div>
-        <div class="strategy-metric"><span>策略评分</span><b>${escapeStrategyHtml(score)}</b></div>
       </div>`;
   }
 
-  function strategyNotesMarkup(strategy, rsiRisk, locked = false) {
+  function strategyNotesMarkup(strategy, locked = false) {
     const prefix = locked ? "锁定时" : "生成时";
+    const entry = Number.isFinite(strategy.entryLow) && Number.isFinite(strategy.entryHigh)
+      ? `${strategyPrice(strategy.entryLow)}–${strategyPrice(strategy.entryHigh)}`
+      : "入场区";
+    const direction = strategy.candidateBias === "bullish" ? "做多" : strategy.candidateBias === "bearish" ? "做空" : "观望";
+    const fallbackSummary = strategy.strategyType === "countertrend"
+      ? `H4主方向不变；备选${direction}仅关注 ${entry}。`
+      : `H4确定主方向，H1提供 ${entry}，M15负责入场确认。`;
+    const fallbackTrigger = `${strategy.actionable ? "执行" : "等待"}：价格进入 ${entry}，M15扫流动性后出现同向CHoCH。${Number.isFinite(strategy.stopLoss) ? `失效：触及止损 ${strategyPrice(strategy.stopLoss)}。` : ""}`;
+    const summary = strategy.summary?.length <= 130 ? strategy.summary : fallbackSummary;
+    const trigger = strategy.trigger?.length <= 130 ? strategy.trigger : fallbackTrigger;
     return `
       <div class="strategy-body">
-        <div class="strategy-note"><span>${prefix}策略依据</span><p>${escapeStrategyHtml(strategy.summary)}</p></div>
-        <div class="strategy-note"><span>${prefix}执行与失效条件</span><p>${escapeStrategyHtml(strategy.trigger)}</p></div>
-        <div class="strategy-note strategy-portfolio"><span>${prefix}组合风险规则</span><p>${escapeStrategyHtml(strategy.portfolioRule || intradayPortfolioRiskRule())}</p></div>
-        <div class="strategy-note strategy-risk" data-tone="${escapeStrategyHtml(rsiRisk?.tone || strategy.rsiTone || "neutral")}"><span>${prefix}RSI风险提示</span><p>${escapeStrategyHtml(rsiRisk?.text || strategy.rsiRisk || "—")}</p></div>
+        <div class="strategy-note"><span>${prefix}策略依据</span><p>${escapeStrategyHtml(summary || fallbackSummary)}</p></div>
+        <div class="strategy-note"><span>${prefix}执行与失效条件</span><p>${escapeStrategyHtml(trigger || fallbackTrigger)}</p></div>
       </div>`;
   }
 
@@ -395,7 +417,7 @@
     button.disabled = !canLock;
     button.title = canLock
       ? "保存当前日内策略快照；后续实时策略仍会继续更新"
-      : "仅可锁定当前可执行的 A/B 级日内策略";
+      : "仅可锁定当前已触发的日内策略";
     button.textContent = canLock
       ? isLocked ? "更新这条锁定" : "锁定这条策略"
       : "暂无可锁定策略";
@@ -416,7 +438,7 @@
             <button class="strategy-action primary" type="button" data-lock-strategy-id="${escapeStrategyHtml(record.id)}">${locked ? "更新这条锁定" : "锁定这条策略"}</button>
           </div>
           ${strategyMetricsMarkup(record.strategy)}
-          ${strategyNotesMarkup(record.strategy, record.rsiRisk)}
+          ${strategyNotesMarkup(record.strategy)}
         </article>`;
     }).join("");
   }
@@ -449,7 +471,7 @@
             <button class="strategy-action" type="button" data-remove-locked-id="${escapeStrategyHtml(locked.id || `legacy-${index}`)}">删除这条</button>
           </div>
           ${strategyMetricsMarkup(locked)}
-          ${strategyNotesMarkup(locked, null, true)}
+          ${strategyNotesMarkup(locked, true)}
         </article>`;
     }).join("");
     updateLockStrategyButton();
@@ -469,7 +491,6 @@
     if (!current?.strategy?.actionable || current.symbol !== state.symbol) return false;
     const snapshot = createLockedStrategySnapshot(
       current.strategy,
-      current.rsiRisk,
       state.symbol,
       Date.now(),
       current.referencePrice,
@@ -539,7 +560,7 @@
 
   function resetSymbolDataUI() {
     state.book = null;
-    state.ticker = null;
+    state.dayStats = null;
     state.quoteAt = 0;
     state.wsOk = false;
     state.candles = [];
@@ -576,11 +597,10 @@
       $(`${key}-setup-score`).textContent = "—";
       $(`${key}-confidence`).textContent = "—";
       $(`${key}-structure`).textContent = `等待${ANALYSIS_FRAMES[key].label} K线…`;
-      [`${key}-opportunity`, `${key}-rsi`, `${key}-macd`, `${key}-volume`, `${key}-levels`].forEach((id) => $(id).textContent = "—");
+      [`${key}-opportunity`, `${key}-levels`].forEach((id) => $(id).textContent = "—");
       $(`${key}-conclusion`).textContent = "正在生成动态判断…";
     }
     renderIntradayStrategy({});
-    renderPositionStrategy({});
     renderLockedStrategy();
     setError("");
     hideTooltip();
@@ -599,7 +619,6 @@
     seedCurrentData();
     loadHistory();
     loadAnalysis();
-    loadMicrostructure();
   }
 
   function setLiveStatus() {
@@ -617,18 +636,22 @@
       $("mid-price").textContent = priceFormat.format(state.book.mid);
       $("book-price").textContent = `买 ${priceFormat.format(state.book.bid)} · 卖 ${priceFormat.format(state.book.ask)}`;
       $("quote-time").textContent = formatTime(state.quoteAt);
+      $("last-price").textContent = priceFormat.format(state.book.mid);
     }
 
-    if (state.ticker) {
-      const change = state.ticker.changePct;
+    if (state.dayStats && state.book) {
+      state.dayStats.high = Math.max(state.dayStats.high, state.book.mid);
+      state.dayStats.low = Math.min(state.dayStats.low, state.book.mid);
+      const change = state.dayStats.open > 0
+        ? (state.book.mid / state.dayStats.open - 1) * 100
+        : 0;
       const changeElement = $("change-value");
       changeElement.textContent = `${signed(change)}%`;
       changeElement.classList.toggle("positive", change > 0);
       changeElement.classList.toggle("negative", change < 0);
-      $("last-price").textContent = priceFormat.format(state.ticker.last);
-      $("day-high").textContent = `${priceFormat.format(state.ticker.high)} USDT`;
-      $("day-low").textContent = `${priceFormat.format(state.ticker.low)} USDT`;
-      $("day-volume").textContent = `${volumeFormat.format(state.ticker.volume)} ${currentSymbolConfig().base}`;
+      $("day-high").textContent = `${priceFormat.format(state.dayStats.high)} USDT`;
+      $("day-low").textContent = `${priceFormat.format(state.dayStats.low)} USDT`;
+      $("day-volume").textContent = `${volumeFormat.format(state.dayStats.volume)} ${currentSymbolConfig().base}`;
     }
 
     setLiveStatus();
@@ -638,15 +661,74 @@
     if (state.analysisResults.h1 && state.analysisResults.m15) {
       renderIntradayStrategy(state.analysisResults);
     }
-    if (state.analysisResults.d1 && state.analysisResults.h4 && state.analysisResults.h1) {
-      renderPositionStrategy(state.analysisResults);
+  }
+
+  function marketRequestCandidates(requestUrl) {
+    if (!PROXY_REST || !requestUrl.startsWith(PROXY_REST)) {
+      return Date.now() >= directBlockedUntil ? [{ url: requestUrl, route: "direct" }] : [];
     }
+    const suffix = requestUrl.slice(PROXY_REST.length);
+    const candidates = [];
+    if (Date.now() >= directBlockedUntil) candidates.push({ url: `${DIRECT_REST}${suffix}`, route: "direct" });
+    if (Date.now() >= proxyBlockedUntil) candidates.push({ url: requestUrl, route: "proxy" });
+    return candidates;
+  }
+
+  function blockMarketRoute(route, status, response) {
+    const retryAfterSeconds = Number(response?.headers?.get("Retry-After"));
+    const headerDelay = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+      ? retryAfterSeconds * 1000
+      : 0;
+    const defaultDelay = route === "proxy" ? PROXY_BLOCK_DURATION : DIRECT_BLOCK_DURATION;
+    const blockedUntil = Date.now() + Math.max(headerDelay, defaultDelay);
+    if (route === "proxy") proxyBlockedUntil = Math.max(proxyBlockedUntil, blockedUntil);
+    else directBlockedUntil = Math.max(directBlockedUntil, blockedUntil);
+  }
+
+  function marketBackoffMessage() {
+    const remaining = Math.max(0, Math.min(
+      proxyBlockedUntil || Number.POSITIVE_INFINITY,
+      directBlockedUntil || Number.POSITIVE_INFINITY
+    ) - Date.now());
+    const minutes = Math.max(1, Math.ceil(remaining / 60000));
+    return `Binance接口正在退避保护（约${minutes}分钟后自动重试）`;
   }
 
   async function fetchJson(url) {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-    return response.json();
+    const requestUrl = String(url);
+    if (pendingJsonRequests.has(requestUrl)) return pendingJsonRequests.get(requestUrl);
+    const request = (async () => {
+      const candidates = marketRequestCandidates(requestUrl);
+      if (!candidates.length) throw new Error(marketBackoffMessage());
+      let lastError = null;
+      for (const candidate of candidates) {
+        try {
+          const response = await fetch(candidate.url, {
+            credentials: candidate.route === "proxy" ? "same-origin" : "omit"
+          });
+          if (response.ok) return response.json();
+          lastError = new Error(`${response.status} ${response.statusText}`);
+          if ([403, 418, 429].includes(response.status)) {
+            blockMarketRoute(candidate.route, response.status, response);
+            continue;
+          }
+          if (response.status >= 500) {
+            await new Promise((resolve) => setTimeout(resolve, 800));
+            continue;
+          }
+          throw lastError;
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      throw lastError || new Error("Binance行情请求失败");
+    })();
+    pendingJsonRequests.set(requestUrl, request);
+    try {
+      return await request;
+    } finally {
+      pendingJsonRequests.delete(requestUrl);
+    }
   }
 
   function parseBook(payload) {
@@ -656,33 +738,28 @@
     return { bid, ask, mid: (bid + ask) / 2 };
   }
 
-  function parseTicker(payload) {
-    const last = Number(payload.lastPrice ?? payload.c);
-    const high = Number(payload.highPrice ?? payload.h);
-    const low = Number(payload.lowPrice ?? payload.l);
-    const volume = Number(payload.volume ?? payload.v);
-    const changePct = Number(payload.priceChangePercent ?? payload.P);
-    if (![last, high, low, volume, changePct].every(Number.isFinite)) return null;
-    return { last, high, low, volume, changePct };
-  }
-
   async function seedCurrentData() {
     const symbol = state.symbol;
-    try {
-      const [bookPayload, tickerPayload] = await Promise.all([
-        fetchJson(`${REST}/fapi/v1/ticker/bookTicker?symbol=${symbol}`),
-        fetchJson(`${REST}/fapi/v1/ticker/24hr?symbol=${symbol}`)
-      ]);
-      if (symbol !== state.symbol) return;
-      state.book = parseBook(bookPayload) ?? state.book;
-      state.ticker = parseTicker(tickerPayload) ?? state.ticker;
-      state.quoteAt = Number(bookPayload.time) || Date.now();
-      updateQuoteUI();
-      setError("");
-    } catch (error) {
-      if (symbol !== state.symbol) return;
-      setError(`实时行情获取失败：${error.message}。页面将继续尝试连接。`);
+    const [bookResult, statsResult] = await Promise.allSettled([
+      fetchJson(`${REST}/fapi/v1/ticker/bookTicker?symbol=${symbol}`),
+      fetchJson(`${REST}/fapi/v1/ticker/24hr?symbol=${symbol}`)
+    ]);
+    if (symbol !== state.symbol) return;
+    if (bookResult.status === "fulfilled") {
+      state.book = parseBook(bookResult.value) ?? state.book;
+      state.quoteAt = Number(bookResult.value.time) || Date.now();
     }
+    if (statsResult.status === "fulfilled") {
+      const payload = statsResult.value;
+      const open = Number(payload.openPrice);
+      const high = Number(payload.highPrice);
+      const low = Number(payload.lowPrice);
+      const volume = Number(payload.volume);
+      if ([open, high, low, volume].every(Number.isFinite)) state.dayStats = { open, high, low, volume };
+    }
+    updateQuoteUI();
+    if (bookResult.status === "fulfilled") setError("");
+    else setError(`实时行情获取失败：${bookResult.reason?.message || "未知错误"}。页面将继续尝试连接。`);
   }
 
   function connectBinance() {
@@ -694,7 +771,7 @@
       state.socket = null;
     }
     const streamSymbol = symbol.toLowerCase();
-    const socket = new WebSocket(`wss://fstream.binance.com/stream?streams=${streamSymbol}@bookTicker/${streamSymbol}@ticker/${streamSymbol}@depth20@500ms`);
+    const socket = new WebSocket(`wss://fstream.binance.com/stream?streams=${streamSymbol}@bookTicker`);
     state.socket = socket;
 
     socket.addEventListener("open", () => {
@@ -715,12 +792,6 @@
           state.book = parseBook(payload) ?? state.book;
           state.quoteAt = Number(payload.E) || Date.now();
           quoteChanged = true;
-        } else if (stream.endsWith("@ticker")) {
-          state.ticker = parseTicker(payload) ?? state.ticker;
-          state.quoteAt = Number(payload.E) || state.quoteAt || Date.now();
-          quoteChanged = true;
-        } else if (stream.includes("@depth20")) {
-          recordDepthSnapshot(payload);
         }
         if (quoteChanged) updateQuoteUI();
       } catch (_) {}
@@ -789,86 +860,6 @@
     );
   }
 
-  function parseAggregateTrade(payload) {
-    const id = Number(payload.a);
-    const price = Number(payload.p);
-    const quantity = Number(payload.q);
-    const time = Number(payload.T);
-    if (![id, price, quantity, time].every(Number.isFinite) || quantity <= 0) return null;
-    return { id, price, quantity, time, buyerMaker: Boolean(payload.m) };
-  }
-
-  function mergeAggregateTrades(...groups) {
-    const byId = new Map();
-    for (const trade of groups.flat()) {
-      if (trade && Number.isFinite(trade.id)) byId.set(trade.id, trade);
-    }
-    return [...byId.values()]
-      .filter((trade) => trade.time >= Date.now() - AGG_TRADE_LOOKBACK)
-      .sort((a, b) => a.time - b.time)
-      .slice(-MAX_AGG_TRADES);
-  }
-
-  async function fetchAggregateTradeHistory(symbol) {
-    const endTime = Date.now();
-    const startTime = endTime - AGG_TRADE_LOOKBACK;
-    const windows = [];
-    for (let cursor = startTime; cursor < endTime; cursor += HOUR) {
-      windows.push({ start: cursor, end: Math.min(endTime, cursor + HOUR - 1) });
-    }
-    const trades = [];
-    let completedWindows = 0;
-    let partialWindows = 0;
-    for (let index = 0; index < windows.length; index += 4) {
-      const batch = windows.slice(index, index + 4);
-      const results = await Promise.all(batch.map(async (windowRange) => {
-        try {
-          const url = new URL(`${REST}/fapi/v1/aggTrades`);
-          url.searchParams.set("symbol", symbol);
-          url.searchParams.set("startTime", String(windowRange.start));
-          url.searchParams.set("endTime", String(windowRange.end));
-          url.searchParams.set("limit", "1000");
-          const payload = await fetchJson(url);
-          return { payload, ok: true };
-        } catch (_) {
-          return { payload: [], ok: false };
-        }
-      }));
-      for (const result of results) {
-        if (!result.ok) continue;
-        completedWindows += 1;
-        if (result.payload.length >= 1000) partialWindows += 1;
-        trades.push(...result.payload.map(parseAggregateTrade).filter(Boolean));
-      }
-    }
-    return {
-      trades: mergeAggregateTrades(trades),
-      coverageHours: completedWindows,
-      partialWindows
-    };
-  }
-
-  async function refreshRecentAggregateTrades() {
-    if (aggregateTradePollInFlight) return;
-    aggregateTradePollInFlight = true;
-    const symbol = state.symbol;
-    try {
-      const url = new URL(`${REST}/fapi/v1/aggTrades`);
-      url.searchParams.set("symbol", symbol);
-      url.searchParams.set("limit", "1000");
-      const payload = await fetchJson(url);
-      if (symbol !== state.symbol) return;
-      state.marketMicrostructure.aggregateTrades = mergeAggregateTrades(
-        state.marketMicrostructure.aggregateTrades,
-        payload.map(parseAggregateTrade).filter(Boolean)
-      );
-    } catch (_) {
-      // Historical profile and the existing structure model remain available.
-    } finally {
-      aggregateTradePollInFlight = false;
-    }
-  }
-
   function parseDepthLevels(levels) {
     return (levels || []).map(([price, quantity]) => ({
       price: Number(price),
@@ -888,72 +879,61 @@
   }
 
   function microstructureStatusText() {
-    const micro = state.marketMicrostructure;
-    if (micro.profileStatus === "ready") {
-      const exact = micro.tradeCoverageHours
-        ? `真实成交已采样${micro.tradeCoverageHours}个小时窗口${micro.tradeWindowsPartial ? `（${micro.tradeWindowsPartial}个窗口达到1000条上限）` : ""}`
-        : "真实成交等待补充";
-      return `30日成交分布已加载 · ${exact}`;
-    }
-    if (micro.profileCandles.length) return "已使用本地成交分布缓存 · 正在同步真实成交";
-    return "成交分布加载中 · 暂用价格结构降级判断";
+    return "D1/H4价格结构关键区域已启用";
   }
 
   function refreshAnalysisForMicrostructure() {
     if (state.analysisFrames.h4 && state.analysisFrames.h1 && state.analysisFrames.m15) {
       renderAnalysis();
-      $("analysis-status").textContent = `${microstructureStatusText()} · 深度实时修正 · ${formatTime(Date.now())}`;
+      $("analysis-status").textContent = `${microstructureStatusText()} · H4方向，H1执行区，M15双路径确认 · ${formatTime(Date.now())}`;
     }
+  }
+
+  function rebuildDayStatsFromProfile() {
+    const cutoff = Date.now() - DAY;
+    const candles = state.marketMicrostructure.profileCandles
+      .filter((candle) => candle.t >= cutoff)
+      .sort((a, b) => a.t - b.t);
+    if (!candles.length) return;
+    state.dayStats = {
+      open: candles[0].open,
+      high: Math.max(...candles.map((candle) => candle.high)),
+      low: Math.min(...candles.map((candle) => candle.low)),
+      volume: candles.reduce((sum, candle) => sum + (Number(candle.volume) || 0), 0)
+    };
+    updateQuoteUI();
   }
 
   async function loadMicrostructure() {
     const token = ++state.microstructureLoadToken;
     const symbol = state.symbol;
     const candleKey = `micro:${symbol}:5m30d:v1`;
-    const tradeKey = `micro:${symbol}:agg48h:v1`;
-    const [cachedCandles, cachedTrades] = await Promise.all([
-      readDatasetCache(candleKey),
-      readDatasetCache(tradeKey)
-    ]);
+    const cachedCandles = await readDatasetCache(candleKey, CACHE_MAX_AGE);
     if (token !== state.microstructureLoadToken || symbol !== state.symbol) return;
     if (Array.isArray(cachedCandles)) state.marketMicrostructure.profileCandles = cachedCandles;
-    if (cachedTrades?.trades) {
-      state.marketMicrostructure.aggregateTrades = mergeAggregateTrades(cachedTrades.trades);
-      state.marketMicrostructure.tradeCoverageHours = cachedTrades.coverageHours || 0;
-      state.marketMicrostructure.tradeWindowsPartial = cachedTrades.partialWindows || 0;
-    }
     if (state.marketMicrostructure.profileCandles.length) {
       state.marketMicrostructure.profileStatus = "ready";
+      rebuildDayStatsFromProfile();
       refreshAnalysisForMicrostructure();
     }
-    if (Array.isArray(cachedCandles) && cachedCandles.length >= 500 && cachedTrades?.trades?.length) return;
 
     const endTime = Date.now();
-    const [candleResult, tradeResult] = await Promise.allSettled([
-      fetchCandles(symbol, "5m", endTime - PROFILE_LOOKBACK, endTime),
-      fetchAggregateTradeHistory(symbol)
-    ]);
+    const cachedTail = Array.isArray(cachedCandles) && cachedCandles.length
+      ? cachedCandles[cachedCandles.length - 1].t - 10 * 60 * 1000
+      : endTime - PROFILE_LOOKBACK;
+    const candleResult = await fetchCandles(symbol, "5m", Math.max(endTime - PROFILE_LOOKBACK, cachedTail), endTime)
+      .then((value) => ({ status: "fulfilled", value }))
+      .catch((reason) => ({ status: "rejected", reason }));
     if (token !== state.microstructureLoadToken || symbol !== state.symbol) return;
-    if (candleResult.status === "fulfilled" && candleResult.value.length >= 500) {
-      state.marketMicrostructure.profileCandles = candleResult.value;
+    if (candleResult.status === "fulfilled" && candleResult.value.length) {
+      state.marketMicrostructure.profileCandles = mergeCandles(cachedCandles || [], candleResult.value)
+        .filter((candle) => candle.t >= endTime - PROFILE_LOOKBACK);
       state.marketMicrostructure.profileStatus = "ready";
-      writeDatasetCache(candleKey, candleResult.value);
+      writeDatasetCache(candleKey, state.marketMicrostructure.profileCandles);
     } else {
       state.marketMicrostructure.profileStatus = state.marketMicrostructure.profileCandles.length ? "ready" : "degraded";
     }
-    if (tradeResult.status === "fulfilled") {
-      state.marketMicrostructure.aggregateTrades = mergeAggregateTrades(
-        tradeResult.value.trades,
-        state.marketMicrostructure.aggregateTrades
-      );
-      state.marketMicrostructure.tradeCoverageHours = tradeResult.value.coverageHours;
-      state.marketMicrostructure.tradeWindowsPartial = tradeResult.value.partialWindows;
-      writeDatasetCache(tradeKey, {
-        trades: state.marketMicrostructure.aggregateTrades,
-        coverageHours: tradeResult.value.coverageHours,
-        partialWindows: tradeResult.value.partialWindows
-      });
-    }
+    rebuildDayStatsFromProfile();
     refreshAnalysisForMicrostructure();
   }
 
@@ -1031,6 +1011,14 @@
     return index >= 0 && index < RANGE_ORDER.length - 1 ? RANGE_ORDER[index + 1] : null;
   }
 
+  function mergeCandles(...groups) {
+    const byTime = new Map();
+    for (const candle of groups.flat()) {
+      if (candle && Number.isFinite(candle.t)) byTime.set(candle.t, candle);
+    }
+    return [...byTime.values()].sort((a, b) => a.t - b.t);
+  }
+
   async function expandHistoryRange() {
     const nextRange = getNextHistoryRange();
     const now = Date.now();
@@ -1050,7 +1038,7 @@
     return true;
   }
 
-  async function loadHistory({ anchorLatest = false } = {}) {
+  async function loadHistory({ anchorLatest = false, incremental = false } = {}) {
     const viewport = captureChartViewport();
     if (viewport && anchorLatest) viewport.followLatest = true;
     const token = ++state.loadToken;
@@ -1063,35 +1051,39 @@
     const startTime = Math.max(requestedStart, protectedStart);
     state.historyLimited = startTime > requestedStart;
     const cacheKey = historyCacheKey(symbol, state.range, interval);
-    const cachePromise = readCandleCache(cacheKey);
-    const networkPromise = fetchCandles(symbol, interval, startTime, endTime)
-      .then((candles) => ({ candles, error: null }))
-      .catch((error) => ({ candles: null, error }));
-    state.candles = [];
-    state.timelineStart = 0;
-    state.timelineEnd = 100;
-    syncTimelineInputs();
-    renderChart();
-    $("empty-state").textContent = "正在加载历史行情…";
-    $("empty-state").style.display = "grid";
+    const existingCandles = incremental ? state.candles.slice() : [];
+    if (!incremental) {
+      state.candles = [];
+      state.timelineStart = 0;
+      state.timelineEnd = 100;
+      syncTimelineInputs();
+      renderChart();
+      $("empty-state").textContent = "正在加载历史行情…";
+      $("empty-state").style.display = "grid";
+    }
     updateChartCopy();
 
     try {
-      const cached = await cachePromise;
-      if (cached && token === state.loadToken && symbol === state.symbol && interval === state.interval) {
-        state.candles = cached.candles;
+      const cached = incremental ? null : await readCandleCache(cacheKey);
+      const baseCandles = existingCandles.length ? existingCandles : cached?.candles || [];
+      if (baseCandles.length && token === state.loadToken && symbol === state.symbol && interval === state.interval) {
+        state.candles = baseCandles;
         restoreChartViewport(viewport);
         renderChart();
-        $("chart-subtitle").textContent = `${range.label} · ${INTERVALS[interval].label} · ${symbol} · 本地缓存，正在同步${state.historyLimited ? ` · 最近${MAX_HISTORY_CANDLES.toLocaleString("en-US")}根` : ""}`;
+        $("chart-subtitle").textContent = `${range.label} · ${INTERVALS[interval].label} · ${symbol} · 本地缓存，正在增量同步${state.historyLimited ? ` · 最近${MAX_HISTORY_CANDLES.toLocaleString("en-US")}根` : ""}`;
       }
-      const networkResult = await networkPromise;
-      if (networkResult.error) throw networkResult.error;
-      const candles = networkResult.candles;
+      const incrementalStart = baseCandles.length
+        ? Math.max(startTime, baseCandles[baseCandles.length - 1].t - INTERVALS[interval].ms * 2)
+        : startTime;
+      const freshCandles = await fetchCandles(symbol, interval, incrementalStart, endTime);
       if (token !== state.loadToken || symbol !== state.symbol) return;
-      state.candles = candles;
+      state.candles = mergeCandles(baseCandles, freshCandles)
+        .filter((candle) => candle.t >= startTime && candle.t <= endTime)
+        .slice(-MAX_HISTORY_CANDLES);
       restoreChartViewport(viewport);
       renderChart();
-      writeCandleCache(cacheKey, candles);
+      updateChartCopy();
+      writeCandleCache(cacheKey, state.candles);
       setError("");
     } catch (error) {
       if (token !== state.loadToken || symbol !== state.symbol) return;
@@ -1099,7 +1091,12 @@
         state.candles = [];
         renderChart();
       }
-      setError(`历史行情同步失败：${error.message}。${state.candles.length ? "当前显示本地缓存。" : "实时报价仍会继续更新。"}`);
+      if (state.candles.length) {
+        setError("");
+        $("chart-subtitle").textContent = `${range.label} · ${INTERVALS[interval].label} · ${symbol} · 本地缓存可用，在线增量同步将在退避后自动重试`;
+      } else {
+        setError(`历史行情暂时不可用：${error.message}。实时报价仍会继续更新。`);
+      }
     }
   }
 
@@ -1302,12 +1299,15 @@
     }
     const approximateNormalized = normalizeProfile(approximate);
     const exactNormalized = normalizeProfile(exact);
+    const hasExactTrades = exactNormalized.size > 0;
+    const approximateWeight = hasExactTrades ? frameConfig.approximateWeight : 1;
+    const exactWeight = hasExactTrades ? frameConfig.exactWeight : 0;
     const indexes = new Set([...approximateNormalized.keys(), ...exactNormalized.keys()]);
     const combined = [...indexes].map((index) => ({
       index,
       price: index * binSize,
-      score: (approximateNormalized.get(index) || 0) * frameConfig.approximateWeight +
-        (exactNormalized.get(index) || 0) * frameConfig.exactWeight
+      score: (approximateNormalized.get(index) || 0) * approximateWeight +
+        (exactNormalized.get(index) || 0) * exactWeight
     })).filter((bin) => bin.score > 0).sort((a, b) => a.index - b.index);
     if (!combined.length) return { available: false, zones: [] };
     const poc = combined.reduce((best, bin) => bin.score > best.score ? bin : best, combined[0]);
@@ -1461,65 +1461,194 @@
     return candidates;
   }
 
-  function clusterLevelPoints(points, candles, price, atr, lookback, side) {
+  function weightedMedian(points) {
+    const sorted = points.filter((point) => Number.isFinite(point.price)).sort((a, b) => a.price - b.price);
+    if (!sorted.length) return 0;
+    const totalWeight = sorted.reduce((sum, point) => sum + Math.max(0.01, point.weight || 1), 0);
+    let cumulative = 0;
+    for (const point of sorted) {
+      cumulative += Math.max(0.01, point.weight || 1);
+      if (cumulative >= totalWeight / 2) return point.price;
+    }
+    return sorted[sorted.length - 1].price;
+  }
+
+  function utcDayStart(time) {
+    const date = new Date(time);
+    return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+  }
+
+  function utcWeekStart(time) {
+    const dayStart = utcDayStart(time);
+    const day = new Date(dayStart).getUTCDay();
+    return dayStart - ((day + 6) % 7) * DAY;
+  }
+
+  function previousPeriodLevelPoints(candles) {
+    if (!candles.length) return [];
+    const referenceTime = (candles[candles.length - 1].closeTime || candles[candles.length - 1].t) + 1;
+    const currentDay = utcDayStart(referenceTime);
+    const currentWeek = utcWeekStart(referenceTime);
+    const groups = (periodStart) => {
+      const map = new Map();
+      candles.forEach((candle, index) => {
+        const key = periodStart(candle.t);
+        const group = map.get(key) || { key, candles: [], indexes: [] };
+        group.candles.push(candle);
+        group.indexes.push(index);
+        map.set(key, group);
+      });
+      return [...map.values()].sort((a, b) => a.key - b.key);
+    };
+    const previousDay = groups(utcDayStart).filter((group) => group.key < currentDay).at(-1);
+    const previousWeek = groups(utcWeekStart).filter((group) => group.key < currentWeek).at(-1);
+    const points = [];
+    const addGroup = (group, prefix, weight, minimumCoverage) => {
+      if (!group?.candles.length) return;
+      const first = group.candles[0];
+      const last = group.candles[group.candles.length - 1];
+      const coverage = (last.closeTime || last.t) - first.t;
+      if (coverage < minimumCoverage) return;
+      const high = group.candles.reduce((best, candle, index) => candle.high > best.price
+        ? { price: candle.high, index: group.indexes[index] }
+        : best, { price: -Infinity, index: group.indexes[0] });
+      const low = group.candles.reduce((best, candle, index) => candle.low < best.price
+        ? { price: candle.low, index: group.indexes[index] }
+        : best, { price: Infinity, index: group.indexes[0] });
+      points.push({ type: "high", ...high, weight, source: `${prefix}高点`, reference: true });
+      points.push({ type: "low", ...low, weight, source: `${prefix}低点`, reference: true });
+    };
+    addGroup(previousDay, "前日", 1.8, 20 * HOUR);
+    addGroup(previousWeek, "前周", 2.2, 4 * DAY);
+    return points;
+  }
+
+  function pivotReaction(candles, index, type, atr, frameKey) {
+    const reaction = candles.slice(index + 1, index + 1 + KEY_ZONE_RULES.reactionBars);
+    if (!reaction.length) return null;
+    const pivot = candles[index];
+    const favorableMove = type === "low"
+      ? Math.max(...reaction.map((candle) => candle.high)) - pivot.low
+      : pivot.high - Math.min(...reaction.map((candle) => candle.low));
+    const departureAtr = favorableMove / Math.max(atr, 0.000001);
+    const directionalCandles = reaction.filter((candle) => type === "low"
+      ? candle.close > candle.open
+      : candle.close < candle.open).length;
+    const hasExpansion = reaction.some((candle) => {
+      const directional = type === "low" ? candle.close > candle.open : candle.close < candle.open;
+      return directional && candle.high - candle.low >= atr * 0.9;
+    });
+    const threshold = KEY_ZONE_RULES.minimumDepartureAtr[frameKey] || KEY_ZONE_RULES.reactionThresholdAtr;
+    if (departureAtr < threshold || (directionalCandles < 2 && !hasExpansion)) return null;
+    return { departureAtr, favorableMove };
+  }
+
+  function confirmedRoleReversal(candles, pivot, side, atr, tolerance) {
+    const breakBuffer = atr * KEY_ZONE_RULES.breakBufferAtr;
+    const breakoutIndex = candles.findIndex((candle, index) => index > pivot.index && (
+      side === "support" ? candle.close > pivot.price + breakBuffer : candle.close < pivot.price - breakBuffer
+    ));
+    if (breakoutIndex < 0) return null;
+    for (let index = breakoutIndex + 1; index < candles.length - 1; index += 1) {
+      const candle = candles[index];
+      const touched = candle.low <= pivot.price + tolerance && candle.high >= pivot.price - tolerance;
+      const held = side === "support" ? candle.close >= pivot.price : candle.close <= pivot.price;
+      if (!touched || !held) continue;
+      const reaction = candles.slice(index + 1, index + 1 + KEY_ZONE_RULES.reactionBars);
+      if (!reaction.length) return null;
+      const favorableMove = side === "support"
+        ? Math.max(...reaction.map((item) => item.high)) - pivot.price
+        : pivot.price - Math.min(...reaction.map((item) => item.low));
+      const departureAtr = favorableMove / Math.max(atr, 0.000001);
+      if (departureAtr >= KEY_ZONE_RULES.reactionThresholdAtr) return { index, departureAtr };
+    }
+    return null;
+  }
+
+  function clusterLevelPoints(points, candles, price, atr, lookback, side, frameKey) {
     if (!points.length) return [];
-    const clusterDistance = Math.max(atr * 0.28, price * 0.00035);
-    const padding = Math.max(atr * 0.08, price * 0.0001);
+    const clusterDistance = Math.max(atr * KEY_ZONE_RULES.mergeAtr, price * KEY_ZONE_RULES.mergePriceRate);
     const sorted = [...points].sort((a, b) => a.price - b.price);
     const clusters = [];
     for (const point of sorted) {
-      const cluster = clusters[clusters.length - 1];
-      if (!cluster || Math.abs(point.price - cluster.center) > clusterDistance) {
+      const cluster = clusters.find((candidate) => Math.abs(point.price - candidate.center) <= clusterDistance);
+      if (!cluster) {
         clusters.push({ center: point.price, points: [point] });
         continue;
       }
       cluster.points.push(point);
-      const totalWeight = cluster.points.reduce((sum, item) => sum + item.weight, 0);
-      cluster.center = cluster.points.reduce((sum, item) => sum + item.price * item.weight, 0) / totalWeight;
+      cluster.center = weightedMedian(cluster.points);
     }
     return clusters.map((cluster) => {
-      const uniqueIndexes = [...new Set(cluster.points.map((point) => point.index))];
-      const latestIndex = Math.max(...uniqueIndexes);
-      const age = Math.max(0, candles.length - 1 - latestIndex);
-      const recencyScore = 20 * Math.exp(-age / Math.max(1, lookback * 0.35));
-      let rejections = 0;
-      for (const index of uniqueIndexes) {
-        const reaction = candles.slice(index + 1, Math.min(candles.length, index + 4));
-        if (!reaction.length) continue;
-        const favorableMove = side === "support"
-          ? Math.max(...reaction.map((candle) => candle.high)) - cluster.center
-          : cluster.center - Math.min(...reaction.map((candle) => candle.low));
-        if (favorableMove >= atr * 0.55) rejections += 1;
-      }
-      const volumeRatios = cluster.points.map((point) => point.volumeRatio).filter(Number.isFinite);
-      const averageVolumeRatio = volumeRatios.length
-        ? volumeRatios.reduce((sum, value) => sum + value, 0) / volumeRatios.length
-        : 1;
-      const touchScore = Math.min(30, uniqueIndexes.length * 8);
-      const rejectionScore = Math.min(25, rejections * 8);
-      const volumeScore = clamp((averageVolumeRatio - 1) * 10, 0, 10);
+      const center = weightedMedian(cluster.points);
+      const minimumWidth = atr * KEY_ZONE_RULES.minimumWidthAtr;
+      const maximumWidth = atr * KEY_ZONE_RULES.maximumWidthAtr;
+      const rawLow = Math.min(...cluster.points.map((point) => point.price));
+      const rawHigh = Math.max(...cluster.points.map((point) => point.price));
+      const desiredWidth = clamp(rawHigh - rawLow + atr * 0.12, minimumWidth, maximumWidth);
+      const low = center - desiredWidth / 2;
+      const high = center + desiredWidth / 2;
+      const reactionPoints = cluster.points.filter((point) => Number.isFinite(point.departureAtr));
+      const uniqueReactionIndexes = [...new Set(reactionPoints.map((point) => point.index))];
+      const touches = uniqueReactionIndexes.length;
+      const reactionStrength = reactionPoints.length ? median(reactionPoints.map((point) => point.departureAtr)) : 0;
+      const reactionScore = Math.round(clamp(reactionStrength / 1.2 * 30, 0, 30));
+      const touchScore = touches <= 1 ? 5 : touches === 2 ? 14 : touches <= 4 ? 20 : Math.max(4, 20 - (touches - 4) * 4);
       const roleReversal = cluster.points.some((point) => point.roleReversal);
-      const distance = Math.abs(price - cluster.center);
-      const proximityScore = clamp(15 - distance / Math.max(atr * 4, 0.000001) * 15, 0, 15);
-      const strength = Math.round(clamp(
-        touchScore + rejectionScore + recencyScore + volumeScore + (roleReversal ? 12 : 0) + proximityScore,
+      const roleScore = roleReversal ? 15 : 0;
+      const referenceScore = Math.min(10, cluster.points.filter((point) => point.reference).reduce((sum, point) => sum + point.weight * 3, 0));
+      const latestIndex = Math.max(...cluster.points.map((point) => point.index));
+      const latestTime = candles[latestIndex]?.t || candles[candles.length - 1].t;
+      const ageMs = Math.max(0, candles[candles.length - 1].t - latestTime);
+      const recencyScore = Math.round(15 * Math.pow(0.5, ageMs / (10 * DAY)));
+      let breachCount = 0;
+      let maximumBreachStreak = 0;
+      let breachStreak = 0;
+      for (const candle of candles.slice(latestIndex + 1)) {
+        const breached = side === "support"
+          ? candle.close < low - atr * KEY_ZONE_RULES.breakBufferAtr
+          : candle.close > high + atr * KEY_ZONE_RULES.breakBufferAtr;
+        breachStreak = breached ? breachStreak + 1 : 0;
+        if (breached) breachCount += 1;
+        maximumBreachStreak = Math.max(maximumBreachStreak, breachStreak);
+      }
+      const broken = maximumBreachStreak >= 2;
+      const breachPenalty = Math.min(30, breachCount * 15);
+      const baseStrength = Math.round(clamp(
+        reactionScore + touchScore + roleScore + referenceScore + recencyScore - breachPenalty,
         0,
         100
       ));
+      const sources = [...new Set(cluster.points.map((point) => point.source).filter(Boolean))];
       return {
         side,
-        center: cluster.center,
-        low: Math.min(...cluster.points.map((point) => point.price)) - padding,
-        high: Math.max(...cluster.points.map((point) => point.price)) + padding,
-        strength,
-        touches: uniqueIndexes.length,
-        rejections,
-        age,
+        timeframe: frameKey,
+        center,
+        low,
+        high,
+        strength: baseStrength,
+        baseStrength,
+        touches,
+        rejections: reactionPoints.length,
+        reactionStrength,
+        age: Math.max(0, candles.length - 1 - latestIndex),
+        ageMs,
         roleReversal,
-        averageVolumeRatio,
-        source: roleReversal ? "角色互换" : "摆动聚类"
+        breachCount,
+        broken,
+        eligible: !broken && baseStrength >= KEY_ZONE_RULES.minimumStrength,
+        source: sources.join("＋") || "确认摆动聚类",
+        scoreComponents: {
+          reaction: reactionScore,
+          touches: touchScore,
+          role: roleScore,
+          recency: recencyScore,
+          reference: Math.round(referenceScore),
+          breach: -breachPenalty,
+          multiFrame: 0
+        }
       };
-    });
+    }).filter((zone) => !zone.broken);
   }
 
   function fallbackLevelZone(level, atr, side) {
@@ -1530,17 +1659,21 @@
       low: bounds.low,
       high: bounds.high,
       strength: 20,
+      baseStrength: 20,
       touches: 1,
       rejections: 0,
       age: 0,
       roleReversal: false,
       averageVolumeRatio: 1,
-      source: "区间备用"
+      eligible: false,
+      source: "区间备用（不触发开仓）"
     };
   }
 
   function selectPrimaryLevelZone(zones, price, atr) {
-    return [...zones].sort((a, b) => {
+    const eligible = zones.filter((zone) => zone.eligible);
+    const candidates = eligible.length ? eligible : zones;
+    return [...candidates].sort((a, b) => {
       const distancePenaltyA = Math.min(35, distanceToLevelZone(price, a) / Math.max(atr, 0.000001) * 7);
       const distancePenaltyB = Math.min(35, distanceToLevelZone(price, b) / Math.max(atr, 0.000001) * 7);
       const rankA = a.strength - distancePenaltyA;
@@ -1549,46 +1682,45 @@
     })[0];
   }
 
-  function findLevels(candles, price, atr, lookback, microstructure = null, frameKey = "h1") {
+  function findLevels(candles, price, atr, lookback, frameKey = "h1") {
     const recent = candles.slice(-lookback);
-    const validVolumes = recent
-      .map((candle) => candle.volume)
-      .filter((value) => Number.isFinite(value) && value > 0);
-    const averageVolume = validVolumes.length
-      ? validVolumes.reduce((sum, value) => sum + value, 0) / validVolumes.length
-      : 0;
-    const pivots = [];
-    for (let index = 2; index < recent.length - 2; index += 1) {
+    const pivotBars = KEY_ZONE_RULES.pivotBars[frameKey] || 2;
+    const pivots = previousPeriodLevelPoints(recent);
+    for (let index = pivotBars; index < recent.length - pivotBars; index += 1) {
       const candle = recent[index];
-      const neighbors = [recent[index - 2], recent[index - 1], recent[index + 1], recent[index + 2]];
-      const volumeRatio = averageVolume > 0 && Number.isFinite(candle.volume) ? candle.volume / averageVolume : 1;
+      const neighbors = recent.slice(index - pivotBars, index).concat(recent.slice(index + 1, index + 1 + pivotBars));
       if (neighbors.every((item) => candle.low <= item.low)) {
-        pivots.push({ type: "low", price: candle.low, index, volumeRatio });
+        const reaction = pivotReaction(recent, index, "low", atr, frameKey);
+        if (reaction) pivots.push({ type: "low", price: candle.low, index, weight: 1 + Math.min(1.5, reaction.departureAtr), source: `${frameKey.toUpperCase()}确认摆动低点`, ...reaction });
       }
       if (neighbors.every((item) => candle.high >= item.high)) {
-        pivots.push({ type: "high", price: candle.high, index, volumeRatio });
+        const reaction = pivotReaction(recent, index, "high", atr, frameKey);
+        if (reaction) pivots.push({ type: "high", price: candle.high, index, weight: 1 + Math.min(1.5, reaction.departureAtr), source: `${frameKey.toUpperCase()}确认摆动高点`, ...reaction });
       }
     }
     const separation = Math.max(atr * 0.12, price * 0.0002);
+    const reversalTolerance = Math.max(atr * KEY_ZONE_RULES.mergeAtr, price * KEY_ZONE_RULES.mergePriceRate);
     const supportPoints = [];
     const resistancePoints = [];
     for (const pivot of pivots) {
-      const ageWeight = 1 + Math.max(0, 1 - (recent.length - 1 - pivot.index) / Math.max(1, lookback));
-      const point = { ...pivot, weight: ageWeight + Math.min(1, pivot.volumeRatio / 2), roleReversal: false };
+      const referenceReaction = pivot.reference
+        ? pivotReaction(recent, pivot.index, pivot.type, atr, frameKey)
+        : null;
+      const point = { ...pivot, ...(referenceReaction || {}), weight: pivot.weight || 1, roleReversal: false };
       if (pivot.type === "low" && pivot.price < price + separation) supportPoints.push(point);
       if (pivot.type === "high" && pivot.price > price - separation) resistancePoints.push(point);
       if (pivot.type === "high" && pivot.price < price - separation) {
-        const broken = recent.slice(pivot.index + 1).some((candle) => candle.close > pivot.price + atr * 0.12);
-        if (broken) supportPoints.push({ ...point, roleReversal: true });
+        const reversal = confirmedRoleReversal(recent, pivot, "support", atr, reversalTolerance);
+        if (reversal) supportPoints.push({ ...point, ...reversal, weight: point.weight + 1, roleReversal: true, source: `${pivot.source}突破回踩` });
       }
       if (pivot.type === "low" && pivot.price > price + separation) {
-        const broken = recent.slice(pivot.index + 1).some((candle) => candle.close < pivot.price - atr * 0.12);
-        if (broken) resistancePoints.push({ ...point, roleReversal: true });
+        const reversal = confirmedRoleReversal(recent, pivot, "resistance", atr, reversalTolerance);
+        if (reversal) resistancePoints.push({ ...point, ...reversal, weight: point.weight + 1, roleReversal: true, source: `${pivot.source}跌破反抽` });
       }
     }
-    let supportZones = clusterLevelPoints(supportPoints, recent, price, atr, lookback, "support")
+    let supportZones = clusterLevelPoints(supportPoints, recent, price, atr, lookback, "support", frameKey)
       .filter((zone) => zone.center < price + separation);
-    let resistanceZones = clusterLevelPoints(resistancePoints, recent, price, atr, lookback, "resistance")
+    let resistanceZones = clusterLevelPoints(resistancePoints, recent, price, atr, lookback, "resistance", frameKey)
       .filter((zone) => zone.center > price - separation);
     if (!supportZones.length) {
       const low = Math.min(...recent.map((candle) => candle.low));
@@ -1598,23 +1730,6 @@
       const high = Math.max(...recent.map((candle) => candle.high));
       resistanceZones = [fallbackLevelZone(high > price ? high : price + atr * 1.5, atr, "resistance")];
     }
-    const volumeProfile = buildVolumeProfile(microstructure, price, atr, frameKey);
-    supportZones = combineStructureAndProfileZones(
-      supportZones,
-      volumeProfile,
-      "support",
-      price,
-      atr,
-      microstructure?.depthHistory
-    );
-    resistanceZones = combineStructureAndProfileZones(
-      resistanceZones,
-      volumeProfile,
-      "resistance",
-      price,
-      atr,
-      microstructure?.depthHistory
-    );
     const supportZone = selectPrimaryLevelZone(supportZones, price, atr);
     const resistanceZone = selectPrimaryLevelZone(resistanceZones, price, atr);
     return {
@@ -1624,7 +1739,7 @@
       resistanceZone,
       supportZones,
       resistanceZones,
-      volumeProfile
+      volumeProfile: { available: false, zones: [], mode: "price-structure-only" }
     };
   }
 
@@ -1636,31 +1751,6 @@
   function formatAnalysisZone(levelOrZone, atr) {
     const zone = levelZoneBounds(levelOrZone, atr);
     return `${analysisPriceFormat.format(zone.low)}–${analysisPriceFormat.format(zone.high)}`;
-  }
-
-  function describeRsi(value) {
-    const number = value.toFixed(2);
-    if (value >= 70) return `RSI=${number}，进入超买区，提示追多和高位回落风险；不据此反向做空。`;
-    if (value >= 60) return `RSI=${number}，短线偏热，做多应避免远离结构入场区追价。`;
-    if (value >= 40) return `RSI=${number}，处于中性区，暂无明显追涨或追跌风险。`;
-    if (value >= 30) return `RSI=${number}，短线偏弱并接近超卖，做空应避免追价。`;
-    return `RSI=${number}，进入超卖区，提示追空和快速反弹风险；不据此反向做多。`;
-  }
-
-  function describeMacd(macd) {
-    const bullishCross = macd.previousDif <= macd.previousSignal && macd.dif > macd.signal;
-    const bearishCross = macd.previousDif >= macd.previousSignal && macd.dif < macd.signal;
-    const relation = bullishCross
-      ? "刚形成金叉"
-      : bearishCross
-        ? "刚形成死叉"
-        : macd.dif >= macd.signal
-          ? "金叉运行"
-          : "死叉运行";
-    const histogram = macd.histogram >= 0
-      ? macd.histogram >= macd.previousHistogram ? "多头柱扩大" : "多头柱收敛"
-      : Math.abs(macd.histogram) >= Math.abs(macd.previousHistogram) ? "空头柱扩大" : "空头柱收敛";
-    return `DIF=${macd.dif.toFixed(2)}，DEA=${macd.signal.toFixed(2)}，${relation}，${histogram}。`;
   }
 
   function clamp(value, minimum, maximum) {
@@ -1693,6 +1783,267 @@
         ? "近期高点与低点同步下移"
         : "近期高低点方向不一致";
     return { score, label, direction: alignedDirection, highChange, lowChange };
+  }
+
+  function latestFinite(values) {
+    const index = latestFiniteIndex(values);
+    return index >= 0 ? values[index] : null;
+  }
+
+  function findSmcPivots(candles, left = 2, right = 2) {
+    const pivots = [];
+    for (let index = left; index < candles.length - right; index += 1) {
+      const window = candles.slice(index - left, index + right + 1);
+      const candle = candles[index];
+      if (window.every((item) => candle.high >= item.high)) {
+        pivots.push({ type: "high", price: candle.high, index, time: candle.t });
+      }
+      if (window.every((item) => candle.low <= item.low)) {
+        pivots.push({ type: "low", price: candle.low, index, time: candle.t });
+      }
+    }
+    return pivots;
+  }
+
+  function smcSwingDirection(pivots, beforeIndex = Number.POSITIVE_INFINITY) {
+    const highs = pivots.filter((pivot) => pivot.type === "high" && pivot.index < beforeIndex).slice(-2);
+    const lows = pivots.filter((pivot) => pivot.type === "low" && pivot.index < beforeIndex).slice(-2);
+    if (highs.length < 2 || lows.length < 2) return 0;
+    const highDirection = Math.sign(highs[1].price - highs[0].price);
+    const lowDirection = Math.sign(lows[1].price - lows[0].price);
+    return highDirection === lowDirection ? highDirection : 0;
+  }
+
+  function detectSmcBreakEvents(candles, pivots, atr) {
+    const events = [];
+    const broken = new Set();
+    const startIndex = 5;
+    let marketDirection = smcSwingDirection(pivots, startIndex);
+    for (let index = startIndex; index < candles.length; index += 1) {
+      const previous = candles[index - 1];
+      const candle = candles[index];
+      const available = pivots.filter((pivot) => pivot.index <= index - 2);
+      const high = available.filter((pivot) => pivot.type === "high").at(-1);
+      const low = available.filter((pivot) => pivot.type === "low").at(-1);
+      const tolerance = atr * 0.03;
+      let event = null;
+      if (high && !broken.has(`high-${high.index}`) && candle.close > high.price + tolerance && previous.close <= high.price + tolerance) {
+        event = { direction: 1, level: high.price, pivotIndex: high.index, index, time: candle.t };
+        broken.add(`high-${high.index}`);
+      }
+      if (low && !broken.has(`low-${low.index}`) && candle.close < low.price - tolerance && previous.close >= low.price - tolerance) {
+        const bearish = { direction: -1, level: low.price, pivotIndex: low.index, index, time: candle.t };
+        if (!event || Math.abs(candle.close - low.price) > Math.abs(candle.close - high.price)) event = bearish;
+        broken.add(`low-${low.index}`);
+      }
+      if (!event) continue;
+      event.type = marketDirection && marketDirection !== event.direction ? "CHoCH" : "BOS";
+      marketDirection = event.direction;
+      events.push(event);
+    }
+    return events;
+  }
+
+  function findSmcOrderBlock(candles, breakEvents, direction, atr) {
+    const event = [...breakEvents].reverse().find((item) => item.direction === direction);
+    const searchEnd = event?.index ?? candles.length - 1;
+    const searchStart = Math.max(1, searchEnd - 8);
+    for (let index = searchEnd - 1; index >= searchStart; index -= 1) {
+      const candle = candles[index];
+      const opposite = direction > 0 ? candle.close < candle.open : candle.close > candle.open;
+      if (!opposite) continue;
+      const low = direction > 0 ? candle.low : Math.min(candle.open, candle.close);
+      const high = direction > 0 ? Math.max(candle.open, candle.close) : candle.high;
+      if (high - low < atr * 0.08) continue;
+      return {
+        direction,
+        low,
+        high,
+        center: (low + high) / 2,
+        index,
+        time: candle.t,
+        source: direction > 0 ? "看涨Order Block" : "看跌Order Block"
+      };
+    }
+    return null;
+  }
+
+  function findActiveFvg(candles, direction, atr) {
+    const start = Math.max(2, candles.length - 90);
+    const candidates = [];
+    for (let index = start; index < candles.length; index += 1) {
+      const first = candles[index - 2];
+      const third = candles[index];
+      const low = direction > 0 ? first.high : third.high;
+      const high = direction > 0 ? third.low : first.low;
+      if (high - low < atr * 0.06) continue;
+      const later = candles.slice(index + 1);
+      const filled = direction > 0
+        ? later.some((candle) => candle.low <= low)
+        : later.some((candle) => candle.high >= high);
+      if (!filled) {
+        candidates.push({
+          direction,
+          low,
+          high,
+          center: (low + high) / 2,
+          index,
+          time: third.t,
+          source: direction > 0 ? "看涨FVG" : "看跌FVG"
+        });
+      }
+    }
+    return candidates.at(-1) || null;
+  }
+
+  function detectLiquiditySweep(candles, pivots, direction, atr) {
+    const start = Math.max(3, candles.length - 12);
+    let latest = null;
+    for (let index = start; index < candles.length; index += 1) {
+      const reference = pivots
+        .filter((pivot) => pivot.type === (direction > 0 ? "low" : "high") && pivot.index <= index - 2)
+        .at(-1);
+      if (!reference) continue;
+      const candle = candles[index];
+      const swept = direction > 0
+        ? candle.low < reference.price - atr * 0.03 && candle.close > reference.price
+        : candle.high > reference.price + atr * 0.03 && candle.close < reference.price;
+      if (swept) {
+        latest = {
+          direction,
+          level: reference.price,
+          extreme: direction > 0 ? candle.low : candle.high,
+          index,
+          time: candle.t
+        };
+      }
+    }
+    return latest;
+  }
+
+  function maintainH4Direction(breakEvents, ema200Direction) {
+    let sign = 0;
+    let confirmedBos = null;
+    let invalidation = null;
+    for (const event of breakEvents) {
+      if (event.type === "BOS") {
+        sign = event.direction;
+        confirmedBos = event;
+        invalidation = null;
+        continue;
+      }
+      if (sign && event.direction === -sign) {
+        sign = 0;
+        invalidation = event;
+      }
+    }
+    if (sign && ema200Direction !== sign) {
+      return { sign: 0, confirmedBos, invalidation: { type: "EMA200", direction: ema200Direction } };
+    }
+    return { sign, confirmedBos, invalidation };
+  }
+
+  function analyzeSmcFrame(candles, atr, levels, key) {
+    const closes = candles.map((candle) => candle.close);
+    const last = candles[candles.length - 1];
+    const ema20 = latestFinite(calculateEmaSeries(closes, 20));
+    const ema50 = latestFinite(calculateEmaSeries(closes, 50));
+    const ema200 = latestFinite(calculateEmaSeries(closes, 200));
+    const rsiSeries = calculateRsi(candles);
+    const rsi = latestFinite(rsiSeries);
+    const previousRsi = rsiSeries.slice(0, -1).reverse().find(Number.isFinite) ?? rsi;
+    const macd = calculateMacd(candles);
+    const pivots = findSmcPivots(candles);
+    const breakEvents = detectSmcBreakEvents(candles, pivots, atr);
+    const lastBreak = breakEvents.at(-1) || null;
+    const swingDirection = smcSwingDirection(pivots);
+    const structuralDirection = lastBreak?.direction || swingDirection;
+    const ema200Direction = Number.isFinite(ema200)
+      ? last.close > ema200 ? 1 : last.close < ema200 ? -1 : 0
+      : 0;
+    const maintainedH4 = key === "h4" ? maintainH4Direction(breakEvents, ema200Direction) : null;
+    const trendSign = key === "h4"
+      ? maintainedH4.sign
+      : structuralDirection && structuralDirection === ema200Direction ? structuralDirection : 0;
+    const emaStackDirection = ema20 > ema50 ? 1 : ema20 < ema50 ? -1 : 0;
+    const rsiDirection = Number.isFinite(rsi) ? rsi >= 50 ? 1 : -1 : 0;
+    const macdDirection = macd && macd.dif > macd.signal && macd.histogram >= 0
+      ? 1
+      : macd && macd.dif < macd.signal && macd.histogram <= 0
+        ? -1
+        : 0;
+    const momentumPassed = Boolean(trendSign && rsiDirection === trendSign && macdDirection === trendSign);
+    const candidateSign = trendSign || ema200Direction || structuralDirection;
+    let stageScore = 0;
+    if (candidateSign && ema200Direction === candidateSign) stageScore += 1.5;
+    const structureConfirmed = key === "h4"
+      ? maintainedH4?.confirmedBos?.direction === candidateSign && maintainedH4.sign === candidateSign
+      : structuralDirection === candidateSign;
+    if (candidateSign && structureConfirmed) stageScore += 1.5;
+    else if (candidateSign && structuralDirection === candidateSign) stageScore += 0.5;
+    if (candidateSign && emaStackDirection === candidateSign) stageScore += 0.75;
+    if (candidateSign && rsiDirection === candidateSign) stageScore += 0.625;
+    if (candidateSign && macdDirection === candidateSign) stageScore += 0.625;
+    const bullishOrderBlock = findSmcOrderBlock(candles, breakEvents, 1, atr);
+    const bearishOrderBlock = findSmcOrderBlock(candles, breakEvents, -1, atr);
+    const bullishFvg = findActiveFvg(candles, 1, atr);
+    const bearishFvg = findActiveFvg(candles, -1, atr);
+    const bullishSweep = detectLiquiditySweep(candles, pivots, 1, atr);
+    const bearishSweep = detectLiquiditySweep(candles, pivots, -1, atr);
+    const recentBreakWindow = key === "m15" ? 6 : 12;
+    const bullishChoch = [...breakEvents].reverse().find((event) =>
+      event.type === "CHoCH" && event.direction === 1 && candles.length - 1 - event.index <= recentBreakWindow
+    ) || null;
+    const bearishChoch = [...breakEvents].reverse().find((event) =>
+      event.type === "CHoCH" && event.direction === -1 && candles.length - 1 - event.index <= recentBreakWindow
+    ) || null;
+    const highPivots = pivots.filter((pivot) => pivot.type === "high");
+    const lowPivots = pivots.filter((pivot) => pivot.type === "low");
+    const bias = trendSign > 0 ? "bullish" : trendSign < 0 ? "bearish" : "neutral";
+    const label = trendSign > 0
+      ? key === "h4" ? "H4多头方向延续" : "SMC多头结构"
+      : trendSign < 0
+        ? key === "h4" ? "H4空头方向延续" : "SMC空头结构"
+        : key === "h4" && maintainedH4?.invalidation
+          ? "H4原方向已失效"
+          : "SMC结构未共振";
+    return {
+      key,
+      bias,
+      label,
+      price: last.close,
+      ema20,
+      ema50,
+      ema200,
+      rsi,
+      previousRsi,
+      macd,
+      pivots,
+      breakEvents,
+      lastBreak,
+      swingDirection,
+      structuralDirection,
+      ema200Direction,
+      emaStackDirection,
+      rsiDirection,
+      macdDirection,
+      trendSign,
+      confirmedBos: maintainedH4?.confirmedBos || null,
+      directionInvalidation: maintainedH4?.invalidation || null,
+      momentumPassed,
+      candidateSign,
+      stageScore: Math.min(5, stageScore),
+      bullishOrderBlock,
+      bearishOrderBlock,
+      bullishFvg,
+      bearishFvg,
+      bullishSweep,
+      bearishSweep,
+      bullishChoch,
+      bearishChoch,
+      externalHigh: highPivots.at(-1)?.price ?? levels.resistance,
+      externalLow: lowPivots.at(-1)?.price ?? levels.support
+    };
   }
 
   function classifyDirection(score, key) {
@@ -1754,24 +2105,6 @@
     };
   }
 
-  function classifyMarketState(result) {
-    if (result.directionTier === "strong-bullish" || result.directionTier === "strong-bearish") {
-      return { label: result.directionLabel, bias: result.bias };
-    }
-    if (result.priceAction.resistanceRejection && result.directionScore < 25) {
-      return { label: "反弹遇压", bias: "bearish" };
-    }
-    if (result.priceAction.supportBounce && result.directionScore > -25) {
-      return { label: "回调企稳", bias: "bullish" };
-    }
-    if (result.directionTier !== "neutral") return { label: result.directionLabel, bias: result.bias };
-    if (result.trendScore <= -15 && result.momentumScore >= 15) return { label: "弱势反弹", bias: "bearish" };
-    if (result.trendScore >= 15 && result.momentumScore <= -15) return { label: "强势回调", bias: "bullish" };
-    if (result.directionScore >= 10) return { label: "震荡偏多", bias: "bullish" };
-    if (result.directionScore <= -10) return { label: "震荡偏空", bias: "bearish" };
-    return { label: "震荡中性", bias: "neutral" };
-  }
-
   function confidenceMeta(score) {
     if (score >= 75) return { label: "较高", tone: "high" };
     if (score >= 55) return { label: "中等", tone: "medium" };
@@ -1787,98 +2120,7 @@
     return Math.round(clamp(38 + agreement * 34 + Math.min(80, Math.abs(directionScore)) * 0.25 - boundaryPenalty, 25, 95));
   }
 
-  function analyzeVolume(candles, atr, period = 20) {
-    const last = candles[candles.length - 1];
-    const previous = candles[candles.length - 2];
-    const baseline = candles.slice(-(period + 1), -1)
-      .map((candle) => candle.volume)
-      .filter((volume) => Number.isFinite(volume) && volume > 0);
-    if (!last || !previous || baseline.length < period || !Number.isFinite(last.volume) || last.volume < 0) {
-      return {
-        available: false,
-        ratio: null,
-        label: "量能数据不足",
-        longAdjustment: 0,
-        shortAdjustment: 0,
-        breakoutDirection: 0,
-        priceDirection: 0
-      };
-    }
-    const average = baseline.reduce((sum, volume) => sum + volume, 0) / baseline.length;
-    if (!Number.isFinite(average) || average <= 0) {
-      return {
-        available: false,
-        ratio: null,
-        label: "量能基准无效",
-        longAdjustment: 0,
-        shortAdjustment: 0,
-        breakoutDirection: 0,
-        priceDirection: 0
-      };
-    }
-    const ratio = last.volume / average;
-    const breakoutWindow = candles.slice(-11, -1);
-    const previousHigh = Math.max(...breakoutWindow.map((candle) => candle.high));
-    const previousLow = Math.min(...breakoutWindow.map((candle) => candle.low));
-    const breakoutDirection = last.close > previousHigh ? 1 : last.close < previousLow ? -1 : 0;
-    const priceChange = last.close - previous.close;
-    const priceDirection = priceChange > atr * 0.05 ? 1 : priceChange < -atr * 0.05 ? -1 : 0;
-    const activeDirection = breakoutDirection || priceDirection;
-    let adjustment = 0;
-    let label = "量能中性";
-    if (ratio >= 1.8) {
-      adjustment = breakoutDirection ? 8 : activeDirection ? 6 : 0;
-      label = breakoutDirection
-        ? `显著放量${breakoutDirection > 0 ? "突破" : "跌破"}`
-        : activeDirection
-          ? `显著放量${activeDirection > 0 ? "上行" : "下行"}`
-          : "显著放量，方向未确认";
-    } else if (ratio >= 1.35) {
-      adjustment = breakoutDirection ? 6 : activeDirection ? 4 : 0;
-      label = breakoutDirection
-        ? `放量${breakoutDirection > 0 ? "突破" : "跌破"}`
-        : activeDirection
-          ? `放量${activeDirection > 0 ? "上行" : "下行"}`
-          : "放量整理";
-    } else if (ratio >= 1.1) {
-      adjustment = activeDirection ? 2 : 0;
-      label = activeDirection ? `温和放量${activeDirection > 0 ? "上行" : "下行"}` : "温和放量整理";
-    } else if (ratio <= 0.65 && breakoutDirection) {
-      adjustment = -4;
-      label = `缩量${breakoutDirection > 0 ? "突破" : "跌破"}，量能未确认`;
-    } else if (ratio <= 0.7) {
-      label = "缩量运行，暂不确认方向";
-    }
-    let longAdjustment = 0;
-    let shortAdjustment = 0;
-    if (activeDirection > 0) {
-      longAdjustment = adjustment;
-      if (adjustment > 0) shortAdjustment = -Math.min(3, Math.ceil(adjustment / 2));
-    } else if (activeDirection < 0) {
-      shortAdjustment = adjustment;
-      if (adjustment > 0) longAdjustment = -Math.min(3, Math.ceil(adjustment / 2));
-    }
-    return {
-      available: true,
-      current: last.volume,
-      average,
-      ratio,
-      label,
-      longAdjustment,
-      shortAdjustment,
-      breakoutDirection,
-      priceDirection
-    };
-  }
-
-  function describeVolume(volume) {
-    if (!volume?.available || !Number.isFinite(volume.ratio)) {
-      return "成交量数据不足，本周期按中性处理，不影响原有判断。";
-    }
-    return `量比=${volume.ratio.toFixed(2)}（最近已收盘K线/前20根均量），${volume.label}；多方条件${signed(volume.longAdjustment, 0)}，空方条件${signed(volume.shortAdjustment, 0)}。`;
-  }
-
-  function analyzeIntradayPriceStructure(candles, atr, levels, volume, swing) {
+  function analyzeIntradayPriceStructure(candles, atr, levels, swing) {
     const last = candles[candles.length - 1];
     const previous = candles[candles.length - 2] || last;
     const context = candles.slice(-25, -1);
@@ -1926,8 +2168,6 @@
         : 0;
     const supportRejection = last.low <= levels.support + atr * 0.3 && bullishImpulse && last.close > previous.close;
     const resistanceRejection = last.high >= levels.resistance - atr * 0.3 && bearishImpulse && last.close < previous.close;
-    const volumeDirection = volume?.breakoutDirection || volume?.priceDirection || 0;
-    const volumeStrength = Number.isFinite(volume?.ratio) && volume.ratio >= 1.2 ? Math.min(8, (volume.ratio - 1) * 10) : 0;
     const swingContribution = swing.score * 0.4;
     const netMoveContribution = clamp(netMoveAtr / 2, -1, 1) * 25;
     const rangeContribution = clamp((rangePosition - 0.5) * 2, -1, 1) * 15;
@@ -1951,8 +2191,7 @@
         : "directional";
     let baseScore = swingContribution + netMoveContribution + rangeContribution + pressureContribution + breakoutContribution + rejectionContribution;
     baseScore = Math.round(clamp(baseScore, -100, 100));
-    const volumeContribution = volumeDirection * volumeStrength;
-    const score = Math.round(clamp(baseScore + volumeContribution, -100, 100));
+    const score = baseScore;
     const sign = score >= 18 ? 1 : score <= -18 ? -1 : 0;
     const strong = Math.abs(score) >= 38;
 
@@ -2116,7 +2355,6 @@
       supportRejection,
       resistanceRejection,
       rejectionContribution,
-      volumeContribution,
       bullishImpulse,
       bearishImpulse,
       setupDirection,
@@ -2138,7 +2376,6 @@
     let score = 42;
     score += clamp(sign * result.directionScore * 0.22, -22, 22);
     score += clamp(sign * result.trendScore * 0.08, -8, 8);
-    score += clamp(sign * result.momentumScore * 0.12, -12, 12);
     score += rewardRisk >= 2 ? 18 : rewardRisk >= 1.3 ? 11 : rewardRisk >= 0.8 ? 3 : -12;
     if (sign > 0 && result.nearResistance) score -= 24;
     if (sign < 0 && result.nearSupport) score -= 24;
@@ -2148,19 +2385,14 @@
     if (sign > 0 && result.priceAction.resistanceRejection) score -= 22;
     if (sign > 0 && result.priceAction.supportBounce) score += 24;
     if (sign < 0 && result.priceAction.supportBounce) score -= 22;
-    if ((sign > 0 && result.rsi >= 72) || (sign < 0 && result.rsi <= 28)) score -= 12;
     if (result.twoCloseDirection === sign) score += 10;
     else if (result.twoCloseDirection === -sign) score -= 14;
     const baseScore = Math.round(clamp(score, 0, 100));
-    const volumeAdjustment = sign > 0
-      ? result.volume.longAdjustment
-      : result.volume.shortAdjustment;
     return {
       bias: sign > 0 ? "bullish" : "bearish",
       sign,
-      score: Math.round(clamp(baseScore + volumeAdjustment, 0, 100)),
+      score: baseScore,
       baseScore,
-      volumeAdjustment,
       rewardRisk
     };
   }
@@ -2212,14 +2444,11 @@
     const price = last.close;
     const ma20 = calculateSma(candles, 20);
     const ma60 = calculateSma(candles, 60);
-    const rsiSeries = calculateRsi(candles);
-    const rsi = rsiSeries[rsiSeries.length - 1];
-    const macd = calculateMacd(candles);
     const atr = calculateAtr(candles);
-    if (![price, ma20, ma60, rsi, atr].every(Number.isFinite) || !macd) {
-      throw new Error(`${config.label}指标计算失败`);
+    if (![price, ma20, ma60, atr].every(Number.isFinite)) {
+      throw new Error(`${config.label}价格结构计算失败`);
     }
-    const levels = findLevels(candles, price, atr, config.lookback, state.marketMicrostructure, config.key);
+    const levels = findLevels(candles, price, atr, config.lookback, config.key);
     const ma20Series = calculateSmaSeries(candles, 20);
     const ma60Series = calculateSmaSeries(candles, 60);
     const lastIndex = candles.length - 1;
@@ -2248,16 +2477,7 @@
       100
     ));
 
-    const rsiComponent = clamp((rsi - 50) / 15, -1, 1) * 30;
-    const macdGapComponent = clamp(macd.histogram / (atr * 0.35), -1, 1) * 35;
-    const macdZeroComponent = clamp(macd.dif / (atr * 0.75), -1, 1) * 20;
-    const macdChangeComponent = clamp((macd.histogram - macd.previousHistogram) / (atr * 0.12), -1, 1) * 15;
-    const momentumScore = Math.round(clamp(
-      rsiComponent + macdGapComponent + macdZeroComponent + macdChangeComponent,
-      -100,
-      100
-    ));
-    const directionScore = Math.round(clamp(trendScore * 0.65 + momentumScore * 0.35, -100, 100));
+    const directionScore = trendScore;
     const directionTier = classifyDirection(directionScore, config.key);
     const direction = directionMeta(directionTier);
     let structure;
@@ -2279,28 +2499,25 @@
     structure += ` ${slopeText}；${swing.label}。`;
     const nearThreshold = Math.max(atr * 0.65, price * 0.001);
     const priceAction = detectPriceAction(candles, levels, atr, ma20, ma60);
-    const volume = analyzeVolume(candles, atr);
-    const intradayStructure = analyzeIntradayPriceStructure(candles, atr, levels, volume, swing);
+    const intradayStructure = analyzeIntradayPriceStructure(candles, atr, levels, swing);
+    const smc = analyzeSmcFrame(candles, atr, levels, config.key);
     const result = {
       ...config,
       price,
       ma20,
       ma60,
-      rsi,
-      macd,
       atr,
       bias: direction.bias,
       directionTier,
       directionLabel: direction.label,
       trendScore,
-      momentumScore,
       directionScore,
       twoCloseDirection,
       structure,
       swing,
       priceAction,
-      volume,
       intradayStructure,
+      smc,
       support: levels.support,
       resistance: levels.resistance,
       supportLevel: levels.supportZone,
@@ -2316,27 +2533,18 @@
       nearResistance: distanceToLevelZone(price, levels.resistanceZone) <= nearThreshold,
       lastClosedAt: last.closeTime
     };
-    result.marketState = classifyMarketState(result);
     result.longSetup = calculateDirectionalSetup(result, 1);
     result.shortSetup = calculateDirectionalSetup(result, -1);
     result.longSetupScoreBase = result.longSetup.baseScore;
     result.shortSetupScoreBase = result.shortSetup.baseScore;
-    const confidenceBase = calculateConfidence(directionScore, [
+    result.confidenceScore = calculateConfidence(directionScore, [
       priceComponent,
       spreadComponent,
       ma20SlopeComponent,
       ma60SlopeComponent,
       structureComponent,
-      closeComponent,
-      momentumScore * 0.35
+      closeComponent
     ]);
-    const directionalVolumeAdjustment = directionScore >= 10
-      ? volume.longAdjustment
-      : directionScore <= -10
-        ? volume.shortAdjustment
-        : 0;
-    result.volumeConfidenceAdjustment = Math.round(clamp(directionalVolumeAdjustment * 0.75, -6, 6));
-    result.confidenceScore = Math.round(clamp(confidenceBase + result.volumeConfidenceAdjustment, 25, 95));
     result.confidence = confidenceMeta(result.confidenceScore);
     finalizeTradeOpportunities(result);
     return result;
@@ -2350,6 +2558,7 @@
 
   function applySupportResistanceConfluence(results) {
     const frames = [results.d1, results.h4, results.h1, results.m15].filter(Boolean);
+    const timeframeBonus = { d1: 20, h4: 18, h1: 8, m15: 4 };
     for (const frame of frames) {
       for (const side of ["support", "resistance"]) {
         const zones = side === "support" ? frame.supportLevels : frame.resistanceLevels;
@@ -2359,20 +2568,40 @@
           for (const other of frames) {
             if (other.key === frame.key) continue;
             const otherZones = side === "support" ? other.supportLevels : other.resistanceLevels;
-            const threshold = Math.max(frame.atr * 0.55, other.atr * 0.35, frame.price * 0.0003);
+            const threshold = Math.max(Math.min(frame.atr, other.atr) * 0.35, frame.price * 0.001);
             if ((otherZones || []).some((candidate) => Math.abs(candidate.center - zone.center) <= threshold)) {
               alignedFrames.add(other.key);
             }
           }
           zone.timeframes = [...alignedFrames];
           zone.confluence = alignedFrames.size;
-          zone.scoreComponents.multiFrame = Math.min(20, (alignedFrames.size - 1) * 10);
+          const multiFrameBonus = Math.min(20, [...alignedFrames]
+            .filter((key) => key !== frame.key)
+            .reduce((sum, key) => sum + (timeframeBonus[key] || 0), 0));
+          zone.scoreComponents.multiFrame = multiFrameBonus;
           zone.strength = Math.round(clamp(
-            zone.baseStrength + zone.scoreComponents.multiFrame + (zone.depthAdjustment || 0),
+            zone.baseStrength + multiFrameBonus,
             0,
             100
           ));
+          zone.eligible = !zone.broken && zone.strength >= KEY_ZONE_RULES.minimumStrength;
         }
+      }
+      const support = selectPrimaryLevelZone(frame.supportLevels || [], frame.price, frame.atr);
+      const resistance = selectPrimaryLevelZone(frame.resistanceLevels || [], frame.price, frame.atr);
+      if (support) {
+        frame.support = support.center;
+        frame.supportLevel = support;
+        frame.supportZone = formatZone(support, frame.atr);
+        frame.analysisSupportZone = formatAnalysisZone(support, frame.atr);
+        frame.nearSupport = distanceToLevelZone(frame.price, support) <= Math.max(frame.atr * 0.35, frame.price * 0.0005);
+      }
+      if (resistance) {
+        frame.resistance = resistance.center;
+        frame.resistanceLevel = resistance;
+        frame.resistanceZone = formatZone(resistance, frame.atr);
+        frame.analysisResistanceZone = formatAnalysisZone(resistance, frame.atr);
+        frame.nearResistance = distanceToLevelZone(frame.price, resistance) <= Math.max(frame.atr * 0.35, frame.price * 0.0005);
       }
     }
   }
@@ -2428,86 +2657,35 @@
     }
   }
 
-  function signalSummary(result) {
-    const trend = result.trendScore >= 25
-      ? "结构偏多"
-      : result.trendScore <= -25
-        ? "结构偏空"
-        : "结构信号混合";
-    const momentum = result.momentumScore >= 25
-      ? "动能偏多"
-      : result.momentumScore <= -25
-        ? "动能偏空"
-        : "动能尚未定向";
-    const confirmation = result.twoCloseDirection === 1
-      ? "最近两根收盘站在双均线上方"
-      : result.twoCloseDirection === -1
-        ? "最近两根收盘位于双均线下方"
-        : "连续两根收盘尚未完成同向确认";
-    const pattern = result.priceAction.resistanceRejection
-      ? `，识别到${result.priceAction.resistanceStrength}压力区反弹失败`
-      : result.priceAction.supportBounce
-        ? `，识别到${result.priceAction.supportStrength}支撑区止跌反弹`
-        : "";
-    const volume = result.volume?.available ? `；量能为${result.volume.label}` : "；量能按中性处理";
-    return `${trend}、${momentum}，${confirmation}${pattern}${volume}`;
-  }
-
-  function setupSummary(result) {
-    const pair = `多方${result.longSetup.score}、空方${result.shortSetup.score}`;
-    const opportunity = result.opportunity;
-    if (opportunity.bias === "neutral") return `${pair}，两侧条件接近或都不足，暂不形成明确入场方向。`;
-    const direction = opportunity.bias === "bullish" ? "多方" : "空方";
-    const confirmed = result.twoCloseDirection === opportunity.sign;
-    if (opportunity.score >= 70 && confirmed) {
-      return `${pair}，${direction}方向、位置与连续收盘确认较一致，优先观察回踩后的延续性。`;
-    }
-    if (opportunity.bias === "bearish" && result.priceAction.resistanceRejection) {
-      return `${pair}，压力区反弹失败令空方机会领先，但在支撑跌破前仍属于提前转弱信号。`;
-    }
-    if (opportunity.bias === "bullish" && result.priceAction.supportBounce) {
-      return `${pair}，支撑区止跌令多方机会领先，但在压力突破前仍属于提前企稳信号。`;
-    }
-    return `${pair}，${direction}条件暂时领先，仍需等待连续收盘或关键位突破确认。`;
-  }
-
-  function opportunityDetail(result) {
-    const opportunity = result.opportunity;
-    if (opportunity.bias === "neutral") {
-      return `双向等待：多方 ${result.longSetup.score}，空方 ${result.shortSetup.score}；两侧优势不足，等待关键位给出方向。`;
-    }
-    const direction = opportunity.bias === "bullish" ? "多方" : "空方";
-    const confirmation = opportunity.bias === "bullish"
-      ? result.twoCloseDirection === 1
-        ? "最近两根收盘已完成多方确认。"
-        : `仍需关注能否有效突破压力 ${result.analysisResistanceZone}。`
-      : result.twoCloseDirection === -1
-        ? "最近两根收盘已完成空方确认。"
-        : `仍需关注能否有效跌破支撑 ${result.analysisSupportZone}。`;
-    return `${opportunity.label}：多方 ${result.longSetup.score}，空方 ${result.shortSetup.score}；${direction}条件领先。${confirmation}`;
-  }
-
   function buildConclusions(results) {
     const { h4, h1, m15 } = results;
     const conclusions = {};
     if (h4) {
-      const view = intradayFrameView(h4);
-      const direction = view.structure.strong
-        ? `已形成日内${view.structure.sign > 0 ? "做多" : "做空"}主方向`
-        : view.structure.sign
-          ? "已有方向倾向，但尚未达到H4强方向阈值"
-          : "尚未形成日内主方向";
-      conclusions.h4 = `H4为${view.structure.label}（结构分${signed(view.structure.score, 0)}），${direction}；价格结构条件多${view.longScore}、空${view.shortScore}。${proximityText(h4)}`;
+      const smc = h4.smc;
+      const confirmation = smc.confirmedBos
+        ? `${smc.confirmedBos.direction > 0 ? "Bullish" : "Bearish"} BOS已建立方向`
+        : "尚无有效BOS";
+      const direction = smc.trendSign > 0 ? "H4主方向偏多并延续" : smc.trendSign < 0 ? "H4主方向偏空并延续" : "H4尚无有效主方向";
+      const invalidation = smc.directionInvalidation
+        ? smc.directionInvalidation.type === "EMA200" ? "，原方向已因穿越EMA200失效" : "，原方向已被反向CHoCH破坏"
+        : "";
+      conclusions.h4 = `${direction}：${confirmation}${invalidation}。新BOS出现前不重复要求确认；RSI与MACD仅作观察。`;
     }
     if (h1) {
-      const view = intradayFrameView(h1);
-      const relation = intradayFrameRelation(h1, [h4], "H4");
-      conclusions.h1 = `H1为${view.structure.label}（结构分${signed(view.structure.score, 0)}），${relation}；价格结构条件多${view.longScore}、空${view.shortScore}。${proximityText(h1)}`;
+      const mainSign = h4?.smc?.trendSign || h4?.smc?.candidateSign || 0;
+      const executionZones = buildH1ExecutionZones(mainSign, h1);
+      conclusions.h1 = executionZones.length
+        ? `H1主执行区 ${smcZoneLabel(executionZones[0])}${executionZones[1] ? `；临近次级区 ${smcZoneLabel(executionZones[1])}` : ""}。价格进入任一区域后转由M15确认。`
+        : `H1尚未选出与H4方向对应的强关键区，继续等待结构区域形成。`;
     }
     if (m15) {
-      const view = intradayFrameView(m15);
-      const relation = intradayFrameRelation(m15, [h4, h1], "H4/H1");
-      conclusions.m15 = `M15为${view.structure.label}（结构分${signed(view.structure.score, 0)}），${relation}；Setup：${view.structure.setupLabel}；触发：${view.structure.triggerLabel}，价格结构条件多${view.longScore}、空${view.shortScore}。${proximityText(m15)}`;
+      const mainSign = h4?.smc?.trendSign || h4?.smc?.candidateSign || 0;
+      const executionZones = buildH1ExecutionZones(mainSign, h1);
+      const triggers = executionZones.map((zone) => evaluateM15ZoneTrigger(mainSign, zone, m15));
+      const confirmed = triggers.find((item) => item.triggerReady);
+      conclusions.m15 = confirmed
+        ? `M15已在H1${confirmed.zone.role === "secondary" ? "次级区" : "主区"}完成${confirmed.triggerType === "early" ? "拒绝K线＋微结构突破" : "扫单＋同向CHoCH"}，入场触发成立。`
+        : `M15等待两种触发之一：扫单＋同向CHoCH，或执行区拒绝K线＋微结构突破。未完成则保持WAIT。`;
     }
     return conclusions;
   }
@@ -2519,9 +2697,6 @@
       actionable: false,
       directionLabel: "观望",
       priority: "等待",
-      score: null,
-      longScore: null,
-      shortScore: null,
       entryLow: null,
       entryHigh: null,
       stopLoss: null,
@@ -2546,7 +2721,8 @@
     const candidates = availableFrames.flatMap((frame) => {
       const zones = side === "support" ? frame.supportLevels : frame.resistanceLevels;
       return (zones || []).map((zone) => ({ ...zone, timeframe: frame.key }));
-    }).filter((zone) => side === "support" ? zone.center < entry : zone.center > entry);
+    }).filter((zone) => zone.eligible && zone.strength >= KEY_ZONE_RULES.minimumStrength)
+      .filter((zone) => side === "support" ? zone.center < entry : zone.center > entry);
     const ranked = candidates.map((zone) => {
       const nearbyFrames = new Set(candidates
         .filter((candidate) => Math.abs(candidate.center - zone.center) <= confluenceDistance)
@@ -2658,10 +2834,6 @@
     };
   }
 
-  function intradayPortfolioRiskRule() {
-    return `组合执行上限：单笔风险预算最高${(STRATEGY_FILTERS.portfolioRiskPerTradeRate * 100).toFixed(0)}%，新订单进入时同时止损风险不超过${(STRATEGY_FILTERS.maximumPortfolioStopRiskRate * 100).toFixed(0)}%，总名义杠杆不超过${STRATEGY_FILTERS.maximumPortfolioGrossLeverage.toFixed(0)}倍。新信号仍会展示；额度不足时按剩余额度缩小新仓，额度为零时等待。`;
-  }
-
   function intradayConditionScore(frame, sign) {
     const structure = frame.intradayStructure;
     let baseScore = 50 + sign * structure.baseScore * 0.42;
@@ -2696,11 +2868,9 @@
       : 0;
     baseScore += triggerQuality - rangePenalty;
     baseScore = Math.round(clamp(baseScore, 0, 100));
-    const volumeAdjustment = sign > 0 ? frame.volume.longAdjustment : frame.volume.shortAdjustment;
     return {
       baseScore,
-      score: Math.round(clamp(baseScore + volumeAdjustment, 0, 100)),
-      volumeAdjustment,
+      score: baseScore,
       rangePenalty,
       triggerQuality
     };
@@ -2747,15 +2917,12 @@
       : structure.resistanceRejection
         ? "压力区出现空头拒绝K线"
         : "支撑压力附近暂无有效拒绝K线";
-    const volumeLabel = Math.abs(structure.volumeContribution) >= 0.5
-      ? `量能确认${signed(structure.volumeContribution, 0)}分`
-      : "量能本次不改变结构分";
     const regimeLabel = structure.rangeRegime === "compression"
       ? "压缩震荡"
       : structure.rangeRegime === "range"
         ? "区间震荡"
         : "方向行情";
-    return `摆动结构：${result.swing.label}（${signed(structure.swingContribution, 0)}）；近8根净变动${signed(structure.netMoveAtr, 2)} ATR（${signed(structure.netMoveContribution, 0)}）；收盘位于前24根区间${Math.round(structure.rangePosition * 100)}%位置（${signed(structure.rangeContribution, 0)}）；近6根为${pressureLabel}（${signed(structure.pressureContribution, 0)}）。路径效率${Math.round(structure.efficiencyRatio * 100)}%、相邻K线重叠${Math.round(structure.overlapRatio * 100)}%，判定为${regimeLabel}（震荡分${structure.chopScore}）。${breakoutLabel}（${signed(structure.breakoutContribution, 0)}）；${rejectionLabel}（${signed(structure.rejectionContribution, 0)}）；${volumeLabel}。`;
+    return `摆动结构：${result.swing.label}（${signed(structure.swingContribution, 0)}）；近8根净变动${signed(structure.netMoveAtr, 2)} ATR（${signed(structure.netMoveContribution, 0)}）；收盘位于前24根区间${Math.round(structure.rangePosition * 100)}%位置（${signed(structure.rangeContribution, 0)}）；近6根为${pressureLabel}（${signed(structure.pressureContribution, 0)}）。路径效率${Math.round(structure.efficiencyRatio * 100)}%、相邻K线重叠${Math.round(structure.overlapRatio * 100)}%，判定为${regimeLabel}（震荡分${structure.chopScore}）。${breakoutLabel}（${signed(structure.breakoutContribution, 0)}）；${rejectionLabel}（${signed(structure.rejectionContribution, 0)}）。`;
   }
 
   function intradayOpportunityDetail(result, view = intradayFrameView(result)) {
@@ -2796,29 +2963,10 @@
     if (!zone) return "强度未知";
     if (zone.scoreComponents) {
       const components = zone.scoreComponents;
-      const depth = components.depth > 0 ? `+${components.depth}` : String(components.depth || 0);
-      const node = zone.nodeType ? `${zone.nodeType} · ` : "";
-      return `${node}强度${zone.strength}/100，成交密集${components.volumeProfile}/40、价格反应${components.reaction}/25、多周期${components.multiFrame}/20、角色/时效${components.roleRecency}/15、深度${depth}（${zone.depthLabel || "中性"}）`;
+      return `强度${zone.strength}/100：价格反应${components.reaction}/30、有效触碰${components.touches}/20、角色互换${components.role}/15、时效${components.recency}/15、前日/前周${components.reference}/10、多周期共振${components.multiFrame}/20、突破扣分${components.breach}`;
     }
     const role = zone.roleReversal ? "，包含突破后角色互换" : "";
     return `结构降级：强度${zone.strength}/100，触碰${zone.touches}次、有效反应${zone.rejections}次${role}`;
-  }
-
-  function intradayPriority(candidateSign, compositeScore, h4, h1, m15) {
-    const h4Structure = h4?.intradayStructure;
-    const h1Structure = h1.intradayStructure;
-    const m15Structure = m15.intradayStructure;
-    const h4StrongAligned = h4Structure?.strong && h4Structure.sign === candidateSign;
-    const h4StrongOpposed = h4Structure?.strong && h4Structure.sign === -candidateSign;
-    const h1Aligned = h1Structure.sign === candidateSign;
-    const m15Triggered = m15Structure.triggerDirection === candidateSign;
-    if (h4StrongAligned && h1Aligned && m15Triggered && compositeScore >= 60) {
-      return { code: "A", label: "A · H4主趋势顺势", rank: 3 };
-    }
-    if (!h4StrongOpposed && h1Aligned && m15Triggered && compositeScore >= 55) {
-      return { code: "B", label: "B · H1结构机会", rank: 2 };
-    }
-    return { code: "C", label: "C · 等待价格触发", rank: 1 };
   }
 
   function buildIntradayStrategy(results, entryPrice) {
@@ -2827,75 +2975,30 @@
     const h4Structure = h4.intradayStructure;
     const h1Structure = h1.intradayStructure;
     const m15Structure = m15.intradayStructure;
-    const h4MainSign = h4Structure.strong ? h4Structure.sign : 0;
-    const candidateSign = h4MainSign || (h1Structure.strong ? h1Structure.sign : 0);
-    const longParts = [
-      intradayConditionScore(h4, 1),
-      intradayConditionScore(h1, 1),
-      intradayConditionScore(m15, 1)
-    ];
-    const shortParts = [
-      intradayConditionScore(h4, -1),
-      intradayConditionScore(h1, -1),
-      intradayConditionScore(m15, -1)
-    ];
-    const combine = (parts, field) => Math.round(parts[0][field] * 0.45 + parts[1][field] * 0.35 + parts[2][field] * 0.2);
-    const baseLongScore = combine(longParts, "baseScore");
-    const baseShortScore = combine(shortParts, "baseScore");
-    const longScore = combine(longParts, "score");
-    const shortScore = combine(shortParts, "score");
-    const scoreEdge = candidateSign > 0
-      ? baseLongScore - baseShortScore
-      : candidateSign < 0
-        ? baseShortScore - baseLongScore
-        : 0;
+    const h4MainSign = h4Structure.sign;
+    const candidateSign = h4MainSign || h1Structure.sign;
     const directionName = candidateSign > 0 ? "做多" : candidateSign < 0 ? "做空" : "等待";
     const candidateBias = candidateSign > 0 ? "bullish" : candidateSign < 0 ? "bearish" : "neutral";
-    const compositeScore = candidateSign > 0 ? longScore : candidateSign < 0 ? shortScore : Math.max(longScore, shortScore);
-    const baseCompositeScore = candidateSign > 0 ? baseLongScore : candidateSign < 0 ? baseShortScore : Math.max(baseLongScore, baseShortScore);
-    const stateSummary = `H4 ${h4Structure.label}（结构分${signed(h4Structure.score, 0)}），H1 ${h1Structure.label}（结构分${signed(h1Structure.score, 0)}），M15 ${m15Structure.label}；价格结构基础多${baseLongScore}、空${baseShortScore}，量能调整后多${longScore}、空${shortScore}。H4${h4MainSign ? "已确定日内主方向" : "暂未形成强方向"}；M15 Setup：${m15Structure.setupLabel}；触发：${m15Structure.triggerLabel}。`;
+    const stateSummary = `H4 ${h4Structure.label}，H1 ${h1Structure.label}，M15 ${m15Structure.label}。H4${h4MainSign ? `确定${directionName}主方向` : "暂未形成方向"}；M15 Setup：${m15Structure.setupLabel}；触发：${m15Structure.triggerLabel}。`;
     const waitForCandidate = (reason, trigger) => ({
       ...emptyIntradayStrategy(reason),
       candidateBias,
       directionLabel: candidateSign ? `观望 · 候选${directionName}` : "观望",
-      score: compositeScore,
-      longScore,
-      shortScore,
       trigger
     });
-    const h1RangeNoise = h1Structure.rangeRegime !== "directional" &&
-      m15Structure.setupType === "level-rejection";
-    const m15RangeNoise = m15Structure.rangeRegime !== "directional" &&
-      m15Structure.setupType !== "breakout-retest";
-
     if (!candidateSign) {
       return waitForCandidate(
-        `${stateSummary} H4尚无强方向，H1价格结构也未形成明确机会，暂不选择方向。`,
-        "等待H4形成明确主趋势，或H1形成强结构后由M15触发B级机会。"
+        `${stateSummary} H4与H1价格结构均未形成明确方向，暂不选择方向。`,
+        "等待H4形成主方向，或H1先形成价格结构后由M15触发机会。"
       );
     }
-    if (h4MainSign && h1Structure.sign !== candidateSign) {
+    if (h4MainSign && h1Structure.sign === -candidateSign) {
       return waitForCandidate(
-        `${stateSummary} H4已确定${directionName}主方向，但H1尚未形成同向机会，暂不提前入场。`,
+        `${stateSummary} H4已确定${directionName}主方向，但H1当前明确反向，暂不提前入场。`,
         `等待H1价格结构转为${candidateSign > 0 ? "偏多" : "偏空"}，再由M15确认触发。`
       );
     }
-    if (h1RangeNoise || m15RangeNoise) {
-      return waitForCandidate(
-        `${stateSummary} 当前触发仍处于${h1RangeNoise ? "H1区间噪声" : "M15区间噪声"}中，尚未形成可执行的脱离确认。`,
-        candidateSign > 0
-          ? "等待H1恢复方向结构，或M15有效向上突破后完成回测收复；单次区间内拒绝不执行。"
-          : "等待H1恢复方向结构，或M15有效向下跌破后完成回测转弱；单次区间内拒绝不执行。"
-      );
-    }
-    if (baseCompositeScore < STRATEGY_FILTERS.intradayMinimumBaseScore ||
-        scoreEdge < STRATEGY_FILTERS.intradayMinimumScoreEdge) {
-      return waitForCandidate(
-        `${stateSummary} 当前价格结构优势不足，暂不强行选择方向。`,
-        `等待结构分达到${STRATEGY_FILTERS.intradayMinimumBaseScore}分，且候选方向真实领先另一方向${STRATEGY_FILTERS.intradayMinimumScoreEdge}分以上。`
-      );
-    }
-    if (h1Structure.sign !== candidateSign) {
+    if (!h4MainSign && h1Structure.sign !== candidateSign) {
       return waitForCandidate(
         `${stateSummary} H1尚未形成与候选方向一致的价格结构。`,
         `等待H1摆动结构、区间位置和最近收盘共同转为${candidateSign > 0 ? "偏多" : "偏空"}。`
@@ -2910,13 +3013,9 @@
       );
     }
 
-    const priority = intradayPriority(candidateSign, compositeScore, h4, h1, m15);
-    if (priority.code === "C") {
-      return waitForCandidate(
-        `${stateSummary} 已出现方向倾向，但结构强度不足以进入A/B级执行评估。`,
-        "等待H1结构增强并保留M15同向触发。"
-      );
-    }
+    const priority = h4MainSign && h1Structure.sign === candidateSign
+      ? { code: "A", label: "A · H4/H1方向顺势" }
+      : { code: "B", label: h4MainSign ? "B · H4方向＋M15触发" : "B · H1价格机会" };
     const entry = Number.isFinite(entryPrice) ? entryPrice : m15.price;
     const levels = calculateIntradayLevels(candidateBias, entry, h4, h1, m15);
     const executionQuality = evaluateExecutionQuality(levels, candidateBias);
@@ -2941,9 +3040,6 @@
         actionable: false,
         directionLabel: `观望 · 候选${directionName}`,
         priority: "等待 · 成本或盈亏比不足",
-        score: compositeScore,
-        longScore,
-        shortScore,
         ...levels,
         summary: `${stateSummary} ${priority.code}级候选未通过风险保护：原始盈亏比1:${levels.rewardRisk1.toFixed(2)}，${executionQuality.label}，成本/风险=${executionQuality.costToRisk.toFixed(2)}。`,
         trigger: `等待入场价格改善、止损结构更清晰或目标空间扩大后再评估。${structuralNote}`
@@ -2955,11 +3051,8 @@
       actionable: true,
       directionLabel: directionName,
       priority: priority.label,
-      score: compositeScore,
-      longScore,
-      shortScore,
       ...levels,
-      summary: `${stateSummary} ${directionName}条件达到${priority.code}级，并通过成本保护（${executionQuality.label}）。${structuralNote}`,
+      summary: `${stateSummary} ${directionName}方向、H1位置与M15触发一致，并通过成本保护（${executionQuality.label}）。${structuralNote}`,
       trigger
     };
   }
@@ -3017,23 +3110,9 @@
       ? m15Structure.supportRejection
       : m15Structure.resistanceRejection;
     if (!rejectionTriggered || m15Structure.triggerDirection !== counterSign) return null;
-    const h1MainExpansion = h1Structure.breakoutDirection === mainSign &&
-      Number.isFinite(h1.volume?.ratio) && h1.volume.ratio >= 1.35;
-    const m15MainExpansion = m15Structure.breakoutDirection === mainSign &&
-      Number.isFinite(m15.volume?.ratio) && m15.volume.ratio >= 1.35;
+    const h1MainExpansion = h1Structure.breakoutDirection === mainSign;
+    const m15MainExpansion = m15Structure.breakoutDirection === mainSign;
     if (h1MainExpansion || m15MainExpansion) return null;
-
-    const conditions = [
-      intradayConditionScore(h4, counterSign),
-      intradayConditionScore(h1, counterSign),
-      intradayConditionScore(m15, counterSign)
-    ];
-    const combine = (field) => Math.round(
-      conditions[0][field] * 0.15 + conditions[1][field] * 0.3 + conditions[2][field] * 0.55
-    );
-    const baseScore = combine("baseScore");
-    const score = Math.round(clamp(combine("score") + Math.min(6, Math.max(0, location.zone.strength - 65) * 0.2), 0, 100));
-    if (baseScore < 55) return null;
 
     let levels = calculateIntradayLevels(counterBias, entry, h4, h1, m15);
     levels = tightenCounterTrendLevels(levels, counterSign, entry, location.zone, m15);
@@ -3055,11 +3134,8 @@
       actionable: true,
       directionLabel: `${patternName}${counterDirection}`,
       priority: "B · 逆势价格机会",
-      score,
-      longScore: counterSign > 0 ? score : null,
-      shortScore: counterSign < 0 ? score : null,
       ...levels,
-      summary: `H4仍以${mainDirection}为主（结构分${signed(h4Structure.score, 0)}），但价格进入${zoneLabel}的高强度${location.side === "support" ? "支撑" : "压力"}区（${location.zone.strength}/100），M15形成${m15Structure.setupLabel}并由${m15Structure.triggerLabel}触发，因此生成${patternName}${counterDirection}。成交量只作确认加分，MA、MACD与RSI均不决定该方向。${executionQuality.label}。`,
+      summary: `H4仍以${mainDirection}为主，但价格进入${zoneLabel}的关键${location.side === "support" ? "支撑" : "压力"}区，M15形成${m15Structure.setupLabel}并由${m15Structure.triggerLabel}触发，因此生成${patternName}${counterDirection}。成交量、MACD、RSI和策略评分均不参与该判断。${executionQuality.label}。`,
       trigger: `Setup：${m15Structure.setupLabel}；执行触发：${m15Structure.triggerLabel}。仅按${patternName}处理，不视为H4趋势反转；目标优先取最近反向结构区域。${invalidation}`
     };
   }
@@ -3071,68 +3147,427 @@
       strategyLabel: "顺势主策略"
     };
     const counterTrend = buildCounterTrendIntradayStrategy(results, entryPrice);
-    return (counterTrend ? [primary, counterTrend] : [primary]).map((strategy) => ({
-      ...strategy,
-      portfolioRule: intradayPortfolioRiskRule()
-    }));
+    return counterTrend ? [primary, counterTrend] : [primary];
+  }
+
+  function smcZoneLabel(zone) {
+    return zone ? `${analysisPriceFormat.format(zone.low)}–${analysisPriceFormat.format(zone.high)}` : "尚未识别";
+  }
+
+  function smcTargetCandidates(sign, h4, h1) {
+    const primary = sign > 0
+      ? [h1.smc.bearishFvg, h1.smc.bearishOrderBlock, ...(h1.resistanceLevels || []), ...(h4.resistanceLevels || [])]
+      : [h1.smc.bullishFvg, h1.smc.bullishOrderBlock, ...(h1.supportLevels || []), ...(h4.supportLevels || [])];
+    return primary.filter(Boolean);
+  }
+
+  function mergeExecutionZones(primary, secondary, atr, source) {
+    if (!primary) return secondary ? { ...secondary } : null;
+    if (!secondary) return { ...primary };
+    const primaryCenter = (primary.low + primary.high) / 2;
+    const secondaryCenter = (secondary.low + secondary.high) / 2;
+    const near = Math.abs(primaryCenter - secondaryCenter) <= atr * 0.5;
+    const overlaps = primary.low <= secondary.high && primary.high >= secondary.low;
+    if (!near && !overlaps) return { ...primary };
+    const intersectionLow = Math.max(primary.low, secondary.low);
+    const intersectionHigh = Math.min(primary.high, secondary.high);
+    const useIntersection = intersectionLow < intersectionHigh;
+    const low = useIntersection ? intersectionLow : Math.min(primary.low, secondary.low);
+    const high = useIntersection ? intersectionHigh : Math.max(primary.high, secondary.high);
+    return {
+      ...primary,
+      low,
+      high,
+      center: (low + high) / 2,
+      source,
+      confluenceSource: secondary.source || "关键结构区"
+    };
+  }
+
+  function buildH1ExecutionZone(sign, h1) {
+    if (!sign || !h1?.smc) return null;
+    const orderBlock = sign > 0 ? h1.smc.bullishOrderBlock : h1.smc.bearishOrderBlock;
+    const fvg = sign > 0 ? h1.smc.bullishFvg : h1.smc.bearishFvg;
+    const candidatePositionZone = sign > 0 ? h1.supportLevel : h1.resistanceLevel;
+    const positionZone = candidatePositionZone?.eligible && candidatePositionZone.strength >= KEY_ZONE_RULES.minimumStrength
+      ? candidatePositionZone
+      : null;
+    const structureZone = mergeExecutionZones(
+      orderBlock,
+      fvg,
+      h1.atr,
+      `${sign > 0 ? "看涨" : "看跌"}Order Block＋FVG`
+    );
+    const positionSource = `${sign > 0 ? "支撑" : "压力"}关键结构区`;
+    if (!positionZone) return structureZone;
+    const coreZone = { ...positionZone, source: positionSource };
+    if (!structureZone) return coreZone;
+    return mergeExecutionZones(
+      coreZone,
+      structureZone,
+      h1.atr,
+      `${positionSource}＋${structureZone.source}`
+    );
+  }
+
+  function buildH1ExecutionZones(sign, h1) {
+    const primary = buildH1ExecutionZone(sign, h1);
+    if (!primary) return [];
+    const primaryZone = { ...primary, role: "primary" };
+    const profileZones = (sign > 0 ? h1.supportLevels || [] : h1.resistanceLevels || [])
+      .filter((zone) => zone.eligible && zone.strength >= KEY_ZONE_RULES.minimumStrength);
+    const orderBlock = sign > 0 ? h1.smc.bullishOrderBlock : h1.smc.bearishOrderBlock;
+    const fvg = sign > 0 ? h1.smc.bullishFvg : h1.smc.bearishFvg;
+    const structureZone = mergeExecutionZones(
+      orderBlock,
+      fvg,
+      h1.atr,
+      `${sign > 0 ? "看涨" : "看跌"}Order Block＋FVG`
+    );
+    const primaryDistance = distanceToLevelZone(h1.price, primaryZone);
+    const separation = Math.max(h1.atr * 0.35, h1.price * 0.00025);
+    const secondary = [...profileZones, structureZone]
+      .filter(Boolean)
+      .map((zone) => ({ ...zone, center: Number.isFinite(zone.center) ? zone.center : (zone.low + zone.high) / 2 }))
+      .filter((zone) => sign > 0 ? zone.center <= h1.price + h1.atr * 0.2 : zone.center >= h1.price - h1.atr * 0.2)
+      .filter((zone) => Math.abs(zone.center - primaryZone.center) > separation)
+      .filter((zone) => distanceToLevelZone(h1.price, zone) + h1.atr * 0.05 < primaryDistance)
+      .sort((a, b) => distanceToLevelZone(h1.price, a) - distanceToLevelZone(h1.price, b))[0];
+    return secondary
+      ? [primaryZone, { ...secondary, role: "secondary", source: `临近${secondary.source || "结构区"}` }]
+      : [primaryZone];
+  }
+
+  function recentZoneTouchIndexes(zone, candles, atr, lookback = 14) {
+    if (!zone || !candles?.length) return [];
+    const tolerance = atr * 0.12;
+    const start = Math.max(0, candles.length - lookback);
+    const indexes = [];
+    for (let index = start; index < candles.length; index += 1) {
+      const candle = candles[index];
+      if (candle.low <= zone.high + tolerance && candle.high >= zone.low - tolerance) indexes.push(index);
+    }
+    return indexes;
+  }
+
+  function detectM15EarlyTrigger(sign, zone, candles, atr, lookback = 14) {
+    if (!sign || !zone || !candles?.length) return null;
+    const start = Math.max(3, candles.length - lookback);
+    let latest = null;
+    for (let index = start; index < candles.length - 1; index += 1) {
+      const candle = candles[index];
+      const touchesZone = candle.low <= zone.high + atr * 0.12 && candle.high >= zone.low - atr * 0.12;
+      if (!touchesZone) continue;
+      const range = Math.max(candle.high - candle.low, atr * 0.03);
+      const body = Math.max(Math.abs(candle.close - candle.open), atr * 0.02);
+      const lowerWick = Math.min(candle.open, candle.close) - candle.low;
+      const upperWick = candle.high - Math.max(candle.open, candle.close);
+      const strongClose = sign > 0
+        ? (candle.close - candle.low) / range >= 0.62
+        : (candle.high - candle.close) / range >= 0.62;
+      const rejectionWick = sign > 0 ? lowerWick : upperWick;
+      if (!strongClose || rejectionWick < Math.max(body * 0.9, range * 0.24)) continue;
+      const local = candles.slice(Math.max(0, index - 3), index + 1);
+      const breakLevel = sign > 0
+        ? Math.max(...local.map((item) => item.high))
+        : Math.min(...local.map((item) => item.low));
+      const breakIndex = candles.findIndex((item, candidateIndex) => candidateIndex > index && (
+        sign > 0 ? item.close > breakLevel + atr * 0.02 : item.close < breakLevel - atr * 0.02
+      ));
+      if (breakIndex > index) {
+        latest = { direction: sign, rejectionIndex: index, breakIndex, breakLevel, time: candles[breakIndex].t };
+      }
+    }
+    return latest;
+  }
+
+  function evaluateM15ZoneTrigger(sign, zone, m15) {
+    const candles = state.analysisFrames.m15 || [];
+    const touchIndexes = recentZoneTouchIndexes(zone, candles, m15.atr);
+    const sweep = sign > 0 ? m15.smc.bullishSweep : m15.smc.bearishSweep;
+    const choch = sign > 0 ? m15.smc.bullishChoch : m15.smc.bearishChoch;
+    const touchedBeforeSweep = Boolean(sweep && touchIndexes.some((index) => index <= sweep.index));
+    const standardSequence = Boolean(touchedBeforeSweep && choch && choch.index >= sweep.index);
+    const standardAgeBars = standardSequence ? candles.length - 1 - choch.index : Number.POSITIVE_INFINITY;
+    const standardConfirmed = standardSequence && standardAgeBars < SMC_EXECUTION_RULES.triggerValidBars;
+    const earlyTrigger = detectM15EarlyTrigger(sign, zone, candles, m15.atr);
+    const earlyAgeBars = earlyTrigger ? candles.length - 1 - earlyTrigger.breakIndex : Number.POSITIVE_INFINITY;
+    const earlyConfirmed = Boolean(earlyTrigger && earlyAgeBars < SMC_EXECUTION_RULES.triggerValidBars);
+    const triggerType = standardConfirmed ? "standard" : earlyConfirmed ? "early" : null;
+    const triggerIndex = triggerType === "standard" ? choch.index : triggerType === "early" ? earlyTrigger.breakIndex : null;
+    const triggerTime = Number.isInteger(triggerIndex) ? candles[triggerIndex]?.t : null;
+    return {
+      zone,
+      zoneTouched: touchIndexes.length > 0,
+      touchIndexes,
+      sweep,
+      choch,
+      standardConfirmed,
+      earlyTrigger,
+      earlyConfirmed,
+      triggerReady: standardConfirmed || earlyConfirmed,
+      triggerType,
+      triggerIndex,
+      triggerTime,
+      triggerAgeBars: Math.min(standardAgeBars, earlyAgeBars),
+      triggerId: triggerType && Number.isFinite(triggerTime) ? `${triggerType}-${sign}-${triggerTime}` : null
+    };
+  }
+
+  function calculateSmcStrategyLevels(sign, entryZone, h4, h1, m15, sweep = null) {
+    if (!entryZone) return null;
+    const entryLow = Math.min(entryZone.low, entryZone.high);
+    const entryHigh = Math.max(entryZone.low, entryZone.high);
+    const entry = sign > 0 ? entryHigh : entryLow;
+    const atr = Math.max(m15.atr, entry * 0.00035);
+    const minimumRisk = Math.max(atr * 0.7, h1.atr * 0.15, entry * 0.0008);
+    const structuralStop = sign > 0
+      ? Math.min(entryLow - atr * 0.2, Number.isFinite(sweep?.extreme) ? sweep.extreme - atr * 0.1 : Number.POSITIVE_INFINITY)
+      : Math.max(entryHigh + atr * 0.2, Number.isFinite(sweep?.extreme) ? sweep.extreme + atr * 0.1 : Number.NEGATIVE_INFINITY);
+    const stopLoss = sign > 0
+      ? Math.min(structuralStop, entry - minimumRisk)
+      : Math.max(structuralStop, entry + minimumRisk);
+    const risk = Math.max(atr * 0.35, Math.abs(entry - stopLoss));
+    const roundTripCost = entry * STRATEGY_FILTERS.estimatedRoundTripCostRate;
+    const minimumTargetDistance = Math.max(
+      atr * 0.2,
+      roundTripCost + risk * SMC_EXECUTION_RULES.minimumNetRewardRisk,
+      entry * (STRATEGY_FILTERS.estimatedRoundTripCostRate + SMC_EXECUTION_RULES.minimumNetProfitRate)
+    );
+    const candidatePrices = smcTargetCandidates(sign, h4, h1)
+      .map((zone) => sign > 0 ? zone.low : zone.high)
+      .filter((price) => Number.isFinite(price) && (sign > 0 ? price > entry + minimumTargetDistance : price < entry - minimumTargetDistance))
+      .sort((a, b) => sign > 0 ? a - b : b - a)
+      .filter((price, index, values) => index === 0 || Math.abs(price - values[index - 1]) > atr * 0.18);
+    const projected = (netMultiple) => entry + sign * (risk * netMultiple + roundTripCost);
+    const takeProfit = candidatePrices[0] ?? projected(1.2);
+    const nextStructuralTarget = candidatePrices.find((price) => sign > 0
+      ? price > takeProfit + atr * 0.2
+      : price < takeProfit - atr * 0.2);
+    const targetCandidate = nextStructuralTarget ?? projected(2.0);
+    const target = sign > 0
+      ? Math.max(targetCandidate, takeProfit + atr * 0.3)
+      : Math.min(targetCandidate, takeProfit - atr * 0.3);
+    const externalLiquidity = sign > 0 ? h4.smc.externalHigh : h4.smc.externalLow;
+    const target3Candidate = Number.isFinite(externalLiquidity) && (sign > 0
+      ? externalLiquidity > target + atr * 0.2
+      : externalLiquidity < target - atr * 0.2)
+      ? externalLiquidity
+      : projected(3.0);
+    const target3 = sign > 0
+      ? Math.max(target3Candidate, target + atr * 0.3)
+      : Math.min(target3Candidate, target - atr * 0.3);
+    return {
+      entryLow,
+      entryHigh,
+      stopLoss,
+      takeProfit,
+      target,
+      target3,
+      referenceEntry: entry,
+      risk,
+      estimatedRoundTripCost: roundTripCost,
+      rewardRisk1: Math.max(0, sign * (takeProfit - entry) - roundTripCost) / risk,
+      rewardRisk2: Math.max(0, sign * (target - entry) - roundTripCost) / risk,
+      rewardRisk3: Math.max(0, sign * (target3 - entry) - roundTripCost) / risk,
+      costViable: sign * (takeProfit - entry) - roundTripCost >= Math.max(
+        risk * SMC_EXECUTION_RULES.minimumNetRewardRisk,
+        entry * SMC_EXECUTION_RULES.minimumNetProfitRate
+      ),
+      levelNote: `入场依据H1 ${entryZone.source || "Order Block"} ${smcZoneLabel(entryZone)}；止损置于订单块与扫流动性极值之外；TP1取最近供应/需求区，TP2取下一结构区，TP3取H4外部流动性或3R延伸。`
+    };
+  }
+
+  function smcStageScores(sign, h4, h1, m15, entryZones) {
+    const zones = (Array.isArray(entryZones) ? entryZones : [entryZones]).filter(Boolean);
+    const evaluations = zones.map((zone) => evaluateM15ZoneTrigger(sign, zone, m15));
+    const selected = evaluations.find((item) => item.triggerReady) || evaluations.find((item) => item.zoneTouched) || evaluations[0] || null;
+    const zoneTouched = evaluations.some((item) => item.zoneTouched);
+    const triggerReady = evaluations.some((item) => item.triggerReady);
+    const optionalMomentum = sign > 0
+      ? m15.smc.rsi >= 50 && m15.smc.rsi >= m15.smc.previousRsi && m15.price >= m15.smc.ema20
+      : m15.smc.rsi <= 50 && m15.smc.rsi <= m15.smc.previousRsi && m15.price <= m15.smc.ema20;
+    const h4DirectionReady = Boolean(sign && h4.smc.trendSign === sign && h4.smc.confirmedBos?.direction === sign);
+    const h1Score = zones.length ? zoneTouched ? 5 : zones.length > 1 ? 4 : 3.5 : 0;
+    const m15Score = triggerReady ? 5 : zoneTouched ? 2 : 0;
+    const h4Score = h4DirectionReady ? 5 : sign ? 2.5 : 0;
+    return {
+      h4Score,
+      h1Score,
+      m15Score,
+      overall: Math.round(h4Score / 5 * 35 + h1Score / 5 * 30 + m15Score / 5 * 35),
+      h4DirectionReady,
+      zoneTouched,
+      triggerReady,
+      entryZone: selected?.zone || zones[0] || null,
+      selectedZoneRole: selected?.zone?.role || "primary",
+      zoneEvaluations: evaluations,
+      sweep: selected?.sweep || null,
+      choch: selected?.choch || null,
+      sequenceConfirmed: Boolean(selected?.standardConfirmed),
+      earlyTrigger: selected?.earlyTrigger || null,
+      earlyConfirmed: Boolean(selected?.earlyConfirmed),
+      triggerType: selected?.triggerType || null,
+      triggerId: selected?.triggerId || null,
+      triggerAgeBars: selected?.triggerAgeBars ?? null,
+      optionalMomentum
+    };
+  }
+
+  function buildSmcPrimaryStrategy(results) {
+    const { h4, h1, m15 } = results;
+    if (!h4?.smc || !h1?.smc || !m15?.smc) return emptyIntradayStrategy("等待SMC多周期数据完成计算。");
+    const sign = h4.smc.trendSign || h4.smc.candidateSign;
+    if (!sign) return emptyIntradayStrategy("H4价格与EMA200、BOS方向尚未形成共振，暂不选择主方向。");
+    const bias = sign > 0 ? "bullish" : "bearish";
+    const direction = sign > 0 ? "做多" : "做空";
+    const entryZones = buildH1ExecutionZones(sign, h1);
+    const stages = smcStageScores(sign, h4, h1, m15, entryZones);
+    const entryZone = stages.entryZone;
+    const levels = calculateSmcStrategyLevels(sign, entryZone, h4, h1, m15, stages.sweep);
+    const h4Ready = stages.h4DirectionReady;
+    const h1Ready = entryZones.length > 0;
+    const triggerReady = stages.triggerReady;
+    const costViable = Boolean(levels?.costViable);
+    const actionable = h4Ready && h1Ready && triggerReady && costViable;
+    const waiting = [];
+    if (!h4Ready) waiting.push("H4等待BOS建立方向");
+    if (!entryZones.length) waiting.push("H1等待执行区域");
+    if (!stages.zoneTouched) waiting.push("等待价格进入H1主区或次级区");
+    if (stages.zoneTouched && !stages.triggerReady) waiting.push("M15等待标准或早期结构触发");
+    if (levels && !costViable) waiting.push("净收益空间不足以覆盖成本");
+    const bosText = h4Ready && h4.smc.confirmedBos
+      ? `${h4.smc.confirmedBos.direction > 0 ? "Bullish" : "Bearish"} BOS延续`
+      : h4.smc.directionInvalidation ? "原方向失效，等待新BOS" : "等待BOS";
+    const zoneSummary = entryZones.length
+      ? entryZones.map((zone) => `${zone.role === "secondary" ? "次级" : "主区"}${smcZoneLabel(zone)}`).join("；")
+      : "等待执行区";
+    const triggerSummary = stages.triggerType === "standard"
+      ? "扫单＋CHoCH已确认"
+      : stages.triggerType === "early"
+        ? "拒绝K线＋微结构突破已确认"
+        : "等待两类触发之一";
+    const summary = `H4候选${direction}（${bosText}）；H1 ${zoneSummary}；M15 ${triggerSummary}。`;
+    const waitingText = `${waiting.slice(0, 3).join("；")}${waiting.length > 3 ? `；另${waiting.length - 3}项待确认` : ""}`;
+    const invalidationText = Number.isFinite(levels?.stopLoss) ? `失效：触及止损 ${strategyPrice(levels.stopLoss)}。` : "";
+    const trigger = actionable
+      ? `执行：价格进入H1${stages.selectedZoneRole === "secondary" ? "次级区" : "主区"}后，M15已完成${stages.triggerType === "early" ? "拒绝K线＋微结构突破" : "扫单＋同向CHoCH"}。${invalidationText}`
+      : `等待：${waitingText || "多周期条件完成"}。${invalidationText}`;
+    return {
+      bias,
+      candidateBias: bias,
+      strategyType: "primary",
+      strategyLabel: "SMC顺势主策略",
+      actionable,
+      directionLabel: actionable ? direction : `WAIT · 候选${direction}`,
+      priority: actionable ? "执行 · 结构确认" : "WAIT · 等待条件",
+      score: stages.overall,
+      stageScores: stages,
+      triggerId: stages.triggerId,
+      ...(levels || {}),
+      summary,
+      trigger
+    };
+  }
+
+  function waitingSmcAlternative(reason, sign = 0, mainSign = 0) {
+    const direction = sign > 0 ? "做多" : sign < 0 ? "做空" : "";
+    const bias = sign > 0 ? "bullish" : sign < 0 ? "bearish" : "neutral";
+    return {
+      bias,
+      candidateBias: bias,
+      strategyType: "countertrend",
+      strategyLabel: "SMC备选逆势策略",
+      actionable: false,
+      directionLabel: sign ? `WAIT · 备选${direction}` : "WAIT · 等待H4方向",
+      priority: mainSign ? "WAIT · 等待反向触发" : "WAIT · 等待主方向",
+      score: 0,
+      entryLow: null,
+      entryHigh: null,
+      stopLoss: null,
+      takeProfit: null,
+      target: null,
+      target3: null,
+      rewardRisk1: null,
+      rewardRisk2: null,
+      rewardRisk3: null,
+      summary: reason,
+      trigger: mainSign
+        ? "等待反向H1执行区形成，之后再由M15扫单＋反向CHoCH确认。"
+        : "等待H4由新BOS重新建立主方向；主方向明确后才定义逆势方向与点位。"
+    };
+  }
+
+  function buildSmcAlternativeStrategy(results) {
+    const { h4, h1, m15 } = results;
+    if (!h4?.smc || !h1?.smc || !m15?.smc) {
+      return waitingSmcAlternative("等待H4、H1与M15数据，逆势策略卡保持显示。");
+    }
+    const mainSign = h4?.smc?.trendSign;
+    if (!mainSign) {
+      const reason = h4.smc.directionInvalidation
+        ? "H4原方向已经失效，正在等待新BOS；当前不提前定义逆势方向。"
+        : "H4尚未建立有效主方向，当前无法定义逆势方向。";
+      return waitingSmcAlternative(reason);
+    }
+    const sign = -mainSign;
+    const bias = sign > 0 ? "bullish" : "bearish";
+    const direction = sign > 0 ? "做多" : "做空";
+    const entryZone = buildH1ExecutionZone(sign, h1);
+    if (!entryZone) {
+      return waitingSmcAlternative(
+        `H4主方向${mainSign > 0 ? "做多" : "做空"}，但H1尚未形成可用的反向执行区。`,
+        sign,
+        mainSign
+      );
+    }
+    const evaluation = evaluateM15ZoneTrigger(sign, entryZone, m15);
+    const zoneTouched = evaluation.zoneTouched;
+    const sweep = evaluation.sweep;
+    const choch = evaluation.choch;
+    const sequenceConfirmed = evaluation.standardConfirmed;
+    const levels = calculateSmcStrategyLevels(sign, entryZone, h4, h1, m15, null);
+    const costViable = Boolean(levels?.costViable);
+    const actionable = zoneTouched && sequenceConfirmed && costViable;
+    const score = Math.round((entryZone ? 25 : 0) + (zoneTouched ? 25 : 0) + (sweep ? 20 : 0) + (sequenceConfirmed ? 30 : 0));
+    return {
+      bias,
+      candidateBias: bias,
+      strategyType: "countertrend",
+      strategyLabel: "SMC备选逆势策略",
+      actionable,
+      directionLabel: actionable ? `备选${direction}` : `WAIT · 备选${direction}`,
+      priority: actionable ? "备选 · 结构确认" : "WAIT · 等待反向触发",
+      score,
+      triggerId: evaluation.triggerId,
+      ...(levels || {}),
+      summary: `H4主方向${mainSign > 0 ? "做多" : "做空"}；备选${direction}仅关注 ${smcZoneLabel(entryZone)}。`,
+      trigger: actionable
+        ? `执行：价格进入关注区，M15完成扫单＋${sign > 0 ? "看涨" : "看跌"}CHoCH。失效：触及止损 ${strategyPrice(levels?.stopLoss)}。`
+        : `等待：价格进区后完成扫单＋${sign > 0 ? "看涨" : "看跌"}CHoCH。失效：触及止损 ${strategyPrice(levels?.stopLoss)}。`
+    };
+  }
+
+  function buildSmcIntradayStrategies(results) {
+    const primary = buildSmcPrimaryStrategy(results);
+    const alternative = buildSmcAlternativeStrategy(results);
+    return [primary, alternative].filter(Boolean);
   }
 
   function strategyPrice(value) {
-    return Number.isFinite(value) ? priceFormat.format(value) : "—";
-  }
-
-  function intradayRsiRisk(results, strategy) {
-    const rsi = results?.m15?.rsi;
-    if (!Number.isFinite(rsi)) {
-      return { tone: "neutral", text: "M15 RSI数据不足；该提示不参与方向、评分或入场判断。" };
-    }
-    const value = rsi.toFixed(2);
-    const candidate = strategy.candidateBias === "bullish"
-      ? "当前候选方向为做多，"
-      : strategy.candidateBias === "bearish"
-        ? "当前候选方向为做空，"
-        : "当前尚无候选方向，";
-    if (rsi >= 70) {
-      return {
-        tone: "danger",
-        text: `M15 RSI=${value}，处于超买区。${candidate}做多需防范追涨与高位回落；超买不等于立即做空，仍以结构、位置和价格触发为准。`
-      };
-    }
-    if (rsi >= 60) {
-      return {
-        tone: "warning",
-        text: `M15 RSI=${value}，短线偏热。${candidate}若计划做多，避免远离入场区追价；仅作风险提示，不计入策略评分。`
-      };
-    }
-    if (rsi <= 30) {
-      return {
-        tone: "cool",
-        text: `M15 RSI=${value}，处于超卖区。${candidate}做空需防范追跌与快速反弹；超卖不等于立即做多，仍以结构、位置和价格触发为准。`
-      };
-    }
-    if (rsi <= 40) {
-      return {
-        tone: "cool",
-        text: `M15 RSI=${value}，短线偏弱并接近超卖。${candidate}若计划做空，避免远离入场区追价；仅作风险提示，不计入策略评分。`
-      };
-    }
-    return {
-      tone: "neutral",
-      text: `M15 RSI=${value}，处于中性区，暂无明显追涨或追跌风险；该提示不参与方向、评分或入场判断。`
-    };
+    return Number.isFinite(value) ? analysisPriceFormat.format(value) : "—";
   }
 
   function intradayStrategyFingerprint(strategy, m15) {
     const strategyType = strategy?.strategyType || "primary";
     if (!strategy?.actionable) return `waiting-${strategyType}-${strategy?.candidateBias || "neutral"}`;
+    if (strategy.triggerId) return `${strategyType}-${strategy.bias}-${strategy.triggerId}`;
     const entryCenter = (strategy.entryLow + strategy.entryHigh) / 2;
     const bucketSize = Math.max((m15?.atr || 0) * 0.6, entryCenter * 0.0005, 0.000001);
-    const entryBucket = Math.round(entryCenter / bucketSize);
-    const priorityCode = String(strategy.priority || "").split("·")[0].trim();
-    return `${strategyType}-${strategy.bias}-${priorityCode}-${entryBucket}`;
+    return `${strategyType}-${strategy.bias}-fallback-${Math.round(entryCenter / bucketSize)}`;
   }
 
-  function createIntradayStrategyRecord(strategy, rsiRisk, entryPrice, m15) {
+  function createIntradayStrategyRecord(strategy, entryPrice, m15) {
     const generatedAt = Date.now();
     return {
       id: `strategy-${state.symbol}-${generatedAt}-${Math.random().toString(36).slice(2, 7)}`,
@@ -3140,8 +3575,7 @@
       generatedAt,
       referencePrice: Number.isFinite(entryPrice) ? entryPrice : null,
       fingerprint: intradayStrategyFingerprint(strategy, m15),
-      strategy,
-      rsiRisk
+      strategy
     };
   }
 
@@ -3182,7 +3616,7 @@
   function renderActiveSupplementalStrategies(records) {
     const container = $("active-intraday-strategies");
     if (!container) return;
-    const supplemental = records.slice(1).filter((record) => record.strategy.actionable);
+    const supplemental = records.slice(1);
     container.hidden = supplemental.length === 0;
     container.innerHTML = supplemental.map((record) => {
       const strategy = record.strategy;
@@ -3190,11 +3624,11 @@
       return `
         <article class="strategy-list-item" data-bias="${escapeStrategyHtml(strategy.bias)}" data-strategy-id="${escapeStrategyHtml(record.id)}">
           <div class="strategy-head">
-            <div><h3>${escapeStrategyHtml(strategy.strategyLabel)}</h3><p>与顺势主策略并列 · 独立止损与失效条件</p></div>
-            <button class="strategy-action primary" type="button" data-lock-strategy-id="${escapeStrategyHtml(record.id)}">${locked ? "更新这条锁定" : "锁定这条策略"}</button>
+            <div><h3>${escapeStrategyHtml(strategy.strategyLabel)}</h3><p>供应/需求区备选方案 · 独立止损与失效条件</p></div>
+            <button class="strategy-action primary" type="button" data-lock-strategy-id="${escapeStrategyHtml(record.id)}" ${strategy.actionable ? "" : "disabled"}>${strategy.actionable ? locked ? "更新这条锁定" : "锁定这条策略" : "等待触发"}</button>
           </div>
           ${strategyMetricsMarkup(strategy)}
-          ${strategyNotesMarkup(strategy, record.rsiRisk)}
+          ${strategyNotesMarkup(strategy)}
         </article>`;
     }).join("");
   }
@@ -3202,39 +3636,30 @@
   function renderIntradayStrategy(results = state.analysisResults) {
     const hasFrames = Boolean(results?.h4 && results?.h1 && results?.m15);
     const entryPrice = Number.isFinite(state.book?.mid) ? state.book.mid : results?.m15?.price;
-    const strategies = buildIntradayStrategies(results || {}, entryPrice);
+    const strategies = buildSmcIntradayStrategies(results || {}, entryPrice);
     const strategy = strategies[0];
-    const records = strategies.map((item) => {
-      const rsiRisk = intradayRsiRisk(results, item);
-      return createIntradayStrategyRecord(item, rsiRisk, entryPrice, results?.m15);
-    });
+    renderSmcExecutionOverview(results || {}, strategy);
+    const records = strategies.map((item) => createIntradayStrategyRecord(item, entryPrice, results?.m15));
     const card = $("intraday-strategy");
     card.dataset.bias = strategy.bias;
     $("primary-intraday-strategy").dataset.bias = strategy.bias;
     $("strategy-direction").textContent = strategy.directionLabel;
     $("strategy-priority").textContent = strategy.priority;
-    $("strategy-score").textContent = Number.isFinite(strategy.score)
-      ? `${strategy.score} / 100`
-      : Number.isFinite(strategy.longScore) && Number.isFinite(strategy.shortScore)
-        ? `多${strategy.longScore} · 空${strategy.shortScore}`
-        : "—";
+    $("strategy-score").textContent = Number.isFinite(strategy.score) ? `${Math.round(strategy.score)} / 100` : "—";
     $("strategy-entry").textContent = Number.isFinite(strategy.entryLow) && Number.isFinite(strategy.entryHigh)
       ? `${strategyPrice(strategy.entryLow)}–${strategyPrice(strategy.entryHigh)}`
       : "—";
     $("strategy-stop").textContent = strategyPrice(strategy.stopLoss);
-    const takeProfitValues = [strategy.takeProfit, strategy.target]
+    const takeProfitValues = [strategy.takeProfit, strategy.target, strategy.target3]
       .filter(Number.isFinite)
       .map(strategyPrice);
     $("strategy-take-profit").textContent = takeProfitValues.length ? takeProfitValues.join(" / ") : "—";
-    $("strategy-rr").textContent = Number.isFinite(strategy.rewardRisk1) && Number.isFinite(strategy.rewardRisk2)
-      ? `1:${strategy.rewardRisk1.toFixed(2)} / 1:${strategy.rewardRisk2.toFixed(2)}`
+    const rewardRisks = [strategy.rewardRisk1, strategy.rewardRisk2, strategy.rewardRisk3].filter(Number.isFinite);
+    $("strategy-rr").textContent = rewardRisks.length
+      ? rewardRisks.map((value) => `1:${Math.round(value)}`).join(" / ")
       : "—";
     $("strategy-summary").textContent = strategy.summary;
     $("strategy-trigger").textContent = strategy.trigger;
-    $("strategy-portfolio-rule").textContent = strategy.portfolioRule || intradayPortfolioRiskRule();
-    const rsiRisk = records[0].rsiRisk;
-    $("strategy-rsi-risk-box").dataset.tone = rsiRisk.tone;
-    $("strategy-rsi-risk").textContent = rsiRisk.text;
     updateIntradayStrategyFeed(records);
     renderActiveSupplementalStrategies(state.currentIntradayStrategies);
     updateLockStrategyButton();
@@ -3243,312 +3668,150 @@
     const activeCopy = activeCount > 1 ? ` · 当前并列${activeCount}条策略` : "";
     const historyCopy = historyCount ? ` · 保留此前${historyCount}条策略` : "";
     $("strategy-status").textContent = hasFrames
-      ? `日内去均线化：H4确定主方向，强支撑压力配合M15反向触发时可并列生成逆势回调策略；${Number.isFinite(state.book?.mid) ? "入场区随实时中间价更新" : "暂用M15最近收盘作为入场参考"}${activeCopy}${historyCopy} · ${formatTime(Date.now())}`
+      ? `执行框架：H4方向确认后延续，H1提供主区与临近次级区，M15以扫单＋CHoCH或拒绝K线＋微结构突破确认；其余指标只展示${activeCopy}${historyCopy} · ${formatTime(Date.now())}`
       : "等待H4、H1与M15已收盘K线…";
   }
 
-  function emptyPositionStrategy(reason = "等待D1、H4与H1已收盘K线完成计算。") {
+  function smcBreakText(smc) {
+    if (!smc?.lastBreak) return "等待BOS";
+    return `${smc.lastBreak.direction > 0 ? "Bullish" : "Bearish"} ${smc.lastBreak.type}`;
+  }
+
+  function smcMomentumText(smc) {
+    const rsiText = Number.isFinite(smc?.rsi) ? `RSI ${smc.rsi.toFixed(1)}` : "RSI不足";
+    const macdText = smc?.macdDirection > 0 ? "MACD+" : smc?.macdDirection < 0 ? "MACD−" : "MACD中性";
+    return `${rsiText} · ${macdText}`;
+  }
+
+  function smcZoneValue(zone) {
+    if (!zone) return "—";
+    if (Number.isFinite(zone.low) && Number.isFinite(zone.high)) return smcZoneLabel(zone);
+    return Number.isFinite(zone) ? analysisPriceFormat.format(zone) : "—";
+  }
+
+  function smcFrameDisplay(key, result) {
+    const smc = result.smc;
+    if (key === "h4") {
+      const emaRelation = smc.ema200Direction > 0 ? "价格在EMA200上方" : smc.ema200Direction < 0 ? "价格在EMA200下方" : "EMA200数据不足";
+      const directionState = smc.trendSign
+        ? `${smc.trendSign > 0 ? "多头" : "空头"}方向延续`
+        : smc.directionInvalidation ? "原方向已失效" : "等待BOS确认";
+      return {
+        setup: smc.confirmedBos ? `${smc.confirmedBos.direction > 0 ? "Bullish" : "Bearish"} BOS` : "等待BOS",
+        confidence: smc.momentumPassed ? "动能同向" : "动能分歧",
+        structure: `${directionState}；${emaRelation}；反向CHoCH或穿越EMA200时失效。`,
+        opportunity: `${smcMomentumText(smc)}；RSI与MACD只作动能观察，不参与方向确认。`,
+        levels: `上方外部流动性 ${smcZoneValue(smc.externalHigh)}；下方外部流动性 ${smcZoneValue(smc.externalLow)}；ATR(14) ${analysisPriceFormat.format(result.atr)}。`
+      };
+    }
+    if (key === "h1") {
+      const bullishZone = smc.bullishOrderBlock || smc.bullishFvg;
+      const bearishZone = smc.bearishOrderBlock || smc.bearishFvg;
+      const bullishExecution = buildH1ExecutionZones(1, result);
+      const bearishExecution = buildH1ExecutionZones(-1, result);
+      const maxZones = Math.max(bullishExecution.length, bearishExecution.length);
+      return {
+        setup: bullishZone || bearishZone ? "OB/FVG已识别" : "等待区域",
+        confidence: maxZones > 1 ? "主区＋次级区" : maxZones ? "主区已选" : "等待执行区",
+        structure: `需求区 ${smcZoneValue(bullishZone)}；供应区 ${smcZoneValue(bearishZone)}。`,
+        opportunity: `按H4方向保留主执行区，并在存在更近有效区域时增加次级区；价格进入任一区域后交给M15确认。`,
+        levels: `关键结构支撑 ${result.analysisSupportZone}；关键结构压力 ${result.analysisResistanceZone}；Order Block/FVG只在附近用于收窄执行区。`
+      };
+    }
+    const conditionText = (ready) => ready ? "✅" : "⏳";
+    const sweepLabels = [`下方扫单：${conditionText(smc.bullishSweep)}`, `上方扫单：${conditionText(smc.bearishSweep)}`];
+    const chochLabels = [`看涨CHoCH：${conditionText(smc.bullishChoch)}`, `看跌CHoCH：${conditionText(smc.bearishChoch)}`];
     return {
-      bias: "neutral",
-      candidateBias: "neutral",
-      actionable: false,
-      directionLabel: "观望",
-      priority: "等待",
-      score: null,
-      longScore: null,
-      shortScore: null,
-      entryLow: null,
-      entryHigh: null,
-      stopLoss: null,
-      takeProfit: null,
-      target: null,
-      rewardRisk1: null,
-      rewardRisk2: null,
-      summary: reason,
-      trigger: "等待日线背景、H4结构与H1确认形成一致方向。"
+      setup: `下扫：${conditionText(smc.bullishSweep)} / 上扫：${conditionText(smc.bearishSweep)} · CHoCH：${conditionText(smc.bullishChoch || smc.bearishChoch)}`,
+      confidence: smcMomentumText(smc),
+      structure: `${sweepLabels.join("，")}；${chochLabels.join("，")}。`,
+      opportunity: "进入H1区域后，扫单＋同向CHoCH为标准触发；明显拒绝K线＋微结构突破为早期触发。",
+      levels: `短线支撑 ${result.analysisSupportZone}；短线压力 ${result.analysisResistanceZone}；ATR(14) ${analysisPriceFormat.format(result.atr)}。`
     };
   }
 
-  function calculatePositionLevels(bias, livePrice, d1, h4, h1) {
-    const isLong = bias === "bullish";
-    const volatility = Math.max(h4.atr, h1.atr * 2, livePrice * 0.001);
-    const entryPadding = Math.max(h1.atr * 0.28, h4.atr * 0.1, livePrice * 0.0003);
-    const pullbackAnchor = isLong
-      ? Math.max(h1.support, h1.ma20)
-      : Math.min(h1.resistance, h1.ma20);
-    const entry = Number.isFinite(pullbackAnchor)
-      ? isLong ? Math.min(livePrice, pullbackAnchor) : Math.max(livePrice, pullbackAnchor)
-      : livePrice;
-    const entryLow = isLong ? entry - entryPadding : entry - entryPadding * 0.4;
-    const entryHigh = isLong ? entry + entryPadding * 0.4 : entry + entryPadding;
-    const supports = [h1.support, h4.support, d1.support]
-      .filter((value) => Number.isFinite(value) && value < entry)
-      .sort((a, b) => b - a);
-    const resistances = [h1.resistance, h4.resistance, d1.resistance]
-      .filter((value) => Number.isFinite(value) && value > entry)
-      .sort((a, b) => a - b);
-    if (isLong) {
-      const stopAnchor = Number.isFinite(h4.support) && h4.support < entry
-        ? h4.support
-        : supports[0];
-      const stopLoss = Number.isFinite(stopAnchor)
-        ? Math.min(stopAnchor - volatility * 0.25, entry - volatility * 0.9)
-        : entry - volatility * 1.1;
-      const risk = Math.max(volatility * 0.4, entry - stopLoss);
-      const projectedFirst = entry + risk * 2;
-      const takeProfit = Math.max(resistances[0] || projectedFirst, projectedFirst);
-      const fartherResistance = resistances.find((value) => value > takeProfit + volatility * 0.2);
-      const projectedSecond = entry + risk * 3;
-      const target = Math.max(fartherResistance || projectedSecond, projectedSecond);
-      return {
-        entryLow,
-        entryHigh,
-        stopLoss,
-        takeProfit,
-        target,
-        rewardRisk1: (takeProfit - entry) / risk,
-        rewardRisk2: (target - entry) / risk,
-        risk
-      };
+  function renderSmcExecutionOverview(results, strategy) {
+    const zoneList = $("smc-zone-list");
+    const checklist = $("smc-entry-checklist");
+    if (!zoneList || !checklist) return;
+    const { h4, h1, m15 } = results;
+    if (!h4?.smc || !h1?.smc || !m15?.smc) {
+      zoneList.innerHTML = `<div class="smc-zone-row" data-side="current"><div class="smc-zone-copy"><span>等待真实多周期K线</span><small>H4、H1、M15加载完成后生成区域地图</small></div><b>—</b></div>`;
+      checklist.innerHTML = `<li data-ready="false"><span class="smc-check-icon">等待</span><span>等待H4、H1、M15数据</span></li>`;
+      $("smc-check-count").textContent = "0 / 4";
+      return;
     }
-    const stopAnchor = Number.isFinite(h4.resistance) && h4.resistance > entry
-      ? h4.resistance
-      : resistances[0];
-    const stopLoss = Number.isFinite(stopAnchor)
-      ? Math.max(stopAnchor + volatility * 0.25, entry + volatility * 0.9)
-      : entry + volatility * 1.1;
-    const risk = Math.max(volatility * 0.4, stopLoss - entry);
-    const projectedFirst = entry - risk * 2;
-    const takeProfit = Math.min(supports[0] || projectedFirst, projectedFirst);
-    const fartherSupport = supports.find((value) => value < takeProfit - volatility * 0.2);
-    const projectedSecond = entry - risk * 3;
-    const target = Math.min(fartherSupport || projectedSecond, projectedSecond);
-    return {
-      entryLow,
-      entryHigh,
-      stopLoss,
-      takeProfit,
-      target,
-      rewardRisk1: (entry - takeProfit) / risk,
-      rewardRisk2: (entry - target) / risk,
-      risk
+    const items = [];
+    const addPoint = (label, detail, value, side) => {
+      if (!Number.isFinite(value)) return;
+      items.push({ label, detail, low: value, high: value, center: value, side });
     };
-  }
-
-  function positionPriority(candidateBias, compositeScore, d1, h4, h1) {
-    const d1Bias = d1.marketState?.bias || d1.bias;
-    const h4Bias = h4.marketState?.bias || h4.bias;
-    const h1Bias = h1.marketState?.bias || h1.bias;
-    const d1Aligned = d1Bias === candidateBias;
-    const h4Aligned = h4Bias === candidateBias && h4.opportunity.bias === candidateBias;
-    const h1Aligned = h1Bias === candidateBias && h1.opportunity.bias === candidateBias;
-    const d1Opposed = d1Bias !== "neutral" && d1Bias !== candidateBias;
-    const h1Opposed = (h1Bias !== "neutral" && h1Bias !== candidateBias) ||
-      (h1.opportunity.bias !== "neutral" && h1.opportunity.bias !== candidateBias);
-    if (d1Aligned && h4Aligned && h1Aligned && compositeScore >= 68) {
-      return { code: "A", label: "A · 多周期顺势", rank: 3 };
-    }
-    if (h4Aligned && h1Aligned && !d1Opposed && compositeScore >= 58) {
-      return { code: "B", label: "B · H4/H1共振", rank: 2 };
-    }
-    if (h4Aligned && !d1Opposed && !h1Opposed) {
-      return { code: "C", label: "C · 分批关注", rank: 1 };
-    }
-    return { code: "C", label: "C · 等待强化", rank: 1 };
-  }
-
-  function buildPositionStrategy(results, livePrice) {
-    const { d1, h4, h1, m15 } = results;
-    if (!d1 || !h4 || !h1) return emptyPositionStrategy();
-    const baseLongScore = Math.round((h4.longSetup.baseScore ?? h4.longSetup.score) * 0.7 + (h1.longSetup.baseScore ?? h1.longSetup.score) * 0.3);
-    const baseShortScore = Math.round((h4.shortSetup.baseScore ?? h4.shortSetup.score) * 0.7 + (h1.shortSetup.baseScore ?? h1.shortSetup.score) * 0.3);
-    const longScore = Math.round(h4.longSetup.score * 0.7 + h1.longSetup.score * 0.3);
-    const shortScore = Math.round(h4.shortSetup.score * 0.7 + h1.shortSetup.score * 0.3);
-    const candidateBias = baseLongScore >= baseShortScore ? "bullish" : "bearish";
-    const baseCompositeScore = Math.max(baseLongScore, baseShortScore);
-    const compositeScore = candidateBias === "bullish" ? longScore : shortScore;
-    const scoreEdge = Math.abs(baseLongScore - baseShortScore);
-    const volumeAdjustment = compositeScore - baseCompositeScore;
-    const h4Signal = h4.opportunity.bias;
-    const h1Signal = h1.opportunity.bias;
-    const d1Bias = d1.marketState?.bias || d1.bias;
-    const h4Bias = h4.marketState?.bias || h4.bias;
-    const h1Bias = h1.marketState?.bias || h1.bias;
-    const directionName = candidateBias === "bullish" ? "做多" : "做空";
-    const timingText = !m15
-      ? "M15数据不足"
-      : m15.opportunity.bias === candidateBias
-        ? "M15入场时机同向"
-        : m15.opportunity.bias === "neutral"
-          ? "M15尚未给出入场时机"
-          : "M15入场时机反向";
-    const stateSummary = `D1 ${d1.marketState.label}，H4 ${h4.marketState.label}，H1 ${h1.marketState.label}；技术面基础多${baseLongScore}、空${baseShortScore}，量能调整后多${longScore}、空${shortScore}（候选方向调整${signed(volumeAdjustment, 0)}）；${timingText}。高周期量能：D1 ${d1.volume?.label || "中性"}，H4 ${h4.volume?.label || "中性"}，H1 ${h1.volume?.label || "中性"}。`;
-    const waitForCandidate = (reason, trigger) => ({
-      ...emptyPositionStrategy(reason),
-      candidateBias,
-      directionLabel: `观望 · 候选${directionName}`,
-      score: compositeScore,
-      longScore,
-      shortScore,
-      trigger
-    });
-
-    if (h4Signal !== "neutral" && h1Signal !== "neutral" && h4Signal !== h1Signal) {
-      return {
-        ...emptyPositionStrategy(`${stateSummary} H4与H1机会方向冲突，中长线暂不执行。`),
-        longScore,
-        shortScore,
-        trigger: "等待H4与H1已收盘K线重新形成同向机会。"
-      };
-    }
-    if (baseCompositeScore < STRATEGY_FILTERS.positionMinimumBaseScore ||
-        scoreEdge < STRATEGY_FILTERS.positionMinimumScoreEdge) {
-      return waitForCandidate(
-        `${stateSummary} 高周期多空优势不足，暂不建立中长线仓位。`,
-        `等待H4/H1综合分达到${STRATEGY_FILTERS.positionMinimumBaseScore}分以上，且多空分差扩大到${STRATEGY_FILTERS.positionMinimumScoreEdge}分以上。`
-      );
-    }
-    if (d1Bias !== "neutral" && d1Bias !== candidateBias) {
-      return {
-        ...emptyPositionStrategy(`${stateSummary} 候选${directionName}与D1长期背景相反，暂不逆势建立中长线仓位。`),
-        longScore,
-        shortScore,
-        trigger: `等待D1转为${candidateBias === "bullish" ? "多方" : "空方"}，或H4/H1出现新的同向结构。`
-      };
-    }
-    if ((h4Bias !== "neutral" && h4Bias !== candidateBias) ||
-        (h1Bias !== "neutral" && h1Bias !== candidateBias)) {
-      return {
-        ...emptyPositionStrategy(`${stateSummary} 候选${directionName}尚未得到H4/H1最终行情状态确认，暂不执行。`),
-        longScore,
-        shortScore,
-        trigger: `等待H4与H1行情状态共同转为${candidateBias === "bullish" ? "偏多" : "偏空"}。`
-      };
-    }
-    if ((h4Signal !== "neutral" && h4Signal !== candidateBias) ||
-        (h1Signal !== "neutral" && h1Signal !== candidateBias)) {
-      return {
-        ...emptyPositionStrategy(`${stateSummary} 综合分与高周期机会方向不一致，暂不执行。`),
-        longScore,
-        shortScore,
-        trigger: "等待H4主方向与H1确认方向重新一致。"
-      };
-    }
-    if (compositeScore < STRATEGY_FILTERS.positionMinimumExecutionScore) {
-      return waitForCandidate(
-        `${stateSummary} 中长线策略要求更高方向确定性，当前${directionName}评分${compositeScore}，低于${STRATEGY_FILTERS.positionMinimumExecutionScore}分执行门槛。`,
-        `等待D1/H4/H1继续同向，并将策略评分提升至${STRATEGY_FILTERS.positionMinimumExecutionScore}分以上。`
-      );
-    }
-
-    const entry = Number.isFinite(livePrice) ? livePrice : h1.price;
-    const levels = calculatePositionLevels(candidateBias, entry, d1, h4, h1);
-    const priority = positionPriority(candidateBias, compositeScore, d1, h4, h1);
-    const structuralNote = candidateBias === "bullish"
-      ? "止损放在H4有效支撑下方，止盈按结构压力与至少2倍、3倍风险空间取较远值。"
-      : "止损放在H4有效压力上方，止盈按结构支撑与至少2倍、3倍风险空间取较远值。";
-    const trigger = candidateBias === "bullish"
-      ? `执行条件：D1保持非空、H4多方结构有效；价格进入参考区后等待H1转强，M15仅辅助择时。H4收盘跌破 ${h4.supportZone} 或触及止损则策略失效。`
-      : `执行条件：D1保持非多、H4空方结构有效；价格进入参考区后等待H1转弱，M15仅辅助择时。H4收盘突破 ${h4.resistanceZone} 或触及止损则策略失效。`;
-    if (priority.code !== "A") {
-      return {
-        bias: "neutral",
-        candidateBias,
-        actionable: false,
-        directionLabel: `观察 · 候选${directionName}`,
-        priority: `${priority.label} · 不执行`,
-        score: compositeScore,
-        longScore,
-        shortScore,
-        ...levels,
-        summary: `${stateSummary} 当前仅达到${priority.code}级观察条件；保留方向提示但不生成执行信号。`,
-        trigger: `等待D1、H4和H1形成A级同向共振后再评估。${structuralNote}`
-      };
-    }
-    if (m15 && m15.opportunity.bias !== "neutral" && m15.opportunity.bias !== candidateBias) {
-      return {
-        bias: "neutral",
-        candidateBias,
-        actionable: false,
-        directionLabel: `观望 · 候选${directionName}`,
-        priority: "等待 · M15择时反向",
-        score: compositeScore,
-        longScore,
-        shortScore,
-        ...levels,
-        summary: `${stateSummary} 高周期方向虽成立，但M15当前与候选方向相反，暂缓入场。`,
-        trigger: `等待M15转为${candidateBias === "bullish" ? "多方" : "空方"}或回到中性后再执行。`
-      };
-    }
-    return {
-      bias: candidateBias,
-      candidateBias,
-      actionable: true,
-      directionLabel: directionName,
-      priority: priority.label,
-      score: compositeScore,
-      longScore,
-      shortScore,
-      ...levels,
-      summary: `${stateSummary} ${directionName}条件领先。${structuralNote}`,
-      trigger
+    const addZone = (label, detail, zone, side) => {
+      if (!zone || !Number.isFinite(zone.low) || !Number.isFinite(zone.high)) return;
+      items.push({ label, detail, low: zone.low, high: zone.high, center: (zone.low + zone.high) / 2, side });
     };
-  }
+    addPoint("H4上方外部流动性", "买方流动性池", h4.smc.externalHigh, "resistance");
+    buildH1ExecutionZones(-1, h1).forEach((zone) => addZone(
+      `H1做空${zone.role === "secondary" ? "次级区" : "主区"}`,
+      zone.role === "secondary" ? "更靠近现价的候选压力区" : "强压力区＋H1结构筛选",
+      zone,
+      "resistance"
+    ));
+    addPoint("当前价", "实时中间价 / 最新已收盘价", Number.isFinite(state.book?.mid) ? state.book.mid : m15.price, "current");
+    buildH1ExecutionZones(1, h1).forEach((zone) => addZone(
+      `H1做多${zone.role === "secondary" ? "次级区" : "主区"}`,
+      zone.role === "secondary" ? "更靠近现价的候选支撑区" : "强支撑区＋H1结构筛选",
+      zone,
+      "support"
+    ));
+    addPoint("H4下方外部流动性", "卖方流动性池", h4.smc.externalLow, "support");
+    const deduped = items.sort((a, b) => b.center - a.center);
+    zoneList.innerHTML = deduped.map((item) => `
+      <div class="smc-zone-row" data-side="${item.side}">
+        <div class="smc-zone-copy"><span>${item.label}</span><small>${item.detail}</small></div>
+        <b>${item.low === item.high ? analysisPriceFormat.format(item.low) : `${analysisPriceFormat.format(item.low)}–${analysisPriceFormat.format(item.high)}`}</b>
+      </div>`).join("");
 
-  function renderPositionStrategy(results = state.analysisResults) {
-    const hasFrames = Boolean(results?.d1 && results?.h4 && results?.h1);
-    const livePrice = Number.isFinite(state.book?.mid) ? state.book.mid : results?.h1?.price;
-    const strategy = buildPositionStrategy(results || {}, livePrice);
-    const card = $("position-strategy");
-    card.dataset.bias = strategy.bias;
-    $("position-direction").textContent = strategy.directionLabel;
-    $("position-priority").textContent = strategy.priority;
-    $("position-score").textContent = Number.isFinite(strategy.score)
-      ? `${strategy.score} / 100`
-      : Number.isFinite(strategy.longScore) && Number.isFinite(strategy.shortScore)
-        ? `多${strategy.longScore} · 空${strategy.shortScore}`
-        : "—";
-    $("position-entry").textContent = Number.isFinite(strategy.entryLow) && Number.isFinite(strategy.entryHigh)
-      ? `${strategyPrice(strategy.entryLow)}–${strategyPrice(strategy.entryHigh)}`
-      : "—";
-    $("position-stop").textContent = strategyPrice(strategy.stopLoss);
-    const takeProfitValues = [strategy.takeProfit, strategy.target]
-      .filter(Number.isFinite)
-      .map(strategyPrice);
-    $("position-take-profit").textContent = takeProfitValues.length ? takeProfitValues.join(" / ") : "—";
-    $("position-rr").textContent = Number.isFinite(strategy.rewardRisk1) && Number.isFinite(strategy.rewardRisk2)
-      ? `1:${strategy.rewardRisk1.toFixed(2)} / 1:${strategy.rewardRisk2.toFixed(2)}`
-      : "—";
-    $("position-summary").textContent = strategy.summary;
-    $("position-trigger").textContent = strategy.trigger;
-    $("position-status").textContent = hasFrames
-      ? `信号使用已收盘D1/H4/H1，M15仅辅助入场；${Number.isFinite(state.book?.mid) ? "入场区随实时中间价更新" : "暂用H1最近收盘作为入场参考"} · ${formatTime(Date.now())}`
-      : "等待D1、H4与H1已收盘K线…";
+    const sign = h4.smc.trendSign || h4.smc.candidateSign || 0;
+    const entryZones = buildH1ExecutionZones(sign, h1);
+    const stages = strategy?.stageScores || smcStageScores(sign, h4, h1, m15, entryZones);
+    const checks = [
+      { ready: Boolean(sign && h4.smc.trendSign === sign && h4.smc.confirmedBos?.direction === sign), label: "H4已由BOS建立且保持主方向" },
+      { ready: entryZones.length > 0, label: `H1已选主执行区${entryZones[1] ? "与临近次级区" : ""}` },
+      { ready: Boolean(stages.zoneTouched), label: "价格已进入H1主区或次级区" },
+      { ready: Boolean(stages.triggerReady), label: "M15标准触发或早期触发已完成" }
+    ];
+    const readyCount = checks.filter((item) => item.ready).length;
+    $("smc-check-count").textContent = `${readyCount} / ${checks.length}`;
+    checklist.innerHTML = checks.map((item) => `<li data-ready="${item.ready}"><span class="smc-check-icon">${item.ready ? "完成" : "等待"}</span><span>${item.label}</span></li>`).join("");
   }
 
   function renderAnalysisCard(key, result, conclusion) {
-    const view = intradayFrameView(result);
-    const structure = view.structure;
-    $(`${key}-card`).dataset.bias = view.bias;
-    $(`${key}-state`).textContent = structure.label;
-    $(`${key}-direction-score`).textContent = signed(structure.score, 0);
-    $(`${key}-direction-score`).className = structure.sign > 0
+    const smc = result.smc;
+    const display = smcFrameDisplay(key, result);
+    const hasH1ExecutionZone = key === "h1" && Boolean(buildH1ExecutionZones(1, result).length || buildH1ExecutionZones(-1, result).length);
+    const simplifiedStageScore = key === "h4"
+      ? smc.trendSign && smc.confirmedBos?.direction === smc.trendSign ? 5 : smc.candidateSign ? 2.5 : 0
+      : key === "h1"
+        ? hasH1ExecutionZone ? 3.5 : 0
+        : smc.bullishChoch || smc.bearishChoch ? 5 : smc.bullishSweep || smc.bearishSweep ? 2.5 : 0;
+    $(`${key}-card`).dataset.bias = smc.bias;
+    $(`${key}-state`).textContent = smc.label;
+    $(`${key}-direction-score`).textContent = `${simplifiedStageScore.toFixed(1)} / 5`;
+    $(`${key}-direction-score`).className = smc.candidateSign > 0
       ? "bullish"
-      : structure.sign < 0
+      : smc.candidateSign < 0
         ? "bearish"
         : "neutral";
-    $(`${key}-setup-score`).textContent = `多${view.longScore} · 空${view.shortScore}`;
-    $(`${key}-setup-score`).className = view.bias;
-    $(`${key}-setup-score`).dataset.tone = view.tone;
-    $(`${key}-setup-score`).title = structure.label;
-    $(`${key}-confidence`).textContent = view.strength.label;
-    $(`${key}-confidence`).dataset.tone = view.strength.tone;
-    $(`${key}-structure`).textContent = intradayStructureDetail(result);
-    $(`${key}-opportunity`).textContent = intradayOpportunityDetail(result, view);
-    $(`${key}-rsi`).textContent = describeRsi(result.rsi);
-    $(`${key}-macd`).textContent = describeMacd(result.macd);
-    $(`${key}-volume`).textContent = describeVolume(result.volume);
-    $(`${key}-levels`).textContent = `支撑 ${result.analysisSupportZone}（${describeLevelZone(result.supportLevel)}）；压力 ${result.analysisResistanceZone}（${describeLevelZone(result.resistanceLevel)}）；ATR(14)=${analysisPriceFormat.format(result.atr)}。`;
+    $(`${key}-setup-score`).textContent = display.setup;
+    $(`${key}-setup-score`).className = smc.bias;
+    $(`${key}-setup-score`).dataset.tone = smc.trendSign ? "ready" : "wait";
+    $(`${key}-setup-score`).title = smc.label;
+    $(`${key}-confidence`).textContent = display.confidence;
+    $(`${key}-confidence`).dataset.tone = smc.momentumPassed ? "high" : "low";
+    $(`${key}-structure`).textContent = display.structure;
+    $(`${key}-opportunity`).textContent = display.opportunity;
+    $(`${key}-levels`).textContent = display.levels;
     $(`${key}-conclusion`).textContent = conclusion;
   }
 
@@ -3558,7 +3821,7 @@
     $(`${key}-direction-score`).textContent = "—";
     $(`${key}-setup-score`).textContent = "—";
     $(`${key}-confidence`).textContent = "—";
-    [`${key}-structure`, `${key}-opportunity`, `${key}-rsi`, `${key}-macd`, `${key}-volume`, `${key}-levels`].forEach((id) => $(id).textContent = "—");
+    [`${key}-structure`, `${key}-opportunity`, `${key}-levels`].forEach((id) => $(id).textContent = "—");
     $(`${key}-conclusion`).textContent = message;
   }
 
@@ -3573,7 +3836,7 @@
         errors[key] = error.message;
       }
     }
-    applyMultiFrameContext(results);
+    applySupportResistanceConfluence(results);
     state.analysisResults = results;
     const conclusions = buildConclusions(results);
     for (const [key, config] of Object.entries(ANALYSIS_FRAMES)) {
@@ -3582,7 +3845,6 @@
       else renderAnalysisUnavailable(key, errors[key] || "暂时无法生成判断，请稍后重试。");
     }
     renderIntradayStrategy(results);
-    renderPositionStrategy(results);
   }
 
   async function loadAnalysis() {
@@ -3602,7 +3864,7 @@
     });
     if (hasCachedAnalysis) {
       renderAnalysis();
-      $("analysis-status").textContent = "已显示本地缓存 · 正在同步 D1、H4、H1、M15 最新K线…";
+      $("analysis-status").textContent = "已显示本地缓存 · 正在同步 H4、H1、M15 最新K线…";
     }
     const settled = await Promise.allSettled(entries.map(([, config]) =>
       fetchAnalysisCandles(symbol, config.interval)
@@ -3619,7 +3881,7 @@
     });
     renderAnalysis(errors);
     const failed = Object.keys(errors).length;
-    $("analysis-status").textContent = `${failed ? `${failed}个周期延迟 · ` : ""}${microstructureStatusText()} · 行情卡片与日内策略统一采用成交密集＋结构＋位置＋触发 · ${formatTime(Date.now())}`;
+    $("analysis-status").textContent = `${failed ? `${failed}个周期延迟 · ` : ""}${microstructureStatusText()} · H4方向，H1主/次执行区，M15双路径确认 · ${formatTime(Date.now())}`;
   }
 
   function indicatorX(index, count, margin, innerW) {
@@ -4443,14 +4705,11 @@
   seedCurrentData();
   loadHistory();
   loadAnalysis();
-  loadMicrostructure();
   connectBinance();
   setInterval(() => {
     if (!state.wsOk) seedCurrentData();
-  }, 5000);
+  }, 15000);
   setInterval(setLiveStatus, 1000);
-  setInterval(refreshAnalysisForMicrostructure, 10000);
-  setInterval(refreshRecentAggregateTrades, 15000);
-  setInterval(loadHistory, 60000);
+  setInterval(() => loadHistory({ incremental: true }), 60000);
   setInterval(loadAnalysis, 60000);
 })();
