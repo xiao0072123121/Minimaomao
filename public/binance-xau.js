@@ -7,6 +7,7 @@
   const API_ROOT = USE_PROXY ? `${PAGE_LOCATION.origin}/api/binance` : DIRECT_API;
   const WS_ROOT = "wss://fstream.binance.com/ws";
   const HOUR = 60 * 60 * 1000;
+  const DAY = 24 * HOUR;
   const FRAME_CONFIG = Object.freeze({
     h4: { interval: "4h", ms: 4 * HOUR, limit: 240, pivotWindow: 2, label: "H4" },
     h1: { interval: "1h", ms: HOUR, limit: 320, pivotWindow: 2, label: "H1" }
@@ -24,6 +25,18 @@
   const FRAME_REFRESH_INTERVAL = HOUR;
   const MAX_RECONNECT_DELAY = 30 * 1000;
   const SVG_NS = "http://www.w3.org/2000/svg";
+  const ZONE_RULES = Object.freeze({
+    minimumStrength: 60,
+    strongStrength: 75,
+    mergeAtr: .25,
+    mergePriceRate: .001,
+    minimumWidthAtr: .2,
+    maximumWidthAtr: .6,
+    breakBufferAtr: .15,
+    reactionBars: 3,
+    reactionThresholdAtr: .6,
+    minimumDepartureAtr: { h4: .8, h1: .65 }
+  });
 
   const state = {
     symbol: "XAUUSDT",
@@ -284,118 +297,262 @@
     return clean.length % 2 ? clean[middle] : (clean[middle - 1] + clean[middle]) / 2;
   }
 
-  function findPivots(frameKey, candles) {
-    const config = FRAME_CONFIG[frameKey];
-    const windowSize = config.pivotWindow;
-    const pivots = [];
-    for (let index = windowSize; index < candles.length - windowSize; index += 1) {
-      const current = candles[index];
-      const neighbors = candles.slice(index - windowSize, index + windowSize + 1);
-      const other = neighbors.filter((_, neighborIndex) => neighborIndex !== windowSize);
-      const swingHigh = other.every((candle) => current.h >= candle.h) && other.some((candle) => current.h > candle.h);
-      const swingLow = other.every((candle) => current.l <= candle.l) && other.some((candle) => current.l < candle.l);
-      if (swingHigh) pivots.push({ price: current.h, time: current.t, frame: frameKey, kind: "high" });
-      if (swingLow) pivots.push({ price: current.l, time: current.t, frame: frameKey, kind: "low" });
+  function calculateAtr(candles, period = 14) {
+    if (candles.length <= period) return null;
+    const ranges = [];
+    for (let index = 1; index < candles.length; index += 1) {
+      const candle = candles[index];
+      const previousClose = candles[index - 1].c;
+      ranges.push(Math.max(candle.h - candle.l, Math.abs(candle.h - previousClose), Math.abs(candle.l - previousClose)));
     }
-    return pivots;
+    let atr = ranges.slice(0, period).reduce((sum, value) => sum + value, 0) / period;
+    for (let index = period; index < ranges.length; index += 1) atr = (atr * (period - 1) + ranges[index]) / period;
+    return atr;
   }
 
-  function frameHalfWidth(frameKey, candles, referencePrice) {
-    const recent = candles.slice(-120);
-    const medianRange = median(recent.map((candle) => candle.h - candle.l));
-    if (!Number.isFinite(medianRange) || !Number.isFinite(referencePrice)) return referencePrice * .001;
-    if (frameKey === "h4") return clamp(medianRange * .16, referencePrice * .001, referencePrice * .0045);
-    return clamp(medianRange * .2, referencePrice * .0007, referencePrice * .0032);
+  function weightedMedian(points) {
+    const sorted = points.filter((point) => Number.isFinite(point.price)).sort((a, b) => a.price - b.price);
+    const totalWeight = sorted.reduce((sum, point) => sum + Math.max(.01, point.weight || 1), 0);
+    let cumulative = 0;
+    for (const point of sorted) {
+      cumulative += Math.max(.01, point.weight || 1);
+      if (cumulative >= totalWeight / 2) return point.price;
+    }
+    return sorted.at(-1)?.price || 0;
+  }
+
+  function utcDayStart(time) {
+    const date = new Date(time);
+    return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+  }
+
+  function utcWeekStart(time) {
+    const start = utcDayStart(time);
+    return start - ((new Date(start).getUTCDay() + 6) % 7) * DAY;
+  }
+
+  function previousPeriodPoints(candles) {
+    if (!candles.length) return [];
+    const referenceTime = (candles.at(-1).ct || candles.at(-1).t) + 1;
+    const groupBy = (periodStart) => {
+      const groups = new Map();
+      candles.forEach((candle, index) => {
+        const key = periodStart(candle.t);
+        if (!groups.has(key)) groups.set(key, { key, candles: [], indexes: [] });
+        groups.get(key).candles.push(candle);
+        groups.get(key).indexes.push(index);
+      });
+      return [...groups.values()].sort((a, b) => a.key - b.key);
+    };
+    const previousDay = groupBy(utcDayStart).filter((group) => group.key < utcDayStart(referenceTime)).at(-1);
+    const previousWeek = groupBy(utcWeekStart).filter((group) => group.key < utcWeekStart(referenceTime)).at(-1);
+    const points = [];
+    const addGroup = (group, label, weight, coverageRequired) => {
+      if (!group?.candles.length) return;
+      const coverage = (group.candles.at(-1).ct || group.candles.at(-1).t) - group.candles[0].t;
+      if (coverage < coverageRequired) return;
+      let high = { price: -Infinity, index: 0 };
+      let low = { price: Infinity, index: 0 };
+      group.candles.forEach((candle, index) => {
+        if (candle.h > high.price) high = { price: candle.h, index: group.indexes[index] };
+        if (candle.l < low.price) low = { price: candle.l, index: group.indexes[index] };
+      });
+      points.push({ type: "high", ...high, weight, source: `${label}高点`, reference: true });
+      points.push({ type: "low", ...low, weight, source: `${label}低点`, reference: true });
+    };
+    addGroup(previousDay, "前日", 1.8, 20 * HOUR);
+    addGroup(previousWeek, "前周", 2.2, 4 * DAY);
+    return points;
+  }
+
+  function pivotReaction(candles, index, type, atr, frameKey) {
+    const reaction = candles.slice(index + 1, index + 1 + ZONE_RULES.reactionBars);
+    if (!reaction.length) return null;
+    const pivot = candles[index];
+    const favorableMove = type === "low"
+      ? Math.max(...reaction.map((candle) => candle.h)) - pivot.l
+      : pivot.h - Math.min(...reaction.map((candle) => candle.l));
+    const departureAtr = favorableMove / Math.max(atr, 1e-8);
+    const directionalCandles = reaction.filter((candle) => type === "low" ? candle.c > candle.o : candle.c < candle.o).length;
+    const hasExpansion = reaction.some((candle) => {
+      const directional = type === "low" ? candle.c > candle.o : candle.c < candle.o;
+      return directional && candle.h - candle.l >= atr * .9;
+    });
+    if (departureAtr < ZONE_RULES.minimumDepartureAtr[frameKey] || (directionalCandles < 2 && !hasExpansion)) return null;
+    return { departureAtr };
+  }
+
+  function confirmedRoleReversal(candles, pivot, side, atr, tolerance) {
+    const buffer = atr * ZONE_RULES.breakBufferAtr;
+    const breakoutIndex = candles.findIndex((candle, index) => index > pivot.index && (
+      side === "support" ? candle.c > pivot.price + buffer : candle.c < pivot.price - buffer
+    ));
+    if (breakoutIndex < 0) return null;
+    for (let index = breakoutIndex + 1; index < candles.length - 1; index += 1) {
+      const candle = candles[index];
+      const touched = candle.l <= pivot.price + tolerance && candle.h >= pivot.price - tolerance;
+      const held = side === "support" ? candle.c >= pivot.price : candle.c <= pivot.price;
+      if (!touched || !held) continue;
+      const reaction = candles.slice(index + 1, index + 1 + ZONE_RULES.reactionBars);
+      const move = side === "support"
+        ? Math.max(...reaction.map((item) => item.h)) - pivot.price
+        : pivot.price - Math.min(...reaction.map((item) => item.l));
+      const departureAtr = move / Math.max(atr, 1e-8);
+      if (departureAtr >= ZONE_RULES.reactionThresholdAtr) return { index, departureAtr };
+    }
+    return null;
+  }
+
+  function clusterPoints(points, candles, price, atr, side, frameKey) {
+    if (!points.length) return [];
+    const clusterDistance = Math.max(atr * ZONE_RULES.mergeAtr, price * ZONE_RULES.mergePriceRate);
+    const clusters = [];
+    for (const point of [...points].sort((a, b) => a.price - b.price)) {
+      const cluster = clusters.find((candidate) => Math.abs(point.price - candidate.center) <= clusterDistance);
+      if (!cluster) clusters.push({ center: point.price, points: [point] });
+      else {
+        cluster.points.push(point);
+        cluster.center = weightedMedian(cluster.points);
+      }
+    }
+    return clusters.map((cluster) => {
+      const center = weightedMedian(cluster.points);
+      const rawLow = Math.min(...cluster.points.map((point) => point.price));
+      const rawHigh = Math.max(...cluster.points.map((point) => point.price));
+      const width = clamp(rawHigh - rawLow + atr * .12, atr * ZONE_RULES.minimumWidthAtr, atr * ZONE_RULES.maximumWidthAtr);
+      const low = center - width / 2;
+      const high = center + width / 2;
+      const reactionPoints = cluster.points.filter((point) => Number.isFinite(point.departureAtr));
+      const touches = new Set(reactionPoints.map((point) => point.index)).size;
+      const reactionStrength = reactionPoints.length ? median(reactionPoints.map((point) => point.departureAtr)) : 0;
+      const reactionScore = Math.round(clamp(reactionStrength / 1.2 * 30, 0, 30));
+      const touchScore = touches <= 1 ? 5 : touches === 2 ? 14 : touches <= 4 ? 20 : Math.max(4, 20 - (touches - 4) * 4);
+      const roleReversal = cluster.points.some((point) => point.roleReversal);
+      const roleScore = roleReversal ? 15 : 0;
+      const referenceScore = Math.min(10, cluster.points.filter((point) => point.reference).reduce((sum, point) => sum + point.weight * 3, 0));
+      const latestIndex = Math.max(...cluster.points.map((point) => point.index));
+      const newest = candles[latestIndex]?.t || candles.at(-1).t;
+      const ageMs = Math.max(0, candles.at(-1).t - newest);
+      const recencyScore = Math.round(15 * Math.pow(.5, ageMs / (10 * DAY)));
+      let breachCount = 0;
+      let breachStreak = 0;
+      let maximumBreachStreak = 0;
+      for (const candle of candles.slice(latestIndex + 1)) {
+        const breached = side === "support" ? candle.c < low - atr * ZONE_RULES.breakBufferAtr : candle.c > high + atr * ZONE_RULES.breakBufferAtr;
+        breachStreak = breached ? breachStreak + 1 : 0;
+        if (breached) breachCount += 1;
+        maximumBreachStreak = Math.max(maximumBreachStreak, breachStreak);
+      }
+      const broken = maximumBreachStreak >= 2;
+      const breachPenalty = Math.min(30, breachCount * 15);
+      const strength = Math.round(clamp(reactionScore + touchScore + roleScore + referenceScore + recencyScore - breachPenalty, 0, 100));
+      return {
+        side, center, low, high, strength, baseStrength: strength, touches, rejections: reactionPoints.length,
+        roleReversal, broken, eligible: !broken && strength >= ZONE_RULES.minimumStrength,
+        source: [...new Set(cluster.points.map((point) => point.source).filter(Boolean))].join("＋") || "确认摆动聚类",
+        frames: [frameKey], newest, confluence: false
+      };
+    }).filter((zone) => !zone.broken);
+  }
+
+  function frameZones(frameKey, candles, price) {
+    if (candles.length < 30) return [];
+    const atr = calculateAtr(candles);
+    if (!Number.isFinite(atr) || atr <= 0) return [];
+    const windowSize = FRAME_CONFIG[frameKey].pivotWindow;
+    const points = previousPeriodPoints(candles);
+    for (let index = windowSize; index < candles.length - windowSize; index += 1) {
+      const candle = candles[index];
+      const neighbors = candles.slice(index - windowSize, index).concat(candles.slice(index + 1, index + 1 + windowSize));
+      if (neighbors.every((item) => candle.l <= item.l)) {
+        const reaction = pivotReaction(candles, index, "low", atr, frameKey);
+        if (reaction) points.push({ type: "low", price: candle.l, index, weight: 1 + Math.min(1.5, reaction.departureAtr), source: `${FRAME_CONFIG[frameKey].label}确认摆动低点`, ...reaction });
+      }
+      if (neighbors.every((item) => candle.h >= item.h)) {
+        const reaction = pivotReaction(candles, index, "high", atr, frameKey);
+        if (reaction) points.push({ type: "high", price: candle.h, index, weight: 1 + Math.min(1.5, reaction.departureAtr), source: `${FRAME_CONFIG[frameKey].label}确认摆动高点`, ...reaction });
+      }
+    }
+    const separation = Math.max(atr * .12, price * .0002);
+    const tolerance = Math.max(atr * ZONE_RULES.mergeAtr, price * ZONE_RULES.mergePriceRate);
+    const supports = [];
+    const resistances = [];
+    for (const pivot of points) {
+      const reaction = pivot.reference ? pivotReaction(candles, pivot.index, pivot.type, atr, frameKey) : null;
+      const point = { ...pivot, ...(reaction || {}), roleReversal: false };
+      if (pivot.type === "low" && pivot.price < price + separation) supports.push(point);
+      if (pivot.type === "high" && pivot.price > price - separation) resistances.push(point);
+      if (pivot.type === "high" && pivot.price < price - separation) {
+        const reversal = confirmedRoleReversal(candles, pivot, "support", atr, tolerance);
+        if (reversal) supports.push({ ...point, ...reversal, weight: (point.weight || 1) + 1, roleReversal: true, source: `${pivot.source}突破回踩` });
+      }
+      if (pivot.type === "low" && pivot.price > price + separation) {
+        const reversal = confirmedRoleReversal(candles, pivot, "resistance", atr, tolerance);
+        if (reversal) resistances.push({ ...point, ...reversal, weight: (point.weight || 1) + 1, roleReversal: true, source: `${pivot.source}跌破反抽` });
+      }
+    }
+    return [
+      ...clusterPoints(supports, candles, price, atr, "support", frameKey),
+      ...clusterPoints(resistances, candles, price, atr, "resistance", frameKey)
+    ];
   }
 
   function buildZones() {
     const fallbackPrice = state.frames.h1.at(-1)?.c || state.frames.h4.at(-1)?.c;
-    const referencePrice = Number.isFinite(state.price) ? state.price : fallbackPrice;
-    if (!Number.isFinite(referencePrice)) return [];
-
-    const widths = {
-      h4: frameHalfWidth("h4", state.frames.h4, referencePrice),
-      h1: frameHalfWidth("h1", state.frames.h1, referencePrice)
-    };
-    const pivots = [
-      ...findPivots("h4", state.frames.h4),
-      ...findPivots("h1", state.frames.h1)
-    ].sort((a, b) => a.price - b.price);
-
-    const clusters = [];
-    for (const pivot of pivots) {
-      const weight = pivot.frame === "h4" ? 2 : 1;
-      const halfWidth = widths[pivot.frame];
-      let best = null;
-      let bestDistance = Infinity;
-      for (const cluster of clusters) {
-        const distance = Math.abs(cluster.center - pivot.price);
-        if (distance <= Math.max(cluster.halfWidth, halfWidth) && distance < bestDistance) {
-          best = cluster;
-          bestDistance = distance;
-        }
-      }
-      if (!best) {
-        clusters.push({
-          center: pivot.price,
-          weightedPrice: pivot.price * weight,
-          totalWeight: weight,
-          halfWidth,
-          pivots: [pivot]
-        });
-      } else {
-        best.weightedPrice += pivot.price * weight;
-        best.totalWeight += weight;
-        best.center = best.weightedPrice / best.totalWeight;
-        best.halfWidth = Math.max(best.halfWidth, halfWidth);
-        best.pivots.push(pivot);
+    const price = Number.isFinite(state.price) ? state.price : fallbackPrice;
+    if (!Number.isFinite(price)) return [];
+    const atrs = { h4: calculateAtr(state.frames.h4) || 0, h1: calculateAtr(state.frames.h1) || 0 };
+    const zones = [
+      ...frameZones("h4", state.frames.h4, price),
+      ...frameZones("h1", state.frames.h1, price)
+    ];
+    for (const zone of zones) {
+      const otherFrame = zone.frames[0] === "h4" ? "h1" : "h4";
+      const threshold = Math.max(Math.min(atrs[zone.frames[0]], atrs[otherFrame]) * .35, price * .001);
+      const aligned = zones.find((candidate) => candidate.side === zone.side && candidate.frames[0] === otherFrame && Math.abs(candidate.center - zone.center) <= threshold);
+      if (aligned) {
+        zone.frames = ["h4", "h1"];
+        zone.confluence = true;
+        zone.strength = Math.min(100, zone.strength + 18);
+        zone.eligible = zone.strength >= ZONE_RULES.minimumStrength;
       }
     }
-
-    return clusters
-      .map((cluster) => {
-        const frames = [...new Set(cluster.pivots.map((pivot) => pivot.frame))];
-        const highTouches = cluster.pivots.filter((pivot) => pivot.kind === "high").length;
-        const lowTouches = cluster.pivots.length - highTouches;
-        const newest = Math.max(...cluster.pivots.map((pivot) => pivot.time));
-        const low = cluster.center - cluster.halfWidth;
-        const high = cluster.center + cluster.halfWidth;
-        return {
-          center: cluster.center,
-          low,
-          high,
-          touches: cluster.pivots.length,
-          frames,
-          highTouches,
-          lowTouches,
-          newest,
-          confluence: frames.length > 1
-        };
-      })
-      .filter((zone) => zone.touches >= 2 || zone.confluence)
-      .filter((zone) => zone.high - zone.low <= referencePrice * .012)
-      .sort((a, b) => a.center - b.center);
+    const merged = [];
+    for (const zone of [...zones].sort((a, b) => b.strength - a.strength)) {
+      const existing = merged.find((candidate) => candidate.side === zone.side && Math.abs(candidate.center - zone.center) <= Math.max(price * .001, Math.min(atrs.h4 || Infinity, atrs.h1 || Infinity) * .35));
+      if (!existing) merged.push({ ...zone });
+      else {
+        existing.frames = [...new Set([...existing.frames, ...zone.frames])];
+        existing.confluence = existing.frames.length > 1;
+        existing.strength = Math.max(existing.strength, zone.strength);
+        existing.eligible = existing.strength >= ZONE_RULES.minimumStrength;
+        existing.touches = Math.max(existing.touches, zone.touches);
+        existing.rejections = Math.max(existing.rejections, zone.rejections);
+        existing.roleReversal ||= zone.roleReversal;
+        existing.newest = Math.max(existing.newest, zone.newest);
+        existing.source = [...new Set(`${existing.source}＋${zone.source}`.split("＋"))].join("＋");
+      }
+    }
+    return merged.sort((a, b) => a.center - b.center);
   }
 
   function zoneRole(zone, price) {
-    if (!Number.isFinite(price)) return "unknown";
-    if (price < zone.low) return "resistance";
-    if (price > zone.high) return "support";
-    return "active";
+    if (Number.isFinite(price) && price >= zone.low && price <= zone.high) return "active";
+    return zone.side || "unknown";
   }
 
   function zoneQuality(zone) {
-    if (zone.confluence && zone.touches >= 3) return "H4/H1共振";
-    if (zone.frames.includes("h4") && zone.touches >= 3) return "H4重复触碰";
-    if (zone.confluence) return "H4/H1重合";
-    return "重复触碰";
+    if (zone.strength >= ZONE_RULES.strongStrength) return zone.confluence ? "强区域 · H4/H1共振" : "强区域";
+    if (zone.strength >= ZONE_RULES.minimumStrength) return zone.confluence ? "有效区域 · H4/H1共振" : "有效区域";
+    return "观察区域";
   }
 
   function recalculateZones() {
     state.zones = buildZones();
     $("bar-counts").textContent = `H4 ${state.frames.h4.length} · H1 ${state.frames.h1.length}`;
     const enough = state.frames.h4.length >= 30 && state.frames.h1.length >= 60;
-    $("zone-state").textContent = enough ? `已识别 ${state.zones.length} 个固定区域` : "历史样本不足，等待补充";
+    const validCount = state.zones.filter((zone) => zone.eligible).length;
+    $("zone-state").textContent = enough ? `已识别 ${validCount} 个有效区域` : "历史样本不足，等待补充";
     $("zone-updated").textContent = formatTime(Date.now());
     renderZones();
     renderChart();
@@ -405,21 +562,33 @@
     const frames = zone.frames.map((frame) => FRAME_CONFIG[frame].label).join(" + ");
     return `<div class="zone-row ${role}">
       <div class="zone-price">${escapeHtml(formatZone(zone))}</div>
-      <div class="zone-meta">${escapeHtml(zoneQuality(zone))} · ${zone.touches}次摆动触碰</div>
-      <div class="zone-source">来源 ${escapeHtml(frames)} · 最近 ${escapeHtml(formatTime(zone.newest))}</div>
+      <div class="zone-meta">${escapeHtml(zoneQuality(zone))} · 强度${zone.strength}/100 · ${zone.rejections}次有效反应</div>
+      <div class="zone-source">${escapeHtml(zone.source)} · ${escapeHtml(frames)} · ${escapeHtml(formatTime(zone.newest))}</div>
     </div>`;
+  }
+
+  function distanceToZone(price, zone) {
+    if (price < zone.low) return zone.low - price;
+    if (price > zone.high) return price - zone.high;
+    return 0;
+  }
+
+  function rankedSideZones(side, price) {
+    const all = state.zones.filter((zone) => zone.side === side);
+    const eligible = all.filter((zone) => zone.eligible);
+    const candidates = eligible.length ? eligible : all;
+    const atr = calculateAtr(state.frames.h1) || calculateAtr(state.frames.h4) || price * .001;
+    return candidates.sort((a, b) => {
+      const rankA = a.strength - Math.min(35, distanceToZone(price, a) / Math.max(atr, 1e-8) * 7);
+      const rankB = b.strength - Math.min(35, distanceToZone(price, b) / Math.max(atr, 1e-8) * 7);
+      return rankB - rankA || distanceToZone(price, a) - distanceToZone(price, b);
+    });
   }
 
   function renderZones() {
     const referencePrice = Number.isFinite(state.price) ? state.price : state.frames.h1.at(-1)?.c || state.frames.h4.at(-1)?.c;
-    const supports = state.zones
-      .filter((zone) => zoneRole(zone, referencePrice) === "support")
-      .sort((a, b) => b.high - a.high)
-      .slice(0, 4);
-    const resistances = state.zones
-      .filter((zone) => zoneRole(zone, referencePrice) === "resistance")
-      .sort((a, b) => a.low - b.low)
-      .slice(0, 4);
+    const supports = rankedSideZones("support", referencePrice).slice(0, 4);
+    const resistances = rankedSideZones("resistance", referencePrice).slice(0, 4);
     const active = state.zones
       .filter((zone) => zoneRole(zone, referencePrice) === "active")
       .sort((a, b) => Math.abs(a.center - referencePrice) - Math.abs(b.center - referencePrice))[0];
@@ -436,9 +605,9 @@
     const nearestSupport = supports[0];
     const nearestResistance = resistances[0];
     $("nearest-support").textContent = formatZone(nearestSupport);
-    $("nearest-support-meta").textContent = nearestSupport ? `${zoneQuality(nearestSupport)} · ${nearestSupport.touches}次触碰` : "暂无有效下方区域";
+    $("nearest-support-meta").textContent = nearestSupport ? `${zoneQuality(nearestSupport)} · 强度${nearestSupport.strength}/100` : "暂无有效下方区域";
     $("nearest-resistance").textContent = formatZone(nearestResistance);
-    $("nearest-resistance-meta").textContent = nearestResistance ? `${zoneQuality(nearestResistance)} · ${nearestResistance.touches}次触碰` : "暂无有效上方区域";
+    $("nearest-resistance-meta").textContent = nearestResistance ? `${zoneQuality(nearestResistance)} · 强度${nearestResistance.strength}/100` : "暂无有效上方区域";
     $("active-zone").textContent = active ? "位于价格区域内" : "区域之间";
     $("active-zone-meta").textContent = active ? `${formatZone(active)} · ${zoneQuality(active)}` : "只描述位置，不生成方向或策略";
     state.zoneRoleSignature = state.zones.map((zone) => zoneRole(zone, referencePrice)).join("|");
