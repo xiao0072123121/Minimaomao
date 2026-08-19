@@ -11,6 +11,7 @@
   const $ = (id) => document.getElementById(id);
   const moneyFormatter = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const priceFormatter = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const quantityFormatter = new Intl.NumberFormat("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 4 });
   const dateFormatter = new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
 
   function escapeHtml(value) {
@@ -33,6 +34,10 @@
 
   function formatPrice(value) {
     return Number.isFinite(value) ? priceFormatter.format(value) : "—";
+  }
+
+  function formatQuantity(value) {
+    return Number.isFinite(value) ? quantityFormatter.format(value) : "—";
   }
 
   function formatPercent(value) {
@@ -135,10 +140,24 @@
     const normalizedLeverage = Number.isFinite(leverage) && leverage >= 1 ? leverage : 1;
     const risk = Number.isFinite(quantity) && quantity > 0 && Number.isFinite(stopLoss) && stopLoss > 0
       ? Math.abs(entryPrice - stopLoss) * quantity * normalizedLeverage : NaN;
+    const normalizedQuantity = Number.isFinite(quantity) && quantity > 0 ? quantity : null;
+    const normalizeLeg = (leg, final = false) => {
+      const time = Number(leg?.time);
+      const price = Number(leg?.price);
+      const legQuantity = Number(leg?.quantity);
+      return Number.isFinite(time) && Number.isFinite(price) && price > 0 && Number.isFinite(legQuantity) && legQuantity > 0
+        ? { time, price, quantity: legQuantity, final: final || leg?.final === true }
+        : null;
+    };
+    const storedEntries = Array.isArray(trade?.entryLegs) ? trade.entryLegs.map((leg) => normalizeLeg(leg)).filter(Boolean) : [];
+    const entryLegs = storedEntries.length ? storedEntries.sort((a, b) => a.time - b.time) : [{ time: openAt, price: entryPrice, quantity: normalizedQuantity || 1, final: false }];
+    const storedExits = Array.isArray(trade?.exitLegs) ? trade.exitLegs.map((leg) => normalizeLeg(leg, leg?.final === true)).filter(Boolean) : [];
+    let exitLegs = storedExits.length ? storedExits.sort((a, b) => a.time - b.time) : [{ time: closeAt, price: closePrice, quantity: normalizedQuantity || 1, final: true }];
+    if (!exitLegs.some((leg) => leg.final)) exitLegs = exitLegs.map((leg, index) => ({ ...leg, final: index === exitLegs.length - 1 }));
     return {
       id: String(trade?.id || id()), symbol: String(trade?.symbol || "XAUUSDT"),
       side: trade?.side === "short" ? "short" : "long", openAt, closeAt, entryPrice, closePrice, pnl,
-      quantity: Number.isFinite(quantity) && quantity > 0 ? quantity : null, leverage: normalizedLeverage,
+      quantity: normalizedQuantity, leverage: normalizedLeverage, entryLegs, exitLegs,
       stopLoss: Number.isFinite(stopLoss) && stopLoss > 0 ? stopLoss : null,
       takeProfit: Number.isFinite(takeProfit) && takeProfit > 0 ? takeProfit : null,
       reasons: Array.isArray(trade?.reasons) ? trade.reasons.map(String) : [],
@@ -162,14 +181,118 @@
     return [...document.querySelectorAll('input[name="real-entry-reason"]:checked')].map((input) => input.value);
   }
 
-  function calculatedPnlFromForm() {
-    const entryPrice = Number($("trade-entry-price").value);
-    const closePrice = Number($("trade-close-price").value);
-    const quantity = Number($("trade-quantity").value);
+  function emptyFillMessage(kind) {
+    return kind === "entry" ? "暂无加仓记录" : "暂无分批止盈记录";
+  }
+
+  function refreshFillRows(kind) {
+    const container = $(`${kind}-legs`);
+    const rows = [...container.querySelectorAll(".fill-row")];
+    if (!rows.length) {
+      container.innerHTML = `<p class="fill-empty">${emptyFillMessage(kind)}</p>`;
+      return;
+    }
+    rows.forEach((row, index) => { row.querySelector(".fill-row-index").textContent = `${kind === "entry" ? "加" : "止"}${index + 1}`; });
+  }
+
+  function addFillRow(kind, leg = null) {
+    const container = $(`${kind}-legs`);
+    container.querySelector(".fill-empty")?.remove();
+    const row = document.createElement("div");
+    row.className = "fill-row";
+    row.dataset.fillKind = kind;
+    row.innerHTML = `<span class="fill-row-index"></span>
+      <label class="field"><span>${kind === "entry" ? "加仓时间" : "止盈时间"}</span><input data-leg-field="time" type="datetime-local"></label>
+      <label class="field"><span>成交价</span><input data-leg-field="price" type="number" min="0" step="0.01" placeholder="必填"></label>
+      <label class="field"><span>数量</span><input data-leg-field="quantity" type="number" min="0.1" step="0.1" placeholder="最小 0.1"></label>
+      <button class="fill-remove" type="button" aria-label="删除这条${kind === "entry" ? "加仓" : "止盈"}记录">×</button>`;
+    if (leg) {
+      row.querySelector('[data-leg-field="time"]').value = toLocalInput(leg.time);
+      row.querySelector('[data-leg-field="price"]').value = String(leg.price);
+      row.querySelector('[data-leg-field="quantity"]').value = String(leg.quantity);
+    }
+    container.appendChild(row);
+    refreshFillRows(kind);
+  }
+
+  function renderFillRows(kind, legs) {
+    const container = $(`${kind}-legs`);
+    container.innerHTML = "";
+    legs.forEach((leg) => addFillRow(kind, leg));
+    refreshFillRows(kind);
+  }
+
+  function collectFillRows(kind) {
+    const label = kind === "entry" ? "加仓" : "分批止盈";
+    const rows = [...$(`${kind}-legs`).querySelectorAll(".fill-row")];
+    const legs = [];
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index];
+      const time = new Date(row.querySelector('[data-leg-field="time"]').value).getTime();
+      const price = Number(row.querySelector('[data-leg-field="price"]').value);
+      const quantity = Number(row.querySelector('[data-leg-field="quantity"]').value);
+      if (!Number.isFinite(time) || !Number.isFinite(price) || price <= 0 || !Number.isFinite(quantity) || quantity < 0.1) {
+        return { error: `请完整填写第 ${index + 1} 条${label}的时间、成交价和数量。` };
+      }
+      legs.push({ time, price, quantity, final: false });
+    }
+    return { legs };
+  }
+
+  function calculateExecutionPlan() {
+    const openAt = new Date($("trade-open-time").value).getTime();
+    const closeAt = new Date($("trade-close-time").value).getTime();
+    const firstEntryPrice = Number($("trade-entry-price").value);
+    const finalClosePrice = Number($("trade-close-price").value);
+    const firstQuantity = Number($("trade-quantity").value);
     const leverage = Number($("trade-leverage").value);
-    if (![entryPrice, closePrice, quantity, leverage].every(Number.isFinite) || entryPrice <= 0 || closePrice <= 0 || quantity < 0.1 || leverage < 1) return NaN;
+    if (!Number.isFinite(openAt) || !Number.isFinite(closeAt)) return { error: "请填写完整的首次开仓和最终平仓时间。" };
+    if (closeAt < openAt) return { error: "最终平仓时间不能早于首次开仓时间。" };
+    if (![firstEntryPrice, finalClosePrice].every((value) => Number.isFinite(value) && value > 0)) return { error: "请填写有效的首次开仓价和最终平仓价。" };
+    if (!Number.isFinite(firstQuantity) || firstQuantity < 0.1) return { error: "首次开仓数量最小为 0.1。" };
+    if (!Number.isFinite(leverage) || leverage < 1) return { error: "杠杆倍数最小为 1。" };
+    const extraEntries = collectFillRows("entry");
+    if (extraEntries.error) return extraEntries;
+    const partialExits = collectFillRows("exit");
+    if (partialExits.error) return partialExits;
+    const rangedLeg = [...extraEntries.legs, ...partialExits.legs].find((leg) => leg.time < openAt || leg.time > closeAt);
+    if (rangedLeg) return { error: "加仓和分批止盈时间必须位于首次开仓与最终平仓之间。" };
+
+    const entryLegs = [{ time: openAt, price: firstEntryPrice, quantity: firstQuantity, final: false }, ...extraEntries.legs]
+      .sort((a, b) => a.time - b.time);
+    const events = [
+      ...entryLegs.map((leg) => ({ ...leg, type: "entry", order: 0 })),
+      ...partialExits.legs.map((leg) => ({ ...leg, type: "exit", order: 1 }))
+    ].sort((a, b) => a.time - b.time || a.order - b.order);
     const direction = $("trade-side").value === "short" ? -1 : 1;
-    return (closePrice - entryPrice) * quantity * leverage * direction;
+    let positionQuantity = 0;
+    let averageCost = 0;
+    let pnl = 0;
+    for (const event of events) {
+      if (event.type === "entry") {
+        averageCost = (averageCost * positionQuantity + event.price * event.quantity) / (positionQuantity + event.quantity);
+        positionQuantity += event.quantity;
+      } else {
+        if (event.quantity > positionQuantity + 1e-8) return { error: `分批止盈数量 ${formatQuantity(event.quantity)} 超过当时剩余仓位 ${formatQuantity(positionQuantity)}。` };
+        pnl += (event.price - averageCost) * event.quantity * leverage * direction;
+        positionQuantity -= event.quantity;
+        if (positionQuantity < 1e-8) positionQuantity = 0;
+      }
+    }
+    if (positionQuantity <= 0) return { error: "分批止盈不能提前平掉全部仓位，请为最终平仓保留剩余数量。" };
+    const finalExit = { time: closeAt, price: finalClosePrice, quantity: positionQuantity, final: true };
+    pnl += (finalClosePrice - averageCost) * positionQuantity * leverage * direction;
+    const exitLegs = [...partialExits.legs, finalExit].sort((a, b) => a.time - b.time || Number(a.final) - Number(b.final));
+    const totalEntryQuantity = entryLegs.reduce((sum, leg) => sum + leg.quantity, 0);
+    const totalExitQuantity = exitLegs.reduce((sum, leg) => sum + leg.quantity, 0);
+    const entryPrice = entryLegs.reduce((sum, leg) => sum + leg.price * leg.quantity, 0) / totalEntryQuantity;
+    const closePrice = exitLegs.reduce((sum, leg) => sum + leg.price * leg.quantity, 0) / totalExitQuantity;
+    return { openAt, closeAt, entryPrice, closePrice, quantity: totalEntryQuantity, leverage, pnl, entryLegs, exitLegs };
+  }
+
+  function calculatedPnlFromForm() {
+    const plan = calculateExecutionPlan();
+    return plan.error ? NaN : plan.pnl;
   }
 
   function updateCalculatedPnl() {
@@ -182,27 +305,17 @@
   function readTradeForm() {
     const symbol = $("trade-symbol").value;
     const side = $("trade-side").value;
-    const openAt = new Date($("trade-open-time").value).getTime();
-    const closeAt = new Date($("trade-close-time").value).getTime();
-    const entryPrice = Number($("trade-entry-price").value);
-    const closePrice = Number($("trade-close-price").value);
-    const pnl = calculatedPnlFromForm();
-    const quantity = Number($("trade-quantity").value);
-    const leverage = Number($("trade-leverage").value);
+    const plan = calculateExecutionPlan();
+    if (plan.error) return plan;
+    const { openAt, closeAt, entryPrice, closePrice, pnl, quantity, leverage, entryLegs, exitLegs } = plan;
     const stopLoss = Number($("trade-stop").value);
     const takeProfit = Number($("trade-target").value);
     const reasons = selectedReasons();
-    if (!Number.isFinite(openAt) || !Number.isFinite(closeAt)) return { error: "请填写完整的开仓和平仓时间。" };
-    if (closeAt < openAt) return { error: "平仓时间不能早于开仓时间。" };
-    if (![entryPrice, closePrice].every((value) => Number.isFinite(value) && value > 0)) return { error: "请填写有效的开仓价和平仓价。" };
-    if (!Number.isFinite(quantity) || quantity < 0.1) return { error: "开仓数量最小为 0.1。" };
-    if (!Number.isFinite(leverage) || leverage < 1) return { error: "杠杆倍数最小为 1。" };
-    if (!Number.isFinite(pnl)) return { error: "请填写开仓价、平仓价、开仓数量和杠杆倍数。" };
     if (!reasons.length) return { error: "请至少选择一项开仓依据。" };
     const risk = Number.isFinite(stopLoss) && stopLoss > 0 ? Math.abs(entryPrice - stopLoss) * quantity * leverage : NaN;
     return {
       id: $("trade-edit-id").value || id(), symbol, side, openAt, closeAt, entryPrice, closePrice, pnl,
-      quantity, leverage,
+      quantity, leverage, entryLegs, exitLegs,
       stopLoss: Number.isFinite(stopLoss) && stopLoss > 0 ? stopLoss : null,
       takeProfit: Number.isFinite(takeProfit) && takeProfit > 0 ? takeProfit : null,
       reasons, note: $("trade-note").value.trim(), exitReason: $("trade-exit-reason").value,
@@ -223,6 +336,8 @@
     $("trade-target").value = "";
     $("trade-exit-reason").value = "止盈";
     $("trade-note").value = "";
+    renderFillRows("entry", []);
+    renderFillRows("exit", []);
     document.querySelectorAll('input[name="real-entry-reason"]').forEach((input) => { input.checked = false; });
     const now = Date.now();
     $("trade-close-time").value = toLocalInput(now);
@@ -244,11 +359,22 @@
     showToast(existing ? "实盘交易记录已更新。" : "实盘交易已录入并纳入分析。" );
   }
 
+  function executionDetails(trade) {
+    const entryLegs = Array.isArray(trade.entryLegs) ? trade.entryLegs : [];
+    const exitLegs = Array.isArray(trade.exitLegs) ? trade.exitLegs : [];
+    const partialExitCount = exitLegs.filter((leg) => !leg.final).length;
+    const lines = [
+      ...entryLegs.map((leg, index) => `<span>开${index + 1} · ${escapeHtml(formatDate(leg.time))} · ${escapeHtml(formatPrice(leg.price))} × ${escapeHtml(formatQuantity(leg.quantity))}</span>`),
+      ...exitLegs.map((leg, index) => `<span>${leg.final ? "最终平仓" : `止盈${index + 1}`} · ${escapeHtml(formatDate(leg.time))} · ${escapeHtml(formatPrice(leg.price))} × ${escapeHtml(formatQuantity(leg.quantity))}</span>`)
+    ].join("");
+    return `<details class="fill-details"><summary>加仓 ${Math.max(0, entryLegs.length - 1)} 次 · 分批止盈 ${partialExitCount} 次</summary><div class="fill-detail-list">${lines}</div></details>`;
+  }
+
   function journalRow(trade) {
     return `<tr>
       <td>${escapeHtml(trade.symbol)}</td>
       <td class="${trade.side === "long" ? "direction-long" : "direction-short"}">${SIDE_LABELS[trade.side]}</td>
-      <td>${escapeHtml(formatPrice(trade.entryPrice))} / ${escapeHtml(formatPrice(trade.closePrice))}</td>
+      <td><div class="paired-value"><span>均价 ${escapeHtml(formatPrice(trade.entryPrice))}</span><span>均价 ${escapeHtml(formatPrice(trade.closePrice))}</span></div>${executionDetails(trade)}</td>
       <td><div class="paired-value"><span>开 ${escapeHtml(formatDate(trade.openAt))}</span><span>平 ${escapeHtml(formatDate(trade.closeAt))}</span></div></td>
       <td>${escapeHtml(formatDuration(trade.closeAt - trade.openAt))}</td>
       <td class="${trade.pnl > 0 ? "metric-positive" : trade.pnl < 0 ? "metric-negative" : ""}">${escapeHtml(formatMoney(trade.pnl, true))}</td>
@@ -397,17 +523,23 @@
     $("trade-edit-id").value = trade.id;
     $("trade-symbol").value = [...$("trade-symbol").options].some((option) => option.value === trade.symbol) ? trade.symbol : "其他";
     $("trade-side").value = trade.side;
-    $("trade-open-time").value = toLocalInput(trade.openAt);
-    $("trade-close-time").value = toLocalInput(trade.closeAt);
-    $("trade-entry-price").value = String(trade.entryPrice);
-    $("trade-close-price").value = String(trade.closePrice);
+    const entries = Array.isArray(trade.entryLegs) && trade.entryLegs.length ? [...trade.entryLegs].sort((a, b) => a.time - b.time) : [{ time: trade.openAt, price: trade.entryPrice, quantity: trade.quantity }];
+    const exits = Array.isArray(trade.exitLegs) && trade.exitLegs.length ? [...trade.exitLegs].sort((a, b) => a.time - b.time) : [{ time: trade.closeAt, price: trade.closePrice, quantity: trade.quantity, final: true }];
+    const firstEntry = entries[0];
+    const finalExit = exits.find((leg) => leg.final) || exits.at(-1);
+    $("trade-open-time").value = toLocalInput(firstEntry.time);
+    $("trade-close-time").value = toLocalInput(finalExit.time);
+    $("trade-entry-price").value = String(firstEntry.price);
+    $("trade-close-price").value = String(finalExit.price);
     $("trade-pnl").value = String(trade.pnl);
-    $("trade-quantity").value = Number.isFinite(trade.quantity) ? String(trade.quantity) : "";
+    $("trade-quantity").value = Number.isFinite(firstEntry.quantity) ? String(firstEntry.quantity) : "";
     $("trade-leverage").value = String(Number.isFinite(trade.leverage) ? trade.leverage : 1);
     $("trade-stop").value = Number.isFinite(trade.stopLoss) ? String(trade.stopLoss) : "";
     $("trade-target").value = Number.isFinite(trade.takeProfit) ? String(trade.takeProfit) : "";
     $("trade-exit-reason").value = [...$("trade-exit-reason").options].some((option) => option.value === trade.exitReason) ? trade.exitReason : "其他";
     $("trade-note").value = trade.note;
+    renderFillRows("entry", entries.slice(1));
+    renderFillRows("exit", exits.filter((leg) => leg !== finalExit));
     document.querySelectorAll('input[name="real-entry-reason"]').forEach((input) => { input.checked = trade.reasons.includes(input.value); });
     updateCalculatedPnl();
     $("save-trade").textContent = "保存修改";
@@ -435,7 +567,20 @@
     document.querySelectorAll(".nav-button[data-view]").forEach((button) => button.addEventListener("click", () => navigate(button.dataset.view)));
     $("save-trade").addEventListener("click", saveTradeFromForm);
     $("reset-trade-form").addEventListener("click", resetTradeForm);
-    ["trade-side", "trade-entry-price", "trade-close-price", "trade-quantity", "trade-leverage"].forEach((idName) => $(idName).addEventListener("input", updateCalculatedPnl));
+    $("add-entry-leg").addEventListener("click", () => addFillRow("entry"));
+    $("add-exit-leg").addEventListener("click", () => addFillRow("exit"));
+    [$("entry-legs"), $("exit-legs")].forEach((container) => {
+      container.addEventListener("input", updateCalculatedPnl);
+      container.addEventListener("click", (event) => {
+        const removeButton = event.target.closest(".fill-remove");
+        if (!removeButton) return;
+        const kind = removeButton.closest(".fill-row").dataset.fillKind;
+        removeButton.closest(".fill-row").remove();
+        refreshFillRows(kind);
+        updateCalculatedPnl();
+      });
+    });
+    ["trade-side", "trade-open-time", "trade-close-time", "trade-entry-price", "trade-close-price", "trade-quantity", "trade-leverage"].forEach((idName) => $(idName).addEventListener("input", updateCalculatedPnl));
     $("trade-side").addEventListener("change", updateCalculatedPnl);
     ["journal-symbol-filter", "journal-side-filter", "journal-result-filter"].forEach((idName) => $(idName).addEventListener("change", renderJournal));
     $("journal-body").addEventListener("click", (event) => {

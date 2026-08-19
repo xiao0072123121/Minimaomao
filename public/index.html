@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="dark">
   <title>价格行为支撑压力监测</title>
-  <link rel="stylesheet" href="paper-trading.css?v=20260819-monitor-v1">
+  <link rel="stylesheet" href="paper-trading.css?v=20260819-partial-fills-v1">
 </head>
 <body class="monitor-active">
   <div class="app-shell">
@@ -114,11 +114,11 @@
           <div class="trade-entry-grid">
             <label class="field"><span>标的</span><select id="trade-symbol"><option>XAUUSDT</option><option>SNDKUSDT</option><option>SKHYNIXUSDT</option><option>其他</option></select></label>
             <label class="field"><span>方向</span><select id="trade-side"><option value="long">做多</option><option value="short">做空</option></select></label>
-            <label class="field"><span>开仓时间</span><input id="trade-open-time" type="datetime-local"></label>
-            <label class="field"><span>平仓时间</span><input id="trade-close-time" type="datetime-local"></label>
-            <label class="field"><span>开仓价</span><input id="trade-entry-price" type="number" min="0" step="0.01" placeholder="必填"></label>
-            <label class="field"><span>平仓价</span><input id="trade-close-price" type="number" min="0" step="0.01" placeholder="必填"></label>
-            <label class="field"><span>开仓数量</span><input id="trade-quantity" type="number" min="0.1" step="0.1" placeholder="最小 0.1"></label>
+            <label class="field"><span>首次开仓时间</span><input id="trade-open-time" type="datetime-local"></label>
+            <label class="field"><span>最终平仓时间</span><input id="trade-close-time" type="datetime-local"></label>
+            <label class="field"><span>首次开仓价</span><input id="trade-entry-price" type="number" min="0" step="0.01" placeholder="必填"></label>
+            <label class="field"><span>最终平仓价</span><input id="trade-close-price" type="number" min="0" step="0.01" placeholder="结算剩余仓位"></label>
+            <label class="field"><span>首次开仓数量</span><input id="trade-quantity" type="number" min="0.1" step="0.1" placeholder="最小 0.1"></label>
             <label class="field"><span>杠杆倍数</span><input id="trade-leverage" type="number" min="1" step="1" value="1"></label>
             <label class="field"><span>自动盈亏（未计费用）</span><input id="trade-pnl" type="number" step="0.01" placeholder="填写价格、数量和杠杆后自动计算" readonly></label>
             <label class="field"><span>计划止损（可选）</span><input id="trade-stop" type="number" min="0" step="0.01"></label>
@@ -133,6 +133,16 @@
               <label class="reason-option"><input type="checkbox" name="real-entry-reason" value="其他">其他</label>
             </div></div>
             <label class="field entry-note"><span>复盘备注</span><textarea id="trade-note" maxlength="500" placeholder="记录当时看到的区域、形态、进出场考虑和执行偏差…"></textarea></label>
+          </div>
+          <div class="fill-sections">
+            <section class="fill-panel" aria-labelledby="entry-legs-title">
+              <div class="fill-panel-head"><div><h4 id="entry-legs-title">分批加仓</h4><p>记录首次开仓后的每一笔加仓，可添加多条。</p></div><button id="add-entry-leg" class="secondary-button" type="button">＋ 添加加仓</button></div>
+              <div id="entry-legs" class="fill-list"><p class="fill-empty">暂无加仓记录</p></div>
+            </section>
+            <section class="fill-panel" aria-labelledby="exit-legs-title">
+              <div class="fill-panel-head"><div><h4 id="exit-legs-title">分批止盈</h4><p>记录最终平仓前的减仓；最终平仓会自动结算剩余数量。</p></div><button id="add-exit-leg" class="secondary-button" type="button">＋ 添加止盈</button></div>
+              <div id="exit-legs" class="fill-list"><p class="fill-empty">暂无分批止盈记录</p></div>
+            </section>
           </div>
           <div class="entry-actions"><p id="trade-form-error" class="form-error" role="alert">自动盈亏暂不包含手续费、滑点和资金费率。</p><button id="save-trade" class="primary-button" type="button">保存实盘交易</button></div>
         </section>
@@ -176,6 +186,6 @@
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="binance-xau.js?v=20260819-paper-bridge-v1"></script>
-  <script src="paper-trading.js?v=20260819-monitor-v1"></script>
+  <script src="paper-trading.js?v=20260819-partial-fills-v1"></script>
 </body>
 </html>
