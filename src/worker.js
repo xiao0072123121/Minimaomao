@@ -9,7 +9,8 @@ const BINANCE_API_HOSTS = [
 ];
 const BINANCE_ENDPOINTS = new Set([
   "/fapi/v1/klines",
-  "/fapi/v1/ticker/price"
+  "/fapi/v1/ticker/price",
+  "/fapi/v1/ticker/24hr"
 ]);
 const BINANCE_SYMBOLS = new Set(["XAUUSDT", "SNDKUSDT", "SKHYNIXUSDT"]);
 const BINANCE_INTERVALS = new Set(["1h", "4h"]);
@@ -144,6 +145,7 @@ function binanceCacheTtl(endpoint, url) {
   if (endpoint === "/fapi/v1/klines") {
     return url.searchParams.has("startTime") && url.searchParams.has("endTime") ? 300 : 60;
   }
+  if (endpoint === "/fapi/v1/ticker/24hr") return 30;
   return 2;
 }
 

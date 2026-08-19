@@ -6,6 +6,7 @@
 
 - 支持 XAUUSDT、SNDKUSDT、SKHYNIXUSDT 切换。
 - 实时链路只订阅 Binance Mark Price；断线时使用价格接口低频回退。
+- 每分钟读取一次24小时统计，只保留涨跌幅、最高价、最低价和最新成交价。
 - 历史数据只请求 H4 与 H1 K线，并立即裁剪为 `time/open/high/low/close/closeTime`。
 - H4最多常驻240根、H1最多常驻320根，切换标的后旧标的数组立即释放。
 - 浏览器 IndexedDB 只保存限长后的OHLC缓存，页面启动后按需读取。
@@ -17,13 +18,14 @@
 - 订单簿深度与买卖盘快照
 - 成交明细、聚合成交和成交密集区
 - 实时与历史成交量计算
-- 24小时Ticker统计
+- 24小时Ticker中的成交量、成交额和成交笔数
 - RSI、MACD、均线及SMC策略演算
 - 所有前端回测任务
 
 Worker只允许代理以下Binance接口：
 
 - `/fapi/v1/ticker/price`
+- `/fapi/v1/ticker/24hr`（只用于24小时涨跌幅与区间）
 - `/fapi/v1/klines`，且仅允许 `1h`、`4h`，单次最多320根
 
 ## Cloudflare Workers 部署

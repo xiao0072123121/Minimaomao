@@ -82,10 +82,27 @@
     .info-row { display: flex; justify-content: space-between; gap: 14px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,.06); }
     .info-row span { color: var(--muted); }
     .info-row b { text-align: right; font-variant-numeric: tabular-nums; }
+    .day-stat-card { min-height: 192px; }
+    .day-change-value {
+      margin: 26px 0 17px; color: var(--muted); font-size: clamp(36px, 3.1vw, 48px); line-height: 1;
+      font-weight: 760; letter-spacing: -.025em; font-variant-numeric: tabular-nums;
+    }
+    .day-change-value.positive { color: var(--red); }
+    .day-change-value.negative { color: var(--green); }
+    .day-stat-foot { color: var(--muted); font-size: 12px; }
+    .day-stat-foot b { color: #dce8f1; font-variant-numeric: tabular-nums; }
+    .day-range-list { display: grid; gap: 12px; margin-top: 17px; }
+    .day-range-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .day-range-row span { color: var(--muted); font-size: 12px; }
+    .day-range-row b { color: #eef4f8; font-size: 13px; font-variant-numeric: tabular-nums; }
+    .day-range-row b span { color: inherit; font-size: inherit; }
     .notice {
+      display: flex; align-items: center; justify-content: space-between; gap: 10px 20px; flex-wrap: wrap;
       margin-bottom: 14px; padding: 13px 16px; border: 1px solid rgba(101,163,255,.19); border-radius: 12px;
       color: #bfd4ef; background: rgba(101,163,255,.055); font-size: 12px;
     }
+    .notice-status { color: var(--muted); font-variant-numeric: tabular-nums; }
+    .notice-status b { color: #dce8f1; }
     .section-heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin: 25px 2px 10px; }
     .section-heading h2 { margin-bottom: 0; font-size: 18px; }
     .section-heading p { margin-bottom: 0; color: var(--muted); font-size: 12px; text-align: right; }
@@ -185,27 +202,24 @@
         <div class="price-line"><span id="current-price" class="price">—</span><span class="unit">USDT</span></div>
         <div class="meta-row"><span id="price-time">等待报价</span><span>价格源：Binance Mark Price</span></div>
       </article>
-      <article class="card info-card">
-        <div class="card-label">数据范围</div>
-        <h2>只保留价格行为所需数据</h2>
-        <div class="info-list">
-          <div class="info-row"><span>实时流</span><b>仅价格</b></div>
-          <div class="info-row"><span>结构周期</span><b>H4 / H1</b></div>
-          <div class="info-row"><span>常驻上限</span><b id="bar-counts">H4 0 · H1 0</b></div>
-        </div>
+      <article class="card day-stat-card">
+        <div class="card-label">24小时涨跌</div>
+        <div id="day-change" class="day-change-value">—</div>
+        <div class="day-stat-foot">最新成交价 <b id="day-last-price">—</b> USDT</div>
       </article>
-      <article class="card info-card">
-        <div class="card-label">计算状态</div>
-        <h2 id="zone-state">等待H4/H1收盘K线</h2>
-        <div class="info-list">
-          <div class="info-row"><span>区域更新时间</span><b id="zone-updated">—</b></div>
-          <div class="info-row"><span>订单簿/成交</span><b>已停用</b></div>
-          <div class="info-row"><span>策略演算</span><b>已停用</b></div>
+      <article class="card day-stat-card">
+        <div class="card-label">24小时区间</div>
+        <div class="day-range-list">
+          <div class="day-range-row"><span>最高</span><b><span id="day-high">—</span> USDT</b></div>
+          <div class="day-range-row"><span>最低</span><b><span id="day-low">—</span> USDT</b></div>
         </div>
       </article>
     </section>
 
-    <div class="notice">H4/H1 K线仅提取开、高、低、收四项并限制长度；不读取或计算订单簿深度、成交明细、成交密集区、成交量、RSI、MACD、均线或SMC信号。</div>
+    <div class="notice">
+      <span>H4/H1 K线仅提取开、高、低、收四项；24小时统计仅读取涨跌幅和最高/最低，不读取成交量。</span>
+      <span class="notice-status"><b id="zone-state">等待H4/H1收盘K线</b> · <span id="bar-counts">H4 0 · H1 0</span> · 更新 <span id="zone-updated">—</span></span>
+    </div>
 
     <section aria-labelledby="zones-title" aria-live="polite">
       <div class="section-heading">
@@ -247,6 +261,6 @@
     <div class="final-note"><b>当前页面只做区域监测：</b>不计算入场、止损、止盈、方向、评分或任何具体交易策略。区域是程序依据历史价格行为自动推算的观察范围，不代表一定有效。</div>
   </main>
 
-  <script src="binance-xau.js?v=20260819-zone-map-style-v3"></script>
+  <script src="binance-xau.js?v=20260819-24h-stats-v4"></script>
 </body>
 </html>

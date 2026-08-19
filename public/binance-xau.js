@@ -21,6 +21,7 @@
   const DATABASE_STORE = "ohlc";
   const CACHE_MAX_AGE = 7 * 24 * HOUR;
   const PRICE_FALLBACK_INTERVAL = 15 * 1000;
+  const DAY_STATS_REFRESH_INTERVAL = 60 * 1000;
   const FRAME_REFRESH_INTERVAL = HOUR;
   const MAX_RECONNECT_DELAY = 30 * 1000;
   const SVG_NS = "http://www.w3.org/2000/svg";
@@ -29,6 +30,7 @@
     symbol: "XAUUSDT",
     price: NaN,
     priceAt: 0,
+    dayStats: null,
     frames: { h4: [], h1: [] },
     zones: [],
     chartFrame: "h4",
@@ -38,6 +40,7 @@
     priceSocket: null,
     reconnectTimer: null,
     pricePollTimer: null,
+    dayStatsTimer: null,
     frameRefreshTimer: null,
     reconnectAttempt: 0,
     chartMeta: null,
@@ -104,6 +107,22 @@
       renderZones();
       renderChart();
     }
+  }
+
+  function renderDayStats() {
+    const stats = state.dayStats;
+    const changeElement = $("day-change");
+    const change = stats?.changePercent;
+    changeElement.classList.remove("positive", "negative");
+    if (Number.isFinite(change)) {
+      changeElement.textContent = `${change > 0 ? "+" : ""}${change.toFixed(2)}%`;
+      if (change !== 0) changeElement.classList.add(change > 0 ? "positive" : "negative");
+    } else {
+      changeElement.textContent = "—";
+    }
+    $("day-last-price").textContent = formatPrice(stats?.lastPrice);
+    $("day-high").textContent = formatPrice(stats?.high);
+    $("day-low").textContent = formatPrice(stats?.low);
   }
 
   function openDatabase() {
@@ -245,6 +264,25 @@
       updatePrice(Number(payload.price), Date.now());
     } catch (error) {
       if (error.name !== "AbortError" && !Number.isFinite(state.price)) setConnection(false, "实时价格重连中");
+    }
+  }
+
+  async function requestDayStats() {
+    const generation = state.loadGeneration;
+    const symbol = state.symbol;
+    try {
+      const payload = await fetchJson(`/fapi/v1/ticker/24hr?symbol=${encodeURIComponent(symbol)}`, state.abortController?.signal);
+      if (generation !== state.loadGeneration || symbol !== state.symbol) return;
+      const nextStats = {
+        changePercent: Number(payload.priceChangePercent),
+        high: Number(payload.highPrice),
+        low: Number(payload.lowPrice),
+        lastPrice: Number(payload.lastPrice)
+      };
+      state.dayStats = Object.values(nextStats).every(Number.isFinite) ? nextStats : null;
+      renderDayStats();
+    } catch (error) {
+      if (error.name !== "AbortError" && !state.dayStats) renderDayStats();
     }
   }
 
@@ -582,6 +620,7 @@
     state.abortController?.abort();
     clearTimeout(state.reconnectTimer);
     clearInterval(state.pricePollTimer);
+    clearInterval(state.dayStatsTimer);
     clearInterval(state.frameRefreshTimer);
     if (state.priceSocket) {
       state.priceSocket.onclose = null;
@@ -603,6 +642,7 @@
     state.symbol = symbol;
     state.price = NaN;
     state.priceAt = 0;
+    state.dayStats = null;
     state.frames = { h4: [], h1: [] };
     state.zones = [];
     state.zoneRoleSignature = "";
@@ -613,6 +653,7 @@
     $("market-symbol").textContent = `BINANCE FUTURES · ${symbol}`;
     $("current-price").textContent = "—";
     $("price-time").textContent = "等待报价";
+    renderDayStats();
     $("zone-state").textContent = "正在读取H4/H1收盘K线";
     $("bar-counts").textContent = "H4 0 · H1 0";
     $("zone-updated").textContent = "—";
@@ -621,6 +662,7 @@
     renderChart();
     setConnection(false, "正在连接实时价格");
     requestPriceOnce();
+    requestDayStats();
     connectPriceSocket();
     await loadFrames();
   }
@@ -634,6 +676,7 @@
         requestPriceOnce();
       }
     }, PRICE_FALLBACK_INTERVAL);
+    state.dayStatsTimer = setInterval(requestDayStats, DAY_STATS_REFRESH_INTERVAL);
     state.frameRefreshTimer = setInterval(() => loadFrames({ incremental: true, quiet: true }), FRAME_REFRESH_INTERVAL);
   }
 
