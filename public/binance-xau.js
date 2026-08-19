@@ -92,6 +92,12 @@
     state.priceAt = timestamp;
     $("current-price").textContent = formatPrice(value);
     $("price-time").textContent = `更新 ${formatTime(timestamp)}`;
+    const mapPrice = $("zone-current-price");
+    if (mapPrice) mapPrice.textContent = formatPrice(value);
+    const mapMeta = $("zone-current-meta");
+    if (mapMeta && !state.zones.some((zone) => zoneRole(zone, value) === "active")) {
+      mapMeta.textContent = `实时Mark Price · 更新 ${formatTime(timestamp)}`;
+    }
     setConnection(true, "实时价格已连接");
     const nextSignature = state.zones.map((zone) => zoneRole(zone, value)).join("|");
     if (nextSignature !== state.zoneRoleSignature) {
@@ -401,12 +407,16 @@
     renderChart();
   }
 
-  function zoneRowMarkup(zone, role) {
-    const frames = zone.frames.map((frame) => FRAME_CONFIG[frame].label).join(" + ");
-    return `<div class="zone-row ${role}">
-      <div class="zone-price">${escapeHtml(formatZone(zone))}</div>
-      <div class="zone-meta">${escapeHtml(zoneQuality(zone))} · ${zone.touches}次摆动触碰</div>
-      <div class="zone-source">来源 ${escapeHtml(frames)} · 最近 ${escapeHtml(formatTime(zone.newest))}</div>
+  function zoneBandMarkup(zone, role) {
+    const frames = zone.frames.map((frame) => FRAME_CONFIG[frame].label).join("/");
+    const frameLabel = zone.confluence ? "H4/H1共振" : zone.frames.includes("h4") ? "H4" : "H1";
+    const title = role === "resistance" ? `${frameLabel}上方压力区` : `${frameLabel}下方支撑区`;
+    return `<div class="zone-band ${role}">
+      <div class="zone-band-copy">
+        <strong>${escapeHtml(title)}</strong>
+        <small>${escapeHtml(zoneQuality(zone))} · ${zone.touches}次摆动触碰 · ${escapeHtml(frames)}</small>
+      </div>
+      <b class="zone-band-price">${escapeHtml(formatZone(zone))}</b>
     </div>`;
   }
 
@@ -424,23 +434,16 @@
       .filter((zone) => zoneRole(zone, referencePrice) === "active")
       .sort((a, b) => Math.abs(a.center - referencePrice) - Math.abs(b.center - referencePrice))[0];
 
-    $("support-list").innerHTML = supports.length
-      ? supports.map((zone) => zoneRowMarkup(zone, "support")).join("")
-      : '<div class="empty-zones">当前样本中没有满足重复触碰条件的下方区域</div>';
-    $("resistance-list").innerHTML = resistances.length
-      ? resistances.map((zone) => zoneRowMarkup(zone, "resistance")).join("")
-      : '<div class="empty-zones">当前样本中没有满足重复触碰条件的上方区域</div>';
-    $("support-count").textContent = `${supports.length}个邻近区域`;
-    $("resistance-count").textContent = `${resistances.length}个邻近区域`;
-
-    const nearestSupport = supports[0];
-    const nearestResistance = resistances[0];
-    $("nearest-support").textContent = formatZone(nearestSupport);
-    $("nearest-support-meta").textContent = nearestSupport ? `${zoneQuality(nearestSupport)} · ${nearestSupport.touches}次触碰` : "暂无有效下方区域";
-    $("nearest-resistance").textContent = formatZone(nearestResistance);
-    $("nearest-resistance-meta").textContent = nearestResistance ? `${zoneQuality(nearestResistance)} · ${nearestResistance.touches}次触碰` : "暂无有效上方区域";
-    $("active-zone").textContent = active ? "位于价格区域内" : "区域之间";
-    $("active-zone-meta").textContent = active ? `${formatZone(active)} · ${zoneQuality(active)}` : "只描述位置，不生成方向或策略";
+    const upperBands = [...resistances].sort((a, b) => b.center - a.center).map((zone) => zoneBandMarkup(zone, "resistance"));
+    const lowerBands = [...supports].sort((a, b) => b.center - a.center).map((zone) => zoneBandMarkup(zone, "support"));
+    const currentMeta = active
+      ? `当前位于 ${formatZone(active)} · ${zoneQuality(active)}`
+      : `实时Mark Price · 更新 ${formatTime(state.priceAt || Date.now())}`;
+    const currentBand = `<div class="zone-band current">
+      <div class="zone-band-copy"><strong>当前价</strong><small id="zone-current-meta">${escapeHtml(currentMeta)}</small></div>
+      <b id="zone-current-price" class="zone-band-price">${escapeHtml(formatPrice(referencePrice))}</b>
+    </div>`;
+    $("zone-map-list").innerHTML = [...upperBands, currentBand, ...lowerBands].join("");
     state.zoneRoleSignature = state.zones.map((zone) => zoneRole(zone, referencePrice)).join("|");
   }
 
