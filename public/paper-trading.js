@@ -245,14 +245,14 @@
   }
 
   function journalRow(trade) {
-    const r = Number.isFinite(trade.rMultiple) ? trade.rMultiple.toFixed(2) : "—";
     return `<tr>
-      <td>${escapeHtml(formatDate(trade.closeAt))}</td><td>${escapeHtml(trade.id.slice(0, 8))}</td><td>${escapeHtml(trade.symbol)}</td>
-      <td class="${trade.side === "long" ? "direction-long" : "direction-short"}">${SIDE_LABELS[trade.side]}</td><td>${escapeHtml(`${trade.leverage}x`)}</td>
-      <td>${escapeHtml(trade.reasons.join(" / ") || "—")}</td><td>${escapeHtml(formatPrice(trade.entryPrice))} / ${escapeHtml(formatPrice(trade.closePrice))}</td>
-      <td>${escapeHtml(trade.exitReason)}</td><td>${escapeHtml(formatDuration(trade.closeAt - trade.openAt))}</td>
+      <td>${escapeHtml(trade.symbol)}</td>
+      <td class="${trade.side === "long" ? "direction-long" : "direction-short"}">${SIDE_LABELS[trade.side]}</td>
+      <td>${escapeHtml(formatPrice(trade.entryPrice))} / ${escapeHtml(formatPrice(trade.closePrice))}</td>
+      <td><div class="paired-value"><span>开 ${escapeHtml(formatDate(trade.openAt))}</span><span>平 ${escapeHtml(formatDate(trade.closeAt))}</span></div></td>
+      <td>${escapeHtml(formatDuration(trade.closeAt - trade.openAt))}</td>
       <td class="${trade.pnl > 0 ? "metric-positive" : trade.pnl < 0 ? "metric-negative" : ""}">${escapeHtml(formatMoney(trade.pnl, true))}</td>
-      <td>${escapeHtml(r)}</td><td><input type="checkbox" data-analysis-toggle="${escapeHtml(trade.id)}" ${trade.includeInAnalysis ? "checked" : ""} aria-label="纳入分析"></td>
+      <td>${escapeHtml(`${trade.leverage}x`)}</td><td><input type="checkbox" data-analysis-toggle="${escapeHtml(trade.id)}" ${trade.includeInAnalysis ? "checked" : ""} aria-label="纳入分析"></td>
       <td><div class="row-actions"><button class="row-button" data-edit-trade="${escapeHtml(trade.id)}" type="button">编辑</button><button class="row-button delete" data-delete-trade="${escapeHtml(trade.id)}" type="button">删除</button></div></td>
     </tr>`;
   }
@@ -270,7 +270,7 @@
 
   function renderJournal() {
     const trades = filteredTrades();
-    $("journal-body").innerHTML = trades.length ? trades.map(journalRow).join("") : '<tr class="empty-row"><td colspan="13">当前筛选条件下没有实盘交易记录。</td></tr>';
+    $("journal-body").innerHTML = trades.length ? trades.map(journalRow).join("") : '<tr class="empty-row"><td colspan="9">当前筛选条件下没有实盘交易记录。</td></tr>';
   }
 
   function reviewFor(trades) {

@@ -206,6 +206,9 @@ body:not(.monitor-active) .workspace-header { display: none; }
 .data-table th, .data-table td { padding: 9px 11px; border-bottom: 1px solid rgba(255,255,255,.055); text-align: left; white-space: nowrap; font-size: 11px; }
 .data-table th { color: var(--muted); font-weight: 550; background: rgba(255,255,255,.012); }
 .data-table td { color: #cbd7df; font-variant-numeric: tabular-nums; }
+.paired-value { display: grid; gap: 2px; }
+.paired-value span:first-child { color: #a9c0d1; }
+.paired-value span:last-child { color: var(--muted); }
 .data-table tbody tr:hover { background: rgba(255,255,255,.018); }
 .empty-row td { padding: 30px 12px; color: var(--muted); text-align: center; }
 .direction-long { color: var(--green) !important; font-weight: 700; }
