@@ -359,6 +359,7 @@
   }
 
   function navigate(view) {
+    document.body.classList.toggle("monitor-active", view === "monitor");
     document.querySelectorAll(".nav-button[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
     document.querySelectorAll("[data-app-view]").forEach((section) => section.classList.toggle("active", section.dataset.appView === view));
     if (view === "journal") renderJournal();

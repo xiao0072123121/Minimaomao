@@ -72,6 +72,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
 .live-state.connected { color: #aeead7; }
 .live-state.connected .live-dot { background: var(--green); box-shadow: 0 0 0 4px rgba(40,214,157,.1); }
+body:not(.monitor-active) .symbol-switcher,
+body:not(.monitor-active) .live-state { display: none; }
 .account-strip {
   display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)) auto; margin-bottom: 10px; border: 1px solid var(--border);
   border-radius: 9px; background: var(--panel); overflow: hidden;
