@@ -102,6 +102,7 @@
       mapMeta.textContent = `实时Mark Price · 更新 ${formatTime(timestamp)}`;
     }
     setConnection(true, "实时价格已连接");
+    window.dispatchEvent(new CustomEvent("market-price", { detail: { symbol: state.symbol, price: value, timestamp } }));
     const nextSignature = state.zones.map((zone) => zoneRole(zone, value)).join("|");
     if (nextSignature !== state.zoneRoleSignature) {
       renderZones();
@@ -541,6 +542,23 @@
       svg.append(svgElement("rect", { x: plot.left, y: top, width: plotWidth, height: Math.max(1, bottom - top), fill, stroke, "stroke-width": .8 }));
     }
 
+    const paperPositions = window.paperTrading?.getPositionsForSymbol?.(state.symbol) || [];
+    const positionLines = [];
+    for (const position of paperPositions) {
+      positionLines.push({ price: position.entryPrice, label: `${position.side === "long" ? "多" : "空"} 开仓`, color: "#64a4ff" });
+      positionLines.push({ price: position.stopLoss, label: "止损", color: "#ff6572" });
+      positionLines.push({ price: position.takeProfit, label: "止盈", color: "#d7a33d" });
+    }
+    for (const line of positionLines.filter((item) => item.price >= minimum && item.price <= maximum)) {
+      const lineY = y(line.price);
+      svg.append(svgElement("line", { x1: plot.left, x2: width - plot.right, y1: lineY, y2: lineY, stroke: line.color, "stroke-width": 1.2, "stroke-dasharray": "5 4" }));
+      const background = svgElement("rect", { x: width - plot.right - 83, y: lineY - 10, width: 80, height: 18, rx: 3, fill: line.color, opacity: .88 });
+      svg.append(background);
+      const label = svgElement("text", { x: width - plot.right - 43, y: lineY + 3, fill: "#071019", "font-size": 9, "font-weight": 700, "text-anchor": "middle" });
+      label.textContent = `${line.label} ${formatPrice(line.price)}`;
+      svg.append(label);
+    }
+
     candles.forEach((candle, index) => {
       const x = plot.left + step * (index + .5);
       const up = candle.c >= candle.o;
@@ -613,6 +631,7 @@
       renderChart();
     }, { passive: false });
     window.addEventListener("resize", renderChart, { passive: true });
+    window.addEventListener("paper-positions-changed", renderChart);
     window.addEventListener("beforeunload", cleanup);
   }
 
@@ -648,6 +667,7 @@
     state.zoneRoleSignature = "";
     state.visibleBars = 100;
     state.reconnectAttempt = 0;
+    window.dispatchEvent(new CustomEvent("market-symbol", { detail: { symbol } }));
     document.querySelectorAll(".symbol-button").forEach((button) => button.classList.toggle("active", button.dataset.symbol === symbol));
     $("brand-subtitle").textContent = `${symbol} · 实时价格与H4/H1固定区域`;
     $("market-symbol").textContent = `BINANCE FUTURES · ${symbol}`;

@@ -4,263 +4,205 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="dark">
-  <title>价格行为支撑压力监测</title>
-  <style>
-    :root {
-      --bg: #071019;
-      --panel: #0d1924;
-      --panel-2: #101f2c;
-      --border: rgba(170, 195, 216, .13);
-      --text: #f2f6f9;
-      --muted: #8ca0b2;
-      --gold: #f0ba4d;
-      --green: #2fd6a2;
-      --red: #ff6672;
-      --blue: #65a3ff;
-      --shadow: 0 18px 48px rgba(0, 0, 0, .25);
-      --font: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei UI", system-ui, sans-serif;
-    }
-
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      min-width: 320px;
-      min-height: 100vh;
-      color: var(--text);
-      background:
-        radial-gradient(circle at 8% 0%, rgba(240, 186, 77, .09), transparent 29rem),
-        radial-gradient(circle at 92% 5%, rgba(47, 214, 162, .05), transparent 31rem),
-        var(--bg);
-      font: 14px/1.55 var(--font);
-      -webkit-font-smoothing: antialiased;
-    }
-    button, a { font: inherit; }
-    button { color: inherit; }
-    .shell { width: min(1720px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 44px; }
-    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 14px; }
-    .brand { display: flex; align-items: center; gap: 12px; }
-    .brand-mark {
-      width: 42px; height: 42px; display: grid; place-items: center; border-radius: 12px;
-      color: var(--gold); border: 1px solid rgba(240, 186, 77, .28); background: rgba(240, 186, 77, .1);
-    }
-    h1, h2, h3, p { margin-top: 0; }
-    .brand h1 { margin-bottom: 2px; font-size: 20px; letter-spacing: .02em; }
-    .brand p, .muted { margin-bottom: 0; color: var(--muted); }
-    .live-state {
-      display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; white-space: nowrap;
-      border: 1px solid var(--border); border-radius: 999px; color: var(--muted); background: rgba(255,255,255,.025);
-    }
-    .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); box-shadow: 0 0 0 4px rgba(140,160,178,.1); }
-    .live-state.connected { color: #a9ead4; }
-    .live-state.connected .live-dot { background: var(--green); box-shadow: 0 0 0 4px rgba(47,214,162,.12); }
-    .symbol-switcher {
-      display: flex; gap: 6px; margin-bottom: 14px; padding: 5px; overflow-x: auto;
-      border: 1px solid var(--border); border-radius: 12px; background: rgba(255,255,255,.022); scrollbar-width: none;
-    }
-    .symbol-switcher::-webkit-scrollbar { display: none; }
-    .symbol-button, .frame-button {
-      flex: 0 0 auto; padding: 8px 13px; border: 0; border-radius: 8px; color: var(--muted); background: transparent;
-      cursor: pointer; font-size: 12px; font-weight: 650;
-    }
-    .symbol-button:hover, .frame-button:hover { color: var(--text); }
-    .symbol-button.active, .frame-button.active { color: var(--text); background: rgba(240,186,77,.13); box-shadow: inset 0 0 0 1px rgba(240,186,77,.2); }
-    .error-banner { display: none; margin-bottom: 14px; padding: 11px 14px; border: 1px solid rgba(255,102,114,.26); border-radius: 10px; color: #ffabb1; background: rgba(255,102,114,.08); }
-    .error-banner.visible { display: block; }
-    .card {
-      position: relative; padding: 20px; border: 1px solid var(--border); border-radius: 17px;
-      background: linear-gradient(145deg, rgba(16,31,44,.95), rgba(10,21,31,.96)); box-shadow: var(--shadow);
-    }
-    .overview-grid { display: grid; grid-template-columns: 1.45fr 1fr 1fr; gap: 14px; margin-bottom: 14px; }
-    .price-card { min-height: 192px; border-color: rgba(240,186,77,.2); background: linear-gradient(145deg, rgba(57,43,15,.55), rgba(13,25,36,.97)); }
-    .card-label { color: var(--muted); font-size: 12px; letter-spacing: .04em; }
-    .price-line { display: flex; align-items: baseline; gap: 8px; margin: 25px 0 18px; }
-    .price { font-size: clamp(40px, 4.3vw, 64px); line-height: 1; font-weight: 760; letter-spacing: -.035em; font-variant-numeric: tabular-nums; }
-    .unit { color: var(--muted); font-size: 12px; }
-    .meta-row { display: flex; flex-wrap: wrap; gap: 8px 18px; color: var(--muted); font-size: 12px; }
-    .info-card h2 { margin: 6px 0 15px; font-size: 17px; }
-    .info-list { display: grid; gap: 10px; }
-    .info-row { display: flex; justify-content: space-between; gap: 14px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,.06); }
-    .info-row span { color: var(--muted); }
-    .info-row b { text-align: right; font-variant-numeric: tabular-nums; }
-    .day-stat-card { min-height: 192px; }
-    .day-change-value {
-      margin: 26px 0 17px; color: var(--muted); font-size: clamp(36px, 3.1vw, 48px); line-height: 1;
-      font-weight: 760; letter-spacing: -.025em; font-variant-numeric: tabular-nums;
-    }
-    .day-change-value.positive { color: var(--red); }
-    .day-change-value.negative { color: var(--green); }
-    .day-stat-foot { color: var(--muted); font-size: 12px; }
-    .day-stat-foot b { color: #dce8f1; font-variant-numeric: tabular-nums; }
-    .day-range-list { display: grid; gap: 12px; margin-top: 17px; }
-    .day-range-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-    .day-range-row span { color: var(--muted); font-size: 12px; }
-    .day-range-row b { color: #eef4f8; font-size: 13px; font-variant-numeric: tabular-nums; }
-    .day-range-row b span { color: inherit; font-size: inherit; }
-    .notice {
-      display: flex; align-items: center; justify-content: space-between; gap: 10px 20px; flex-wrap: wrap;
-      margin-bottom: 14px; padding: 13px 16px; border: 1px solid rgba(101,163,255,.19); border-radius: 12px;
-      color: #bfd4ef; background: rgba(101,163,255,.055); font-size: 12px;
-    }
-    .notice-status { color: var(--muted); font-variant-numeric: tabular-nums; }
-    .notice-status b { color: #dce8f1; }
-    .section-heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin: 25px 2px 10px; }
-    .section-heading h2 { margin-bottom: 0; font-size: 18px; }
-    .section-heading p { margin-bottom: 0; color: var(--muted); font-size: 12px; text-align: right; }
-    .zone-map-card { min-height: 250px; padding: 16px 18px; }
-    .zone-map-list { display: grid; gap: 6px; }
-    .zone-band {
-      display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 20px;
-      min-height: 58px; padding: 11px 16px; border-left: 3px solid transparent;
-    }
-    .zone-band.resistance { border-left-color: var(--red); background: rgba(255, 102, 114, .075); }
-    .zone-band.support { border-left-color: var(--green); background: rgba(47, 214, 162, .075); }
-    .zone-band.current {
-      min-height: 60px; border-top: 1px dashed rgba(101, 163, 255, .42); border-bottom: 1px dashed rgba(101, 163, 255, .42);
-      background: rgba(101, 163, 255, .025);
-    }
-    .zone-band-copy strong { display: block; margin-bottom: 2px; color: #e7eef4; font-size: 13px; }
-    .zone-band-copy small { display: block; color: var(--muted); font-size: 11px; }
-    .zone-band-price { color: #f4f7fa; font-size: 14px; font-weight: 760; font-variant-numeric: tabular-nums; white-space: nowrap; }
-    .zone-band.current .zone-band-copy strong, .zone-band.current .zone-band-price { color: var(--blue); }
-    .zone-card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-    .zone-card-head h3 { margin: 0; font-size: 15px; }
-    .zone-count { color: var(--muted); font-size: 11px; }
-    .empty-zones { padding: 45px 12px; color: var(--muted); text-align: center; }
-    .method-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; }
-    .method-item { padding: 16px; border: 1px solid rgba(255,255,255,.065); border-radius: 11px; background: rgba(255,255,255,.018); }
-    .method-item b { display: block; margin-bottom: 6px; color: #dce8f1; }
-    .method-item p { margin-bottom: 0; color: var(--muted); font-size: 12px; }
-    .chart-card { margin-top: 14px; padding: 18px; }
-    .chart-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 12px; }
-    .chart-head h2 { margin-bottom: 3px; font-size: 17px; }
-    .chart-head p { margin-bottom: 0; color: var(--muted); font-size: 12px; }
-    .frame-group { display: flex; gap: 5px; padding: 4px; border: 1px solid var(--border); border-radius: 10px; background: rgba(255,255,255,.02); }
-    .chart-wrap { position: relative; height: 480px; overflow: hidden; border: 1px solid rgba(255,255,255,.06); border-radius: 12px; background: #0b1721; }
-    #price-chart { display: block; width: 100%; height: 100%; touch-action: none; }
-    .chart-tooltip {
-      position: absolute; z-index: 3; display: none; min-width: 170px; padding: 10px 12px; pointer-events: none;
-      border: 1px solid rgba(255,255,255,.11); border-radius: 9px; color: #eaf1f6; background: rgba(6,14,21,.94); box-shadow: 0 10px 28px rgba(0,0,0,.36); font-size: 12px;
-    }
-    .chart-tooltip.visible { display: block; }
-    .tooltip-grid { display: grid; grid-template-columns: auto auto; gap: 3px 14px; margin-top: 7px; }
-    .tooltip-grid span { color: var(--muted); }
-    .tooltip-grid b { text-align: right; font-variant-numeric: tabular-nums; }
-    .chart-foot { display: flex; justify-content: space-between; gap: 14px; margin-top: 9px; color: var(--muted); font-size: 11px; }
-    .final-note { margin-top: 14px; padding: 16px 18px; border: 1px dashed rgba(240,186,77,.22); border-radius: 12px; color: #cbd7df; background: rgba(240,186,77,.035); }
-    .final-note b { color: var(--gold); }
-
-    @media (max-width: 900px) {
-      .overview-grid { grid-template-columns: 1fr; }
-      .overview-grid { gap: 10px; }
-      .price-card { min-height: 170px; }
-      .method-grid { grid-template-columns: 1fr; }
-    }
-    @media (max-width: 680px) {
-      .shell { width: min(100% - 18px, 1720px); padding-top: 16px; }
-      .topbar { align-items: flex-start; }
-      .brand p { max-width: 210px; font-size: 11px; }
-      .live-state { padding: 7px 9px; font-size: 11px; }
-      .section-heading, .chart-head { align-items: flex-start; flex-direction: column; }
-      .section-heading p { text-align: left; }
-      .zone-map-card { padding: 12px; }
-      .zone-band { gap: 10px; padding: 10px 12px; }
-      .zone-band-price { font-size: 13px; }
-      .chart-wrap { height: 390px; }
-      .chart-foot { flex-direction: column; gap: 3px; }
-    }
-  </style>
+  <title>模拟交易与价格行为复盘</title>
+  <link rel="stylesheet" href="paper-trading.css?v=20260819-paper-v1">
 </head>
 <body>
-  <main class="shell">
-    <header class="topbar">
-      <div class="brand">
-        <div class="brand-mark" aria-hidden="true">
-          <svg width="23" height="23" viewBox="0 0 24 24" fill="none">
+  <div class="app-shell">
+    <aside class="side-nav" aria-label="主导航">
+      <div class="brand-mini" aria-label="模拟交易与价格行为复盘">
+        <div class="brand-mark">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <path d="M12 3.75 20.25 12 12 20.25 3.75 12 12 3.75Z" stroke="currentColor" stroke-width="1.45"/>
             <path d="m12 8 4 4-4 4-4-4 4-4Z" fill="currentColor" opacity=".85"/>
           </svg>
         </div>
-        <div>
-          <h1>价格行为支撑压力监测</h1>
-          <p id="brand-subtitle">XAUUSDT · 实时价格与H4/H1固定区域</p>
+      </div>
+      <nav class="nav-list">
+        <button class="nav-button active" data-view="desk" type="button"><span class="nav-icon">⌁</span><span>交易台</span></button>
+        <button class="nav-button" data-view="journal" type="button"><span class="nav-icon">▤</span><span>交易日志</span></button>
+        <button class="nav-button" data-view="weekly" type="button"><span class="nav-icon">⌁</span><span>周复盘</span></button>
+        <button class="nav-button" data-view="habits" type="button"><span class="nav-icon">◎</span><span>习惯画像</span></button>
+        <button class="nav-button" data-view="export" type="button"><span class="nav-icon">⇩</span><span>数据导出</span></button>
+      </nav>
+      <div class="nav-bottom">
+        <button class="nav-button" id="account-settings-nav" type="button"><span class="nav-icon">⚙</span><span>账户设置</span></button>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="workspace-header">
+        <div class="workspace-title">
+          <h1>模拟交易与价格行为复盘</h1>
+          <p id="brand-subtitle">XAUUSDT · 真实行情价格驱动，仅执行模拟委托</p>
         </div>
-      </div>
-      <div id="live-state" class="live-state"><span class="live-dot"></span><span id="live-text">正在连接实时价格</span></div>
-    </header>
+        <nav class="symbol-switcher" aria-label="切换标的物">
+          <button class="symbol-button active" data-symbol="XAUUSDT" type="button">黄金 · XAUUSDT</button>
+          <button class="symbol-button" data-symbol="SNDKUSDT" type="button">SanDisk · SNDKUSDT</button>
+          <button class="symbol-button" data-symbol="SKHYNIXUSDT" type="button">SK hynix · SKHYNIXUSDT</button>
+        </nav>
+        <div id="live-state" class="live-state"><span class="live-dot"></span><span id="live-text">正在连接实时价格</span></div>
+      </header>
 
-    <nav class="symbol-switcher" aria-label="切换标的物">
-      <button class="symbol-button active" data-symbol="XAUUSDT" type="button">黄金 · XAUUSDT</button>
-      <button class="symbol-button" data-symbol="SNDKUSDT" type="button">SanDisk · SNDKUSDT</button>
-      <button class="symbol-button" data-symbol="SKHYNIXUSDT" type="button">SK hynix · SKHYNIXUSDT</button>
-    </nav>
+      <section class="account-strip" aria-label="模拟账户概览">
+        <div class="account-metric"><span>模拟净值</span><b id="account-equity">—</b></div>
+        <div class="account-metric"><span>可用资金</span><b id="account-available">—</b></div>
+        <div class="account-metric"><span>浮动盈亏</span><b id="account-unrealized">—</b></div>
+        <div class="account-metric"><span>已实现盈亏</span><b id="account-realized">—</b></div>
+        <div class="account-metric"><span>历史最大回撤</span><b id="account-drawdown">—</b></div>
+        <button id="account-settings" class="ghost-button" type="button">账户资金设置</button>
+      </section>
 
-    <div id="error-banner" class="error-banner" role="alert"></div>
+      <div id="error-banner" class="error-banner" role="alert"></div>
 
-    <section class="overview-grid" aria-label="实时价格概览">
-      <article class="card price-card">
-        <div class="card-label" id="market-symbol">BINANCE FUTURES · XAUUSDT</div>
-        <div class="price-line"><span id="current-price" class="price">—</span><span class="unit">USDT</span></div>
-        <div class="meta-row"><span id="price-time">等待报价</span><span>价格源：Binance Mark Price</span></div>
-      </article>
-      <article class="card day-stat-card">
-        <div class="card-label">24小时涨跌</div>
-        <div id="day-change" class="day-change-value">—</div>
-        <div class="day-stat-foot">最新成交价 <b id="day-last-price">—</b> USDT</div>
-      </article>
-      <article class="card day-stat-card">
-        <div class="card-label">24小时区间</div>
-        <div class="day-range-list">
-          <div class="day-range-row"><span>最高</span><b><span id="day-high">—</span> USDT</b></div>
-          <div class="day-range-row"><span>最低</span><b><span id="day-low">—</span> USDT</b></div>
+      <section id="view-desk" class="app-view active" data-app-view="desk">
+        <div class="desk-grid">
+          <article class="panel market-panel">
+            <div class="market-summary">
+              <div class="market-price-block">
+                <div class="market-price-head"><span id="market-symbol">BINANCE FUTURES · XAUUSDT</span><span id="price-time">等待报价</span></div>
+                <div class="price-line"><span id="current-price" class="price">—</span><span class="unit">USDT</span></div>
+              </div>
+              <div class="market-stat">
+                <span>24小时涨跌</span>
+                <div id="day-change" class="day-change-value">—</div>
+                <small>最新成交价 <b id="day-last-price">—</b></small>
+              </div>
+              <div class="market-stat">
+                <span>24小时区间</span>
+                <div class="range-pair">
+                  <div><span>最高</span><b id="day-high">—</b></div>
+                  <div><span>最低</span><b id="day-low">—</b></div>
+                </div>
+              </div>
+            </div>
+            <div class="chart-head">
+              <div><h2 id="chart-title">H4 价格行为</h2><p>支撑压力色带与当前模拟仓位的开仓、止损、止盈线</p></div>
+              <div class="frame-group" role="group" aria-label="图表周期">
+                <button class="frame-button active" data-frame="h4" type="button">4小时</button>
+                <button class="frame-button" data-frame="h1" type="button">1小时</button>
+              </div>
+            </div>
+            <div id="chart-wrap" class="chart-wrap">
+              <svg id="price-chart" viewBox="0 0 1200 480" preserveAspectRatio="none" role="img" aria-label="H4/H1价格行为K线图"></svg>
+              <div id="chart-tooltip" class="chart-tooltip"></div>
+            </div>
+            <div class="chart-foot"><span>红色上涨，绿色下跌；滚轮改变可见K线数量。</span><span id="chart-note">等待历史价格…</span></div>
+          </article>
+
+          <aside class="panel order-ticket" aria-labelledby="ticket-title">
+            <div class="ticket-head"><h2 id="ticket-title">模拟下单</h2><span class="simulation-label">仅模拟 · 不连接交易账户</span></div>
+            <div class="side-selector" role="group" aria-label="交易方向">
+              <button class="side-toggle active" data-side="long" type="button">做多</button>
+              <button class="side-toggle" data-side="short" type="button">做空</button>
+            </div>
+            <div class="form-grid">
+              <label class="field"><span>开仓方式</span><select id="order-type"><option value="market">市价 · 当前 Mark Price</option></select></label>
+              <label class="field"><span>名义金额</span><span class="input-wrap"><input id="order-notional" type="number" min="1" step="100" value="10000"><span class="input-suffix">USDT</span></span></label>
+              <div class="order-preview">
+                <div class="preview-item"><span>预计开仓价</span><b id="order-entry-preview">—</b></div>
+                <div class="preview-item"><span>预计数量</span><b id="order-quantity-preview">—</b></div>
+                <div class="preview-item"><span>计划盈亏比</span><b id="order-rr-preview">—</b></div>
+              </div>
+              <label class="field"><span>止损价</span><span class="input-wrap"><input id="order-stop" type="number" min="0" step="0.01" placeholder="必填"><span class="input-suffix">USDT</span></span></label>
+              <label class="field"><span>止盈价</span><span class="input-wrap"><input id="order-target" type="number" min="0" step="0.01" placeholder="必填"><span class="input-suffix">USDT</span></span></label>
+              <div class="reason-group"><span>开仓理由（至少选择一项）</span>
+                <div class="reason-list">
+                  <label class="reason-option"><input type="checkbox" name="entry-reason" value="支撑/压力">支撑/压力</label>
+                  <label class="reason-option"><input type="checkbox" name="entry-reason" value="K线反转">K线反转</label>
+                  <label class="reason-option"><input type="checkbox" name="entry-reason" value="RSI超买超卖">RSI超买超卖</label>
+                  <label class="reason-option"><input type="checkbox" name="entry-reason" value="区间高抛低吸">区间高抛低吸</label>
+                  <label class="reason-option"><input type="checkbox" name="entry-reason" value="突破/回踩">突破/回踩</label>
+                  <label class="reason-option"><input type="checkbox" name="entry-reason" value="其他">其他</label>
+                </div>
+              </div>
+              <label class="field"><span>交易计划与备注</span><textarea id="order-note" maxlength="300" placeholder="记录你看到的位置、K线形态和预期退出方式…"></textarea></label>
+              <p id="order-error" class="form-error" role="alert"></p>
+              <button id="open-position" class="primary-button" type="button">按当前真实价格模拟开仓</button>
+              <p class="ticket-disclaimer">真实行情仅用于模拟记账；按1倍名义金额计算，暂不计手续费、滑点和资金费率，不会发送任何真实委托。</p>
+            </div>
+          </aside>
         </div>
-      </article>
-    </section>
 
-    <div class="notice">
-      <span>H4/H1 K线仅提取开、高、低、收四项；24小时统计仅读取涨跌幅和最高/最低，不读取成交量。</span>
-      <span class="notice-status"><b id="zone-state">等待H4/H1收盘K线</b> · <span id="bar-counts">H4 0 · H1 0</span> · 更新 <span id="zone-updated">—</span></span>
-    </div>
+        <section class="panel section-panel" aria-labelledby="positions-title">
+          <div class="section-toolbar">
+            <div><h2 id="positions-title">当前持仓 <span id="position-count">(0)</span></h2><p>止盈止损由实时 Mark Price 自动监控；其他标的持仓每15秒补充更新。</p></div>
+          </div>
+          <div class="table-wrap"><table class="data-table">
+            <thead><tr><th>标的</th><th>方向</th><th>开仓时间</th><th>开仓价</th><th>当前价</th><th>止损</th><th>止盈</th><th>浮动盈亏</th><th>持仓时长</th><th>操作</th></tr></thead>
+            <tbody id="positions-body"><tr class="empty-row"><td colspan="10">暂无模拟持仓</td></tr></tbody>
+          </table></div>
+        </section>
 
-    <section aria-labelledby="zones-title" aria-live="polite">
-      <div class="section-heading">
-        <h2 id="zones-title">价格行为支撑与压力区间</h2>
-        <p>摆动高低点聚类 · 重复触碰确认 · 区域在下一次H1收盘后统一重算</p>
-      </div>
-
-      <article class="card zone-map-card">
-        <div id="zone-map-list" class="zone-map-list">
-          <div class="empty-zones">正在读取H4/H1摆动高低点…</div>
+        <div class="zones-layout">
+          <section class="panel zone-map-card" aria-labelledby="zones-title">
+            <h2 id="zones-title">H4/H1 支撑与压力区域</h2>
+            <div id="zone-map-list" class="zone-map-list"><div class="empty-row">正在读取H4/H1摆动高低点…</div></div>
+          </section>
+          <aside class="panel notice-panel">
+            <h3>行情与记录状态</h3>
+            <p>区域仍按H4/H1摆动点、重复触碰和跨周期重合动态计算；不参与自动开仓。</p>
+            <div class="notice-status"><b id="zone-state">等待H4/H1收盘K线</b><br><span id="bar-counts">H4 0 · H1 0</span> · 更新 <span id="zone-updated">—</span></div>
+          </aside>
         </div>
-      </article>
-    </section>
+      </section>
 
-    <section class="card chart-card" aria-labelledby="chart-title">
-      <div class="chart-head">
-        <div><h2 id="chart-title">H4 价格行为</h2><p>图中半透明色带为当前算法识别的固定支撑/压力区间</p></div>
-        <div class="frame-group" role="group" aria-label="图表周期">
-          <button class="frame-button active" data-frame="h4" type="button">4小时</button>
-          <button class="frame-button" data-frame="h1" type="button">1小时</button>
+      <section id="view-journal" class="app-view" data-app-view="journal">
+        <div class="page-head"><div><h2>交易日志</h2><p>完整保留计划、实际执行和退出结果，所有习惯结论均可回溯到具体交易。</p></div>
+          <div class="toolbar-actions">
+            <select id="journal-symbol-filter" class="filter-select"><option value="all">全部标的</option><option>XAUUSDT</option><option>SNDKUSDT</option><option>SKHYNIXUSDT</option></select>
+            <select id="journal-side-filter" class="filter-select"><option value="all">全部方向</option><option value="long">做多</option><option value="short">做空</option></select>
+            <select id="journal-result-filter" class="filter-select"><option value="all">全部结果</option><option value="win">盈利</option><option value="loss">亏损</option></select>
+          </div>
         </div>
-      </div>
-      <div id="chart-wrap" class="chart-wrap">
-        <svg id="price-chart" viewBox="0 0 1200 480" preserveAspectRatio="none" role="img" aria-label="H4/H1价格行为K线图"></svg>
-        <div id="chart-tooltip" class="chart-tooltip"></div>
-      </div>
-      <div class="chart-foot"><span>红色上涨，绿色下跌；滚轮仅改变可见K线数量。</span><span id="chart-note">等待历史价格…</span></div>
-    </section>
+        <section class="panel journal-layout">
+          <div class="table-wrap"><table class="data-table">
+            <thead><tr><th>平仓时间</th><th>交易ID</th><th>标的</th><th>方向</th><th>开仓理由</th><th>开仓/平仓</th><th>退出原因</th><th>持仓时长</th><th>盈亏</th><th>R倍数</th><th>纳入画像</th></tr></thead>
+            <tbody id="journal-body"><tr class="empty-row"><td colspan="11">完成第一笔模拟交易后，这里会形成可复盘证据。</td></tr></tbody>
+          </table></div>
+        </section>
+      </section>
 
-    <section class="card" aria-labelledby="method-title" style="margin-top:14px">
-      <div class="zone-card-head"><h3 id="method-title">区域生成规则</h3><span class="zone-count">不含交易建议</span></div>
-      <div class="method-grid">
-        <div class="method-item"><b>1. 识别摆动点</b><p>只使用已收盘的H4/H1 K线，寻找局部摆动高点与摆动低点，不使用未来数据。</p></div>
-        <div class="method-item"><b>2. 合并重复触碰</b><p>相近摆动点按近期真实波幅生成固定宽度区域；至少重复触碰两次，或H4与H1在同一区域重合。</p></div>
-        <div class="method-item"><b>3. 按现价归类</b><p>当前价下方归为支撑、上方归为压力；价格进入色带时仅提示“位于区域内”，不推荐开仓。</p></div>
-      </div>
-    </section>
+      <section id="view-weekly" class="app-view" data-app-view="weekly">
+        <div class="page-head"><div><h2>周复盘</h2><p>按自然周归纳已经发生的行为；页面打开时自动更新，不将小样本包装成稳定规律。</p></div>
+          <div class="week-controls"><button id="week-prev" class="secondary-button" type="button">上一周</button><span id="week-label" class="week-label">—</span><button id="week-next" class="secondary-button" type="button">下一周</button></div>
+        </div>
+        <section class="panel">
+          <div class="review-metrics">
+            <div class="review-metric"><span>交易次数</span><b id="review-count">0</b></div>
+            <div class="review-metric"><span>胜率</span><b id="review-win-rate">—</b></div>
+            <div class="review-metric"><span>净收益</span><b id="review-pnl">—</b></div>
+            <div class="review-metric"><span>平均盈亏比</span><b id="review-profit-factor">—</b></div>
+            <div class="review-metric"><span>最大回撤</span><b id="review-drawdown">—</b></div>
+            <div class="review-metric"><span>平均持仓</span><b id="review-hold">—</b></div>
+          </div>
+        </section>
+        <div class="review-grid">
+          <section class="panel review-chart-panel"><h3>本周累计盈亏曲线</h3><svg id="weekly-equity-chart" class="equity-chart" viewBox="0 0 900 220" preserveAspectRatio="none" aria-label="本周累计盈亏曲线"></svg></section>
+          <aside class="panel insight-panel"><h3>本周洞察 <span id="review-confidence" class="confidence">样本不足</span></h3><div id="weekly-insights" class="insight-list"></div></aside>
+        </div>
+        <section class="panel section-panel"><div class="section-toolbar"><div><h2>本周证据交易</h2><p>每条归纳只引用本周已完成并且未排除的交易。</p></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>时间</th><th>ID</th><th>标的</th><th>方向</th><th>理由</th><th>退出</th><th>结果</th></tr></thead><tbody id="weekly-trades-body"></tbody></table></div></section>
+      </section>
 
-    <div class="final-note"><b>当前页面只做区域监测：</b>不计算入场、止损、止盈、方向、评分或任何具体交易策略。区域是程序依据历史价格行为自动推算的观察范围，不代表一定有效。</div>
-  </main>
+      <section id="view-habits" class="app-view" data-app-view="habits">
+        <div class="page-head"><div><h2>交易习惯画像</h2><p>从全部纳入分析的已完成交易中反推偏好；结论随样本增加而更新。</p></div></div>
+        <section class="panel habit-panel"><h3>当前画像 <span id="habit-confidence" class="confidence">样本不足</span></h3><div id="habit-list" class="habit-list"></div></section>
+        <section class="panel section-panel"><div class="section-toolbar"><div><h2>解释边界</h2><p>画像描述的是你实际做了什么，不代表这些做法必然有效。</p></div></div><div class="notice-panel">少于10笔只展示事实；10–29笔标记为“初步倾向”；达到30笔后才标记“较稳定”。即便样本较多，也会同时展示盈亏证据，避免只看交易次数。</div></section>
+      </section>
 
-  <script src="binance-xau.js?v=20260819-24h-stats-v4"></script>
+      <section id="view-export" class="app-view" data-app-view="export">
+        <div class="page-head"><div><h2>数据导出与备份</h2><p>模拟账户数据保存在当前浏览器，可随时导出备份。</p></div></div>
+        <div class="export-grid">
+          <section class="panel export-panel"><h3>完整JSON备份</h3><p>包含账户设置、当前持仓、交易日志和复盘字段，可在本页恢复或用于进一步分析。</p><div class="toolbar-actions"><button id="export-json" class="secondary-button" type="button">导出 JSON</button><label class="secondary-button" for="import-json">导入 JSON</label><input id="import-json" type="file" accept="application/json,.json" hidden></div></section>
+          <section class="panel export-panel"><h3>交易日志CSV</h3><p>适合在Excel中查看，包含每笔已完成交易的主要字段。</p><button id="export-csv" class="secondary-button" type="button">导出 CSV</button></section>
+        </div>
+        <div class="storage-note">当前采用浏览器 IndexedDB，不占用服务器内存。清理浏览器数据会删除本地记录，请定期导出JSON备份。跨设备同步与后台定时周报将在后续D1版本中实现。</div>
+      </section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="binance-xau.js?v=20260819-paper-bridge-v1"></script>
+  <script src="paper-trading.js?v=20260819-paper-v1"></script>
 </body>
 </html>
