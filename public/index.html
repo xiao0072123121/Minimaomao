@@ -213,7 +213,7 @@
     <section aria-labelledby="zones-title" aria-live="polite">
       <div class="section-heading">
         <h2 id="zones-title">价格行为支撑与压力区间</h2>
-        <p>上一版结构区域模式 · ATR自适应宽度 · 强度与失效规则</p>
+        <p>摆动高低点聚类 · 重复触碰确认 · 区域在下一次H1收盘后统一重算</p>
       </div>
 
       <div class="zone-summary">
@@ -252,15 +252,15 @@
     <section class="card" aria-labelledby="method-title" style="margin-top:14px">
       <div class="zone-card-head"><h3 id="method-title">区域生成规则</h3><span class="zone-count">不含交易建议</span></div>
       <div class="method-grid">
-        <div class="method-item"><b>1. 结构位置</b><p>使用已确认H4/H1摆动点、前日/前周高低以及突破回踩，不使用整数关口或未来数据。</p></div>
-        <div class="method-item"><b>2. ATR区域</b><p>相近结构点按max(0.25×ATR, 价格×0.10%)合并，区域宽度限制在0.20–0.60×ATR。</p></div>
-        <div class="method-item"><b>3. 强度与失效</b><p>综合离开幅度、有效反应、角色互换、时效与H4/H1共振；连续两根收盘有效穿越后失效。</p></div>
+        <div class="method-item"><b>1. 识别摆动点</b><p>只使用已收盘的H4/H1 K线，寻找局部摆动高点与摆动低点，不使用未来数据。</p></div>
+        <div class="method-item"><b>2. 合并重复触碰</b><p>相近摆动点按近期真实波幅生成固定宽度区域；至少重复触碰两次，或H4与H1在同一区域重合。</p></div>
+        <div class="method-item"><b>3. 按现价归类</b><p>当前价下方归为支撑、上方归为压力；价格进入色带时仅提示“位于区域内”，不推荐开仓。</p></div>
       </div>
     </section>
 
     <div class="final-note"><b>当前页面只做区域监测：</b>不计算入场、止损、止盈、方向、评分或任何具体交易策略。区域是程序依据历史价格行为自动推算的观察范围，不代表一定有效。</div>
   </main>
 
-  <script src="binance-xau.js?v=20260819-previous-zones-v2"></script>
+  <script src="binance-xau.js?v=20260819-price-action-lite-v1"></script>
 </body>
 </html>
