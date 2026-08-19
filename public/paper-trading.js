@@ -129,14 +129,16 @@
     const pnl = Number(trade?.pnl);
     if (![openAt, closeAt, entryPrice, closePrice, pnl].every(Number.isFinite) || closeAt < openAt) return null;
     const quantity = Number(trade?.quantity);
+    const leverage = Number(trade?.leverage);
     const stopLoss = Number(trade?.stopLoss);
     const takeProfit = Number(trade?.takeProfit);
+    const normalizedLeverage = Number.isFinite(leverage) && leverage >= 1 ? leverage : 1;
     const risk = Number.isFinite(quantity) && quantity > 0 && Number.isFinite(stopLoss) && stopLoss > 0
-      ? Math.abs(entryPrice - stopLoss) * quantity : NaN;
+      ? Math.abs(entryPrice - stopLoss) * quantity * normalizedLeverage : NaN;
     return {
       id: String(trade?.id || id()), symbol: String(trade?.symbol || "XAUUSDT"),
       side: trade?.side === "short" ? "short" : "long", openAt, closeAt, entryPrice, closePrice, pnl,
-      quantity: Number.isFinite(quantity) && quantity > 0 ? quantity : null,
+      quantity: Number.isFinite(quantity) && quantity > 0 ? quantity : null, leverage: normalizedLeverage,
       stopLoss: Number.isFinite(stopLoss) && stopLoss > 0 ? stopLoss : null,
       takeProfit: Number.isFinite(takeProfit) && takeProfit > 0 ? takeProfit : null,
       reasons: Array.isArray(trade?.reasons) ? trade.reasons.map(String) : [],
@@ -160,6 +162,23 @@
     return [...document.querySelectorAll('input[name="real-entry-reason"]:checked')].map((input) => input.value);
   }
 
+  function calculatedPnlFromForm() {
+    const entryPrice = Number($("trade-entry-price").value);
+    const closePrice = Number($("trade-close-price").value);
+    const quantity = Number($("trade-quantity").value);
+    const leverage = Number($("trade-leverage").value);
+    if (![entryPrice, closePrice, quantity, leverage].every(Number.isFinite) || entryPrice <= 0 || closePrice <= 0 || quantity < 0.1 || leverage < 1) return NaN;
+    const direction = $("trade-side").value === "short" ? -1 : 1;
+    return (closePrice - entryPrice) * quantity * leverage * direction;
+  }
+
+  function updateCalculatedPnl() {
+    const pnl = calculatedPnlFromForm();
+    $("trade-pnl").value = Number.isFinite(pnl) ? pnl.toFixed(2) : "";
+    $("trade-pnl").classList.toggle("metric-positive", Number.isFinite(pnl) && pnl > 0);
+    $("trade-pnl").classList.toggle("metric-negative", Number.isFinite(pnl) && pnl < 0);
+  }
+
   function readTradeForm() {
     const symbol = $("trade-symbol").value;
     const side = $("trade-side").value;
@@ -167,20 +186,23 @@
     const closeAt = new Date($("trade-close-time").value).getTime();
     const entryPrice = Number($("trade-entry-price").value);
     const closePrice = Number($("trade-close-price").value);
-    const pnl = Number($("trade-pnl").value);
+    const pnl = calculatedPnlFromForm();
     const quantity = Number($("trade-quantity").value);
+    const leverage = Number($("trade-leverage").value);
     const stopLoss = Number($("trade-stop").value);
     const takeProfit = Number($("trade-target").value);
     const reasons = selectedReasons();
     if (!Number.isFinite(openAt) || !Number.isFinite(closeAt)) return { error: "请填写完整的开仓和平仓时间。" };
     if (closeAt < openAt) return { error: "平仓时间不能早于开仓时间。" };
     if (![entryPrice, closePrice].every((value) => Number.isFinite(value) && value > 0)) return { error: "请填写有效的开仓价和平仓价。" };
-    if (!$("trade-pnl").value.trim() || !Number.isFinite(pnl)) return { error: "请填写券商账户显示的实际盈亏。" };
+    if (!Number.isFinite(quantity) || quantity < 0.1) return { error: "开仓数量最小为 0.1。" };
+    if (!Number.isFinite(leverage) || leverage < 1) return { error: "杠杆倍数最小为 1。" };
+    if (!Number.isFinite(pnl)) return { error: "请填写开仓价、平仓价、开仓数量和杠杆倍数。" };
     if (!reasons.length) return { error: "请至少选择一项开仓依据。" };
-    const risk = Number.isFinite(quantity) && quantity > 0 && Number.isFinite(stopLoss) && stopLoss > 0 ? Math.abs(entryPrice - stopLoss) * quantity : NaN;
+    const risk = Number.isFinite(stopLoss) && stopLoss > 0 ? Math.abs(entryPrice - stopLoss) * quantity * leverage : NaN;
     return {
       id: $("trade-edit-id").value || id(), symbol, side, openAt, closeAt, entryPrice, closePrice, pnl,
-      quantity: Number.isFinite(quantity) && quantity > 0 ? quantity : null,
+      quantity, leverage,
       stopLoss: Number.isFinite(stopLoss) && stopLoss > 0 ? stopLoss : null,
       takeProfit: Number.isFinite(takeProfit) && takeProfit > 0 ? takeProfit : null,
       reasons, note: $("trade-note").value.trim(), exitReason: $("trade-exit-reason").value,
@@ -196,6 +218,7 @@
     $("trade-close-price").value = "";
     $("trade-pnl").value = "";
     $("trade-quantity").value = "";
+    $("trade-leverage").value = "1";
     $("trade-stop").value = "";
     $("trade-target").value = "";
     $("trade-exit-reason").value = "止盈";
@@ -204,7 +227,7 @@
     const now = Date.now();
     $("trade-close-time").value = toLocalInput(now);
     $("trade-open-time").value = toLocalInput(now - 60 * 60 * 1000);
-    $("trade-form-error").textContent = "";
+    $("trade-form-error").textContent = "自动盈亏暂不包含手续费、滑点和资金费率。";
     $("save-trade").textContent = "保存实盘交易";
   }
 
@@ -225,7 +248,7 @@
     const r = Number.isFinite(trade.rMultiple) ? trade.rMultiple.toFixed(2) : "—";
     return `<tr>
       <td>${escapeHtml(formatDate(trade.closeAt))}</td><td>${escapeHtml(trade.id.slice(0, 8))}</td><td>${escapeHtml(trade.symbol)}</td>
-      <td class="${trade.side === "long" ? "direction-long" : "direction-short"}">${SIDE_LABELS[trade.side]}</td>
+      <td class="${trade.side === "long" ? "direction-long" : "direction-short"}">${SIDE_LABELS[trade.side]}</td><td>${escapeHtml(`${trade.leverage}x`)}</td>
       <td>${escapeHtml(trade.reasons.join(" / ") || "—")}</td><td>${escapeHtml(formatPrice(trade.entryPrice))} / ${escapeHtml(formatPrice(trade.closePrice))}</td>
       <td>${escapeHtml(trade.exitReason)}</td><td>${escapeHtml(formatDuration(trade.closeAt - trade.openAt))}</td>
       <td class="${trade.pnl > 0 ? "metric-positive" : trade.pnl < 0 ? "metric-negative" : ""}">${escapeHtml(formatMoney(trade.pnl, true))}</td>
@@ -247,7 +270,7 @@
 
   function renderJournal() {
     const trades = filteredTrades();
-    $("journal-body").innerHTML = trades.length ? trades.map(journalRow).join("") : '<tr class="empty-row"><td colspan="12">当前筛选条件下没有实盘交易记录。</td></tr>';
+    $("journal-body").innerHTML = trades.length ? trades.map(journalRow).join("") : '<tr class="empty-row"><td colspan="13">当前筛选条件下没有实盘交易记录。</td></tr>';
   }
 
   function reviewFor(trades) {
@@ -312,7 +335,7 @@
     const longTrades = weekTrades.filter((trade) => trade.side === "long");
     const shortTrades = weekTrades.filter((trade) => trade.side === "short");
     const insights = review.count ? [
-      { type: review.pnl >= 0 ? "next" : "problem", title: "本周结果", text: `${review.count}笔，胜率${formatPercent(review.winRate)}，实际净盈亏${formatMoney(review.pnl, true)}。` },
+      { type: review.pnl >= 0 ? "next" : "problem", title: "本周结果", text: `${review.count}笔，胜率${formatPercent(review.winRate)}，净盈亏${formatMoney(review.pnl, true)}。` },
       { type: "", title: "最常用依据", text: commonReason ? `${commonReason[0]}出现${commonReason[1]}次；仍需结合盈亏证据观察。` : "尚未形成重复依据。" },
       { type: "next", title: "方向分布", text: `做多${longTrades.length}笔，做空${shortTrades.length}笔；用于检查是否长期偏向单一方向。` }
     ] : [{ type: "", title: "等待实盘记录", text: "本周录入并纳入分析的交易出现后，这里自动生成总结。" }];
@@ -380,11 +403,13 @@
     $("trade-close-price").value = String(trade.closePrice);
     $("trade-pnl").value = String(trade.pnl);
     $("trade-quantity").value = Number.isFinite(trade.quantity) ? String(trade.quantity) : "";
+    $("trade-leverage").value = String(Number.isFinite(trade.leverage) ? trade.leverage : 1);
     $("trade-stop").value = Number.isFinite(trade.stopLoss) ? String(trade.stopLoss) : "";
     $("trade-target").value = Number.isFinite(trade.takeProfit) ? String(trade.takeProfit) : "";
     $("trade-exit-reason").value = [...$("trade-exit-reason").options].some((option) => option.value === trade.exitReason) ? trade.exitReason : "其他";
     $("trade-note").value = trade.note;
     document.querySelectorAll('input[name="real-entry-reason"]').forEach((input) => { input.checked = trade.reasons.includes(input.value); });
+    updateCalculatedPnl();
     $("save-trade").textContent = "保存修改";
     $("trade-entry-title").scrollIntoView({ behavior: "smooth", block: "start" });
   }
@@ -410,6 +435,8 @@
     document.querySelectorAll(".nav-button[data-view]").forEach((button) => button.addEventListener("click", () => navigate(button.dataset.view)));
     $("save-trade").addEventListener("click", saveTradeFromForm);
     $("reset-trade-form").addEventListener("click", resetTradeForm);
+    ["trade-side", "trade-entry-price", "trade-close-price", "trade-quantity", "trade-leverage"].forEach((idName) => $(idName).addEventListener("input", updateCalculatedPnl));
+    $("trade-side").addEventListener("change", updateCalculatedPnl);
     ["journal-symbol-filter", "journal-side-filter", "journal-result-filter"].forEach((idName) => $(idName).addEventListener("change", renderJournal));
     $("journal-body").addEventListener("click", (event) => {
       const editButton = event.target.closest("[data-edit-trade]");

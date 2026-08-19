@@ -13,7 +13,7 @@ const BINANCE_ENDPOINTS = new Set([
   "/fapi/v1/ticker/24hr"
 ]);
 const BINANCE_SYMBOLS = new Set(["XAUUSDT", "SNDKUSDT", "SKHYNIXUSDT"]);
-const BINANCE_INTERVALS = new Set(["1h", "4h"]);
+const BINANCE_INTERVALS = new Set(["15m", "1h", "4h"]);
 
 const encoder = new TextEncoder();
 

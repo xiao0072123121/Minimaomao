@@ -179,6 +179,7 @@ body:not(.monitor-active) .live-state { display: none; }
 .input-wrap input, .field > input, .field textarea, .field select {
   width: 100%; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: #081620;
 }
+.field > input[readonly] { color: #9fe8cf; background: rgba(40,214,157,.035); cursor: default; }
 .input-wrap input, .field > input, .field select { height: 38px; padding: 0 11px; }
 .input-wrap input { padding-right: 48px; }
 .field textarea { min-height: 62px; padding: 9px 10px; resize: vertical; }

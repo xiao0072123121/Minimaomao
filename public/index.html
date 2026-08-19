@@ -64,7 +64,7 @@
         </div>
 
         <div class="monitor-notice">
-          <span>H4/H1 K线仅提取开、高、低、收四项；24小时统计仅读取涨跌幅和最高/最低，不读取成交量。</span>
+          <span>H4/H1/M15 K线仅提取开、高、低、收四项；其中H4/H1用于区域计算，M15只用于图表展示。</span>
           <strong><span id="zone-state">等待H4/H1收盘K线</span> · <span id="bar-counts">H4 0 · H1 0</span> · 更新 <span id="zone-updated">—</span></strong>
         </div>
 
@@ -79,17 +79,18 @@
 
         <section class="panel monitor-chart-card">
           <div class="chart-head">
-            <div><h2 id="chart-title">XAUUSDT H4 价格行为</h2><p>支撑压力区域与实时价格位置</p></div>
+            <div><h2 id="chart-title">H4 K线</h2><p>正常已收盘K线，不叠加支撑压力区域</p></div>
             <div class="frame-group" role="group" aria-label="图表周期">
               <button class="frame-button active" data-frame="h4" type="button">4小时</button>
               <button class="frame-button" data-frame="h1" type="button">1小时</button>
+              <button class="frame-button" data-frame="m15" type="button">15分钟</button>
             </div>
           </div>
           <div id="chart-wrap" class="chart-wrap">
-            <svg id="price-chart" viewBox="0 0 1200 480" preserveAspectRatio="none" role="img" aria-label="H4/H1价格行为K线图"></svg>
+            <svg id="price-chart" viewBox="0 0 1200 480" preserveAspectRatio="none" role="img" aria-label="4小时、1小时和15分钟K线图"></svg>
             <div id="chart-tooltip" class="chart-tooltip"></div>
           </div>
-          <div class="chart-foot"><span>红色上涨，绿色下跌；滚轮改变可见K线数量，按住左键可左右拖动。</span><span id="chart-note">等待历史价格…</span></div>
+          <div class="chart-foot"><span>红色上涨，绿色下跌；图中不显示支撑压力色带。</span><span id="chart-note">等待历史价格…</span></div>
         </section>
 
         <div class="monitor-methods">
@@ -117,8 +118,9 @@
             <label class="field"><span>平仓时间</span><input id="trade-close-time" type="datetime-local"></label>
             <label class="field"><span>开仓价</span><input id="trade-entry-price" type="number" min="0" step="0.01" placeholder="必填"></label>
             <label class="field"><span>平仓价</span><input id="trade-close-price" type="number" min="0" step="0.01" placeholder="必填"></label>
-            <label class="field"><span>实际盈亏</span><input id="trade-pnl" type="number" step="0.01" placeholder="盈利填正数，亏损填负数"></label>
-            <label class="field"><span>交易数量（可选）</span><input id="trade-quantity" type="number" min="0" step="0.0001" placeholder="用于交叉核对"></label>
+            <label class="field"><span>开仓数量</span><input id="trade-quantity" type="number" min="0.1" step="0.1" placeholder="最小 0.1"></label>
+            <label class="field"><span>杠杆倍数</span><input id="trade-leverage" type="number" min="1" step="1" value="1"></label>
+            <label class="field"><span>自动盈亏（未计费用）</span><input id="trade-pnl" type="number" step="0.01" placeholder="填写价格、数量和杠杆后自动计算" readonly></label>
             <label class="field"><span>计划止损（可选）</span><input id="trade-stop" type="number" min="0" step="0.01"></label>
             <label class="field"><span>计划止盈（可选）</span><input id="trade-target" type="number" min="0" step="0.01"></label>
             <label class="field"><span>退出原因</span><select id="trade-exit-reason"><option>止盈</option><option>止损</option><option>主动平仓</option><option>移动止损</option><option>时间离场</option><option>其他</option></select></label>
@@ -132,12 +134,12 @@
             </div></div>
             <label class="field entry-note"><span>复盘备注</span><textarea id="trade-note" maxlength="500" placeholder="记录当时看到的区域、形态、进出场考虑和执行偏差…"></textarea></label>
           </div>
-          <div class="entry-actions"><p id="trade-form-error" class="form-error" role="alert"></p><button id="save-trade" class="primary-button" type="button">保存实盘交易</button></div>
+          <div class="entry-actions"><p id="trade-form-error" class="form-error" role="alert">自动盈亏暂不包含手续费、滑点和资金费率。</p><button id="save-trade" class="primary-button" type="button">保存实盘交易</button></div>
         </section>
         <section class="panel journal-layout section-panel">
           <div class="table-wrap"><table class="data-table">
-            <thead><tr><th>平仓时间</th><th>交易ID</th><th>标的</th><th>方向</th><th>开仓依据</th><th>开仓/平仓</th><th>退出原因</th><th>持仓时长</th><th>实际盈亏</th><th>R倍数</th><th>纳入分析</th><th>操作</th></tr></thead>
-            <tbody id="journal-body"><tr class="empty-row"><td colspan="12">录入第一笔实盘交易后，这里会形成可复盘证据。</td></tr></tbody>
+            <thead><tr><th>平仓时间</th><th>交易ID</th><th>标的</th><th>方向</th><th>杠杆</th><th>开仓依据</th><th>开仓/平仓</th><th>退出原因</th><th>持仓时长</th><th>盈亏（自动）</th><th>R倍数</th><th>纳入分析</th><th>操作</th></tr></thead>
+            <tbody id="journal-body"><tr class="empty-row"><td colspan="13">录入第一笔实盘交易后，这里会形成可复盘证据。</td></tr></tbody>
           </table></div>
         </section>
       </section>

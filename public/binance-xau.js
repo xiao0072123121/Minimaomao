@@ -9,7 +9,8 @@
   const HOUR = 60 * 60 * 1000;
   const FRAME_CONFIG = Object.freeze({
     h4: { interval: "4h", ms: 4 * HOUR, limit: 240, pivotWindow: 2, label: "H4" },
-    h1: { interval: "1h", ms: HOUR, limit: 320, pivotWindow: 2, label: "H1" }
+    h1: { interval: "1h", ms: HOUR, limit: 320, pivotWindow: 2, label: "H1" },
+    m15: { interval: "15m", ms: 15 * 60 * 1000, limit: 320, label: "M15" }
   });
   const SYMBOLS = Object.freeze({
     XAUUSDT: { label: "黄金", base: "XAU" },
@@ -22,7 +23,7 @@
   const CACHE_MAX_AGE = 7 * 24 * HOUR;
   const PRICE_FALLBACK_INTERVAL = 15 * 1000;
   const DAY_STATS_REFRESH_INTERVAL = 60 * 1000;
-  const FRAME_REFRESH_INTERVAL = HOUR;
+  const FRAME_REFRESH_INTERVAL = 15 * 60 * 1000;
   const MAX_RECONNECT_DELAY = 30 * 1000;
   const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -31,7 +32,7 @@
     price: NaN,
     priceAt: 0,
     dayStats: null,
-    frames: { h4: [], h1: [] },
+    frames: { h4: [], h1: [], m15: [] },
     zones: [],
     chartFrame: "h4",
     visibleBars: 100,
@@ -221,24 +222,27 @@
     if (!quiet) $("zone-state").textContent = "正在读取H4/H1收盘K线";
 
     if (!incremental) {
-      const [cachedH4, cachedH1] = await Promise.all([
+      const [cachedH4, cachedH1, cachedM15] = await Promise.all([
         readFrameCache(symbol, "h4"),
-        readFrameCache(symbol, "h1")
+        readFrameCache(symbol, "h1"),
+        readFrameCache(symbol, "m15")
       ]);
       if (generation !== state.loadGeneration || symbol !== state.symbol) return;
       state.frames.h4 = cachedH4;
       state.frames.h1 = cachedH1;
+      state.frames.m15 = cachedM15;
       if (cachedH4.length || cachedH1.length) recalculateZones();
     }
 
     const results = await Promise.allSettled([
       requestFrame("h4", incremental, signal),
-      requestFrame("h1", incremental, signal)
+      requestFrame("h1", incremental, signal),
+      requestFrame("m15", incremental, signal)
     ]);
     if (generation !== state.loadGeneration || symbol !== state.symbol) return;
 
     const failures = [];
-    for (const [index, frameKey] of ["h4", "h1"].entries()) {
+    for (const [index, frameKey] of ["h4", "h1", "m15"].entries()) {
       const result = results[index];
       if (result.status === "fulfilled" && result.value.length) {
         state.frames[frameKey] = mergeCandles(state.frames[frameKey], result.value, FRAME_CONFIG[frameKey].limit);
@@ -510,11 +514,6 @@
     const plotHeight = height - plot.top - plot.bottom;
     let minimum = Math.min(...candles.map((candle) => candle.l));
     let maximum = Math.max(...candles.map((candle) => candle.h));
-    const visibleZones = state.zones.filter((zone) => zone.high >= minimum && zone.low <= maximum);
-    for (const zone of visibleZones) {
-      minimum = Math.min(minimum, zone.low);
-      maximum = Math.max(maximum, zone.high);
-    }
     const padding = Math.max((maximum - minimum) * .08, maximum * .0005);
     minimum -= padding;
     maximum += padding;
@@ -530,32 +529,6 @@
       svg.append(svgElement("line", { x1: plot.left, x2: width - plot.right, y1: lineY, y2: lineY, stroke: "rgba(170,195,216,.10)", "stroke-width": 1 }));
       const label = svgElement("text", { x: width - plot.right + 10, y: lineY + 4, fill: "#8ca0b2", "font-size": 11 });
       label.textContent = formatPrice(price);
-      svg.append(label);
-    }
-
-    for (const zone of visibleZones) {
-      const role = zoneRole(zone, Number.isFinite(state.price) ? state.price : candles.at(-1).c);
-      const fill = role === "support" ? "rgba(47,214,162,.10)" : role === "resistance" ? "rgba(255,102,114,.10)" : "rgba(240,186,77,.11)";
-      const stroke = role === "support" ? "rgba(47,214,162,.46)" : role === "resistance" ? "rgba(255,102,114,.46)" : "rgba(240,186,77,.50)";
-      const top = y(zone.high);
-      const bottom = y(zone.low);
-      svg.append(svgElement("rect", { x: plot.left, y: top, width: plotWidth, height: Math.max(1, bottom - top), fill, stroke, "stroke-width": .8 }));
-    }
-
-    const paperPositions = window.paperTrading?.getPositionsForSymbol?.(state.symbol) || [];
-    const positionLines = [];
-    for (const position of paperPositions) {
-      positionLines.push({ price: position.entryPrice, label: `${position.side === "long" ? "多" : "空"} 开仓`, color: "#64a4ff" });
-      positionLines.push({ price: position.stopLoss, label: "止损", color: "#ff6572" });
-      positionLines.push({ price: position.takeProfit, label: "止盈", color: "#d7a33d" });
-    }
-    for (const line of positionLines.filter((item) => item.price >= minimum && item.price <= maximum)) {
-      const lineY = y(line.price);
-      svg.append(svgElement("line", { x1: plot.left, x2: width - plot.right, y1: lineY, y2: lineY, stroke: line.color, "stroke-width": 1.2, "stroke-dasharray": "5 4" }));
-      const background = svgElement("rect", { x: width - plot.right - 83, y: lineY - 10, width: 80, height: 18, rx: 3, fill: line.color, opacity: .88 });
-      svg.append(background);
-      const label = svgElement("text", { x: width - plot.right - 43, y: lineY + 3, fill: "#071019", "font-size": 9, "font-weight": 700, "text-anchor": "middle" });
-      label.textContent = `${line.label} ${formatPrice(line.price)}`;
       svg.append(label);
     }
 
@@ -587,7 +560,7 @@
     }
 
     state.chartMeta = { candles, plot, width, height, step, y };
-    $("chart-title").textContent = `${FRAME_CONFIG[state.chartFrame].label} 价格行为`;
+    $("chart-title").textContent = `${FRAME_CONFIG[state.chartFrame].label} K线`;
     $("chart-note").textContent = `${candles.length}根已收盘K线 · ${formatTime(candles[0].t)} 至 ${formatTime(candles.at(-1).t)}`;
   }
 
@@ -662,7 +635,7 @@
     state.price = NaN;
     state.priceAt = 0;
     state.dayStats = null;
-    state.frames = { h4: [], h1: [] };
+    state.frames = { h4: [], h1: [], m15: [] };
     state.zones = [];
     state.zoneRoleSignature = "";
     state.visibleBars = 100;
