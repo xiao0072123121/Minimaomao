@@ -9,10 +9,10 @@ const BINANCE_API_HOSTS = [
 ];
 const BINANCE_ENDPOINTS = new Set([
   "/fapi/v1/klines",
-  "/fapi/v1/ticker/bookTicker"
+  "/fapi/v1/ticker/price"
 ]);
 const BINANCE_SYMBOLS = new Set(["XAUUSDT", "SNDKUSDT", "SKHYNIXUSDT"]);
-const BINANCE_INTERVALS = new Set(["5m", "15m", "1h", "4h", "1d"]);
+const BINANCE_INTERVALS = new Set(["1h", "4h"]);
 
 const encoder = new TextEncoder();
 
@@ -123,21 +123,26 @@ function validateBinanceRequest(url) {
   if (endpoint === "/fapi/v1/klines") {
     const interval = url.searchParams.get("interval");
     if (!BINANCE_INTERVALS.has(interval)) return { error: "不支持的K线周期" };
-  }
-  for (const name of ["startTime", "endTime", "limit"]) {
-    const value = url.searchParams.get(name);
-    if (value !== null && (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)))) {
-      return { error: `${name}参数无效` };
+    const limit = url.searchParams.get("limit");
+    if (limit !== null && (!/^\d+$/.test(limit) || !Number.isSafeInteger(Number(limit)))) {
+      return { error: "limit参数无效" };
+    }
+    const requestedLimit = Number(limit || 320);
+    url.searchParams.set("limit", String(Math.min(320, Math.max(1, requestedLimit))));
+    for (const name of [...url.searchParams.keys()]) {
+      if (!["symbol", "interval", "limit"].includes(name)) return { error: `${name}参数不受支持` };
+    }
+  } else {
+    for (const name of [...url.searchParams.keys()]) {
+      if (name !== "symbol") return { error: `${name}参数不受支持` };
     }
   }
-  const requestedLimit = Number(url.searchParams.get("limit") || 500);
-  url.searchParams.set("limit", String(Math.min(1500, Math.max(1, requestedLimit))));
   return { endpoint };
 }
 
 function binanceCacheTtl(endpoint, url) {
   if (endpoint === "/fapi/v1/klines") {
-    return url.searchParams.has("startTime") && url.searchParams.has("endTime") ? 60 : 15;
+    return url.searchParams.has("startTime") && url.searchParams.has("endTime") ? 300 : 60;
   }
   return 2;
 }
