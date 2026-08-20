@@ -127,12 +127,14 @@
   }
 
   function normalizeTrade(trade) {
+    const closed = trade?.status === "open" || trade?.closed === false ? false : true;
     const openAt = Number(trade?.openAt);
-    const closeAt = Number(trade?.closeAt);
+    const closeAt = trade?.closeAt === null || trade?.closeAt === undefined || trade?.closeAt === "" ? NaN : Number(trade.closeAt);
     const entryPrice = Number(trade?.entryPrice);
-    const closePrice = Number(trade?.closePrice);
+    const closePrice = trade?.closePrice === null || trade?.closePrice === undefined || trade?.closePrice === "" ? NaN : Number(trade.closePrice);
     const pnl = Number(trade?.pnl);
-    if (![openAt, closeAt, entryPrice, closePrice, pnl].every(Number.isFinite) || closeAt < openAt) return null;
+    if (![openAt, entryPrice, pnl].every(Number.isFinite)) return null;
+    if (closed && (![closeAt, closePrice].every(Number.isFinite) || closeAt < openAt)) return null;
     const quantity = Number(trade?.quantity);
     const leverage = Number(trade?.leverage);
     const stopLoss = Number(trade?.stopLoss);
@@ -152,18 +154,23 @@
     const storedEntries = Array.isArray(trade?.entryLegs) ? trade.entryLegs.map((leg) => normalizeLeg(leg)).filter(Boolean) : [];
     const entryLegs = storedEntries.length ? storedEntries.sort((a, b) => a.time - b.time) : [{ time: openAt, price: entryPrice, quantity: normalizedQuantity || 1, final: false }];
     const storedExits = Array.isArray(trade?.exitLegs) ? trade.exitLegs.map((leg) => normalizeLeg(leg, leg?.final === true)).filter(Boolean) : [];
-    let exitLegs = storedExits.length ? storedExits.sort((a, b) => a.time - b.time) : [{ time: closeAt, price: closePrice, quantity: normalizedQuantity || 1, final: true }];
-    if (!exitLegs.some((leg) => leg.final)) exitLegs = exitLegs.map((leg, index) => ({ ...leg, final: index === exitLegs.length - 1 }));
+    let exitLegs = storedExits.length ? storedExits.sort((a, b) => a.time - b.time) : closed ? [{ time: closeAt, price: closePrice, quantity: normalizedQuantity || 1, final: true }] : [];
+    if (closed && !exitLegs.some((leg) => leg.final)) exitLegs = exitLegs.map((leg, index) => ({ ...leg, final: index === exitLegs.length - 1 }));
+    if (!closed) exitLegs = exitLegs.map((leg) => ({ ...leg, final: false }));
+    const calculatedRemaining = entryLegs.reduce((sum, leg) => sum + leg.quantity, 0) - exitLegs.reduce((sum, leg) => sum + leg.quantity, 0);
+    const storedRemaining = Number(trade?.remainingQuantity);
+    const remainingQuantity = closed ? 0 : Number.isFinite(storedRemaining) && storedRemaining > 0 ? storedRemaining : Math.max(0, calculatedRemaining);
     return {
       id: String(trade?.id || id()), symbol: String(trade?.symbol || "XAUUSDT"),
-      side: trade?.side === "short" ? "short" : "long", openAt, closeAt, entryPrice, closePrice, pnl,
-      quantity: normalizedQuantity, leverage: normalizedLeverage, entryLegs, exitLegs,
+      side: trade?.side === "short" ? "short" : "long", status: closed ? "closed" : "open", closed,
+      openAt, closeAt: closed ? closeAt : null, entryPrice, closePrice: Number.isFinite(closePrice) ? closePrice : null, pnl,
+      quantity: normalizedQuantity, remainingQuantity, leverage: normalizedLeverage, entryLegs, exitLegs,
       stopLoss: Number.isFinite(stopLoss) && stopLoss > 0 ? stopLoss : null,
       takeProfit: Number.isFinite(takeProfit) && takeProfit > 0 ? takeProfit : null,
       reasons: Array.isArray(trade?.reasons) ? trade.reasons.map(String) : [],
-      note: String(trade?.note || ""), exitReason: String(trade?.exitReason || "其他"),
+      note: String(trade?.note || ""), exitReason: closed ? String(trade?.exitReason || "其他") : "",
       includeInAnalysis: trade?.includeInAnalysis !== false,
-      rMultiple: Number.isFinite(Number(trade?.rMultiple)) ? Number(trade.rMultiple) : Number.isFinite(risk) && risk > 0 ? pnl / risk : null,
+      rMultiple: closed && Number.isFinite(Number(trade?.rMultiple)) ? Number(trade.rMultiple) : closed && Number.isFinite(risk) && risk > 0 ? pnl / risk : null,
       source: "manual"
     };
   }
@@ -179,6 +186,14 @@
 
   function selectedReasons() {
     return [...document.querySelectorAll('input[name="real-entry-reason"]:checked')].map((input) => input.value);
+  }
+
+  function syncTradeStatus() {
+    const isOpen = $("trade-status").value === "open";
+    ["trade-close-time", "trade-close-price", "trade-exit-reason"].forEach((idName) => { $(idName).disabled = isOpen; });
+    $("trade-pnl-label").textContent = isOpen ? "已实现盈亏（未计费用）" : "自动盈亏（未计费用）";
+    $("trade-close-price").placeholder = isOpen ? "持仓中无需填写" : "结算剩余仓位";
+    if (!$("trade-edit-id").value) $("save-trade").textContent = isOpen ? "保存未平仓记录" : "保存实盘交易";
   }
 
   function emptyFillMessage(kind) {
@@ -240,23 +255,26 @@
   }
 
   function calculateExecutionPlan() {
+    const closed = $("trade-status").value !== "open";
     const openAt = new Date($("trade-open-time").value).getTime();
-    const closeAt = new Date($("trade-close-time").value).getTime();
+    const closeAt = closed ? new Date($("trade-close-time").value).getTime() : null;
     const firstEntryPrice = Number($("trade-entry-price").value);
-    const finalClosePrice = Number($("trade-close-price").value);
+    const finalClosePrice = closed ? Number($("trade-close-price").value) : null;
     const firstQuantity = Number($("trade-quantity").value);
     const leverage = Number($("trade-leverage").value);
-    if (!Number.isFinite(openAt) || !Number.isFinite(closeAt)) return { error: "请填写完整的首次开仓和最终平仓时间。" };
-    if (closeAt < openAt) return { error: "最终平仓时间不能早于首次开仓时间。" };
-    if (![firstEntryPrice, finalClosePrice].every((value) => Number.isFinite(value) && value > 0)) return { error: "请填写有效的首次开仓价和最终平仓价。" };
+    if (!Number.isFinite(openAt)) return { error: "请填写首次开仓时间。" };
+    if (closed && !Number.isFinite(closeAt)) return { error: "请填写最终平仓时间。" };
+    if (closed && closeAt < openAt) return { error: "最终平仓时间不能早于首次开仓时间。" };
+    if (!Number.isFinite(firstEntryPrice) || firstEntryPrice <= 0) return { error: "请填写有效的首次开仓价。" };
+    if (closed && (!Number.isFinite(finalClosePrice) || finalClosePrice <= 0)) return { error: "请填写有效的最终平仓价。" };
     if (!Number.isFinite(firstQuantity) || firstQuantity < 0.1) return { error: "首次开仓数量最小为 0.1。" };
     if (!Number.isFinite(leverage) || leverage < 1) return { error: "杠杆倍数最小为 1。" };
     const extraEntries = collectFillRows("entry");
     if (extraEntries.error) return extraEntries;
     const partialExits = collectFillRows("exit");
     if (partialExits.error) return partialExits;
-    const rangedLeg = [...extraEntries.legs, ...partialExits.legs].find((leg) => leg.time < openAt || leg.time > closeAt);
-    if (rangedLeg) return { error: "加仓和分批止盈时间必须位于首次开仓与最终平仓之间。" };
+    const rangedLeg = [...extraEntries.legs, ...partialExits.legs].find((leg) => leg.time < openAt || closed && leg.time > closeAt);
+    if (rangedLeg) return { error: closed ? "加仓和分批止盈时间必须位于首次开仓与最终平仓之间。" : "加仓和分批止盈时间不能早于首次开仓时间。" };
 
     const entryLegs = [{ time: openAt, price: firstEntryPrice, quantity: firstQuantity, final: false }, ...extraEntries.legs]
       .sort((a, b) => a.time - b.time);
@@ -277,17 +295,25 @@
         pnl += (event.price - averageCost) * event.quantity * leverage * direction;
         positionQuantity -= event.quantity;
         if (positionQuantity < 1e-8) positionQuantity = 0;
+        if (positionQuantity === 0) return { error: closed ? "分批止盈不能提前平掉全部仓位，请为最终平仓保留剩余数量。" : "未平仓记录必须保留持仓数量，全部平仓后请将交易状态改为“已平仓”。" };
       }
     }
-    if (positionQuantity <= 0) return { error: "分批止盈不能提前平掉全部仓位，请为最终平仓保留剩余数量。" };
-    const finalExit = { time: closeAt, price: finalClosePrice, quantity: positionQuantity, final: true };
-    pnl += (finalClosePrice - averageCost) * positionQuantity * leverage * direction;
-    const exitLegs = [...partialExits.legs, finalExit].sort((a, b) => a.time - b.time || Number(a.final) - Number(b.final));
+    let exitLegs = [...partialExits.legs];
+    if (closed) {
+      const finalExit = { time: closeAt, price: finalClosePrice, quantity: positionQuantity, final: true };
+      pnl += (finalClosePrice - averageCost) * positionQuantity * leverage * direction;
+      exitLegs.push(finalExit);
+      positionQuantity = 0;
+    }
+    exitLegs = exitLegs.sort((a, b) => a.time - b.time || Number(a.final) - Number(b.final));
     const totalEntryQuantity = entryLegs.reduce((sum, leg) => sum + leg.quantity, 0);
     const totalExitQuantity = exitLegs.reduce((sum, leg) => sum + leg.quantity, 0);
     const entryPrice = entryLegs.reduce((sum, leg) => sum + leg.price * leg.quantity, 0) / totalEntryQuantity;
-    const closePrice = exitLegs.reduce((sum, leg) => sum + leg.price * leg.quantity, 0) / totalExitQuantity;
-    return { openAt, closeAt, entryPrice, closePrice, quantity: totalEntryQuantity, leverage, pnl, entryLegs, exitLegs };
+    const closePrice = totalExitQuantity ? exitLegs.reduce((sum, leg) => sum + leg.price * leg.quantity, 0) / totalExitQuantity : null;
+    return {
+      status: closed ? "closed" : "open", closed, openAt, closeAt, entryPrice, closePrice,
+      quantity: totalEntryQuantity, remainingQuantity: positionQuantity, leverage, pnl, entryLegs, exitLegs
+    };
   }
 
   function calculatedPnlFromForm() {
@@ -307,19 +333,19 @@
     const side = $("trade-side").value;
     const plan = calculateExecutionPlan();
     if (plan.error) return plan;
-    const { openAt, closeAt, entryPrice, closePrice, pnl, quantity, leverage, entryLegs, exitLegs } = plan;
+    const { status, closed, openAt, closeAt, entryPrice, closePrice, pnl, quantity, remainingQuantity, leverage, entryLegs, exitLegs } = plan;
     const stopLoss = Number($("trade-stop").value);
     const takeProfit = Number($("trade-target").value);
     const reasons = selectedReasons();
     if (!reasons.length) return { error: "请至少选择一项开仓依据。" };
     const risk = Number.isFinite(stopLoss) && stopLoss > 0 ? Math.abs(entryPrice - stopLoss) * quantity * leverage : NaN;
     return {
-      id: $("trade-edit-id").value || id(), symbol, side, openAt, closeAt, entryPrice, closePrice, pnl,
-      quantity, leverage, entryLegs, exitLegs,
+      id: $("trade-edit-id").value || id(), symbol, side, status, closed, openAt, closeAt, entryPrice, closePrice, pnl,
+      quantity, remainingQuantity, leverage, entryLegs, exitLegs,
       stopLoss: Number.isFinite(stopLoss) && stopLoss > 0 ? stopLoss : null,
       takeProfit: Number.isFinite(takeProfit) && takeProfit > 0 ? takeProfit : null,
-      reasons, note: $("trade-note").value.trim(), exitReason: $("trade-exit-reason").value,
-      includeInAnalysis: true, rMultiple: Number.isFinite(risk) && risk > 0 ? pnl / risk : null, source: "manual"
+      reasons, note: $("trade-note").value.trim(), exitReason: closed ? $("trade-exit-reason").value : "",
+      includeInAnalysis: true, rMultiple: closed && Number.isFinite(risk) && risk > 0 ? pnl / risk : null, source: "manual"
     };
   }
 
@@ -327,6 +353,7 @@
     $("trade-edit-id").value = "";
     $("trade-symbol").value = "XAUUSDT";
     $("trade-side").value = "long";
+    $("trade-status").value = "closed";
     $("trade-entry-price").value = "";
     $("trade-close-price").value = "";
     $("trade-pnl").value = "";
@@ -344,6 +371,7 @@
     $("trade-open-time").value = toLocalInput(now - 60 * 60 * 1000);
     $("trade-form-error").textContent = "自动盈亏暂不包含手续费、滑点和资金费率。";
     $("save-trade").textContent = "保存实盘交易";
+    syncTradeStatus();
   }
 
   async function saveTradeFromForm() {
@@ -356,7 +384,7 @@
     await saveTrades();
     resetTradeForm();
     renderAll();
-    showToast(existing ? "实盘交易记录已更新。" : "实盘交易已录入并纳入分析。" );
+    showToast(existing ? "实盘交易记录已更新。" : value.closed ? "已平仓交易已录入并纳入分析。" : "未平仓交易已保存，可随时继续更新。" );
   }
 
   function executionDetails(trade) {
@@ -367,18 +395,22 @@
       ...entryLegs.map((leg, index) => `<span>开${index + 1} · ${escapeHtml(formatDate(leg.time))} · ${escapeHtml(formatPrice(leg.price))} × ${escapeHtml(formatQuantity(leg.quantity))}</span>`),
       ...exitLegs.map((leg, index) => `<span>${leg.final ? "最终平仓" : `止盈${index + 1}`} · ${escapeHtml(formatDate(leg.time))} · ${escapeHtml(formatPrice(leg.price))} × ${escapeHtml(formatQuantity(leg.quantity))}</span>`)
     ].join("");
-    return `<details class="fill-details"><summary>加仓 ${Math.max(0, entryLegs.length - 1)} 次 · 分批止盈 ${partialExitCount} 次</summary><div class="fill-detail-list">${lines}</div></details>`;
+    return `<details class="fill-details"><summary>加仓 ${Math.max(0, entryLegs.length - 1)} 次 · 分批止盈 ${partialExitCount} 次</summary><div class="fill-detail-list">${lines || "<span>暂无分笔成交</span>"}</div></details>`;
   }
 
   function journalRow(trade) {
+    const closeSummary = trade.closed ? `均价 ${formatPrice(trade.closePrice)}` : trade.exitLegs.length ? `止盈均价 ${formatPrice(trade.closePrice)}` : "尚未平仓";
+    const holdingQuantity = trade.closed ? trade.quantity : trade.remainingQuantity;
+    const durationEnd = trade.closed ? trade.closeAt : Date.now();
     return `<tr>
       <td>${escapeHtml(trade.symbol)}</td>
       <td class="${trade.side === "long" ? "direction-long" : "direction-short"}">${SIDE_LABELS[trade.side]}</td>
-      <td><div class="paired-value"><span>均价 ${escapeHtml(formatPrice(trade.entryPrice))}</span><span>均价 ${escapeHtml(formatPrice(trade.closePrice))}</span></div>${executionDetails(trade)}</td>
-      <td><div class="paired-value"><span>开 ${escapeHtml(formatDate(trade.openAt))}</span><span>平 ${escapeHtml(formatDate(trade.closeAt))}</span></div></td>
-      <td>${escapeHtml(formatDuration(trade.closeAt - trade.openAt))}</td>
-      <td class="${trade.pnl > 0 ? "metric-positive" : trade.pnl < 0 ? "metric-negative" : ""}">${escapeHtml(formatMoney(trade.pnl, true))}</td>
-      <td>${escapeHtml(`${trade.leverage}x`)}</td><td>${escapeHtml(trade.exitReason)}</td><td>${escapeHtml(trade.reasons.join(" / ") || "—")}</td><td><input type="checkbox" data-analysis-toggle="${escapeHtml(trade.id)}" ${trade.includeInAnalysis ? "checked" : ""} aria-label="纳入分析"></td>
+      <td><div class="paired-value"><span>均价 ${escapeHtml(formatPrice(trade.entryPrice))}</span><span>${escapeHtml(closeSummary)}</span></div>${executionDetails(trade)}</td>
+      <td><div class="paired-value"><span>开 ${escapeHtml(formatDate(trade.openAt))}</span><span>${trade.closed ? `平 ${escapeHtml(formatDate(trade.closeAt))}` : '<em class="open-position-badge">持仓中</em>'}</span></div></td>
+      <td><div class="paired-value"><span>${escapeHtml(formatQuantity(holdingQuantity))}</span><span>${trade.closed ? "累计开仓" : `累计开仓 ${escapeHtml(formatQuantity(trade.quantity))}`}</span></div></td>
+      <td>${escapeHtml(formatDuration(durationEnd - trade.openAt))}</td>
+      <td class="${trade.pnl > 0 ? "metric-positive" : trade.pnl < 0 ? "metric-negative" : ""}">${trade.closed ? "" : '<span class="realized-label">已实现</span> '}${escapeHtml(formatMoney(trade.pnl, true))}</td>
+      <td>${escapeHtml(`${trade.leverage}x`)}</td><td>${trade.closed ? escapeHtml(trade.exitReason) : "—"}</td><td>${escapeHtml(trade.reasons.join(" / ") || "—")}</td><td><input type="checkbox" data-analysis-toggle="${escapeHtml(trade.id)}" ${trade.includeInAnalysis ? "checked" : ""} ${trade.closed ? "" : "disabled title=\"平仓后才会纳入统计\""} aria-label="纳入分析"></td>
       <td><div class="row-actions"><button class="row-button" data-edit-trade="${escapeHtml(trade.id)}" type="button">编辑</button><button class="row-button delete" data-delete-trade="${escapeHtml(trade.id)}" type="button">删除</button></div></td>
     </tr>`;
   }
@@ -390,13 +422,13 @@
     return [...state.trades].filter((trade) =>
       (symbol === "all" || trade.symbol === symbol) &&
       (side === "all" || trade.side === side) &&
-      (result === "all" || (result === "win" ? trade.pnl > 0 : trade.pnl < 0))
-    ).sort((a, b) => b.closeAt - a.closeAt);
+      (result === "all" || (result === "open" ? !trade.closed : trade.closed && (result === "win" ? trade.pnl > 0 : trade.pnl < 0)))
+    ).sort((a, b) => (b.closeAt || b.openAt) - (a.closeAt || a.openAt));
   }
 
   function renderJournal() {
     const trades = filteredTrades();
-    $("journal-body").innerHTML = trades.length ? trades.map(journalRow).join("") : '<tr class="empty-row"><td colspan="11">当前筛选条件下没有实盘交易记录。</td></tr>';
+    $("journal-body").innerHTML = trades.length ? trades.map(journalRow).join("") : '<tr class="empty-row"><td colspan="12">当前筛选条件下没有实盘交易记录。</td></tr>';
   }
 
   function reviewFor(trades) {
@@ -445,7 +477,7 @@
   }
 
   function renderWeekly() {
-    const weekTrades = state.trades.filter((trade) => trade.includeInAnalysis && trade.closeAt >= state.selectedWeekStart && trade.closeAt < endOfWeek(state.selectedWeekStart));
+    const weekTrades = state.trades.filter((trade) => trade.closed && trade.includeInAnalysis && trade.closeAt >= state.selectedWeekStart && trade.closeAt < endOfWeek(state.selectedWeekStart));
     const review = reviewFor(weekTrades);
     $("week-label").textContent = formatWeek(state.selectedWeekStart);
     $("review-count").textContent = String(review.count);
@@ -470,7 +502,7 @@
   }
 
   function renderHabits() {
-    const trades = state.trades.filter((trade) => trade.includeInAnalysis);
+    const trades = state.trades.filter((trade) => trade.closed && trade.includeInAnalysis);
     const confidence = confidenceLabel(trades.length);
     $("habit-confidence").textContent = `${confidence} · ${trades.length}笔`;
     if (!trades.length) {
@@ -523,14 +555,15 @@
     $("trade-edit-id").value = trade.id;
     $("trade-symbol").value = [...$("trade-symbol").options].some((option) => option.value === trade.symbol) ? trade.symbol : "其他";
     $("trade-side").value = trade.side;
+    $("trade-status").value = trade.closed ? "closed" : "open";
     const entries = Array.isArray(trade.entryLegs) && trade.entryLegs.length ? [...trade.entryLegs].sort((a, b) => a.time - b.time) : [{ time: trade.openAt, price: trade.entryPrice, quantity: trade.quantity }];
-    const exits = Array.isArray(trade.exitLegs) && trade.exitLegs.length ? [...trade.exitLegs].sort((a, b) => a.time - b.time) : [{ time: trade.closeAt, price: trade.closePrice, quantity: trade.quantity, final: true }];
+    const exits = Array.isArray(trade.exitLegs) ? [...trade.exitLegs].sort((a, b) => a.time - b.time) : [];
     const firstEntry = entries[0];
-    const finalExit = exits.find((leg) => leg.final) || exits.at(-1);
+    const finalExit = trade.closed ? exits.find((leg) => leg.final) || exits.at(-1) : null;
     $("trade-open-time").value = toLocalInput(firstEntry.time);
-    $("trade-close-time").value = toLocalInput(finalExit.time);
+    $("trade-close-time").value = finalExit ? toLocalInput(finalExit.time) : "";
     $("trade-entry-price").value = String(firstEntry.price);
-    $("trade-close-price").value = String(finalExit.price);
+    $("trade-close-price").value = finalExit ? String(finalExit.price) : "";
     $("trade-pnl").value = String(trade.pnl);
     $("trade-quantity").value = Number.isFinite(firstEntry.quantity) ? String(firstEntry.quantity) : "";
     $("trade-leverage").value = String(Number.isFinite(trade.leverage) ? trade.leverage : 1);
@@ -539,8 +572,9 @@
     $("trade-exit-reason").value = [...$("trade-exit-reason").options].some((option) => option.value === trade.exitReason) ? trade.exitReason : "其他";
     $("trade-note").value = trade.note;
     renderFillRows("entry", entries.slice(1));
-    renderFillRows("exit", exits.filter((leg) => leg !== finalExit));
+    renderFillRows("exit", exits.filter((leg) => !leg.final));
     document.querySelectorAll('input[name="real-entry-reason"]').forEach((input) => { input.checked = trade.reasons.includes(input.value); });
+    syncTradeStatus();
     updateCalculatedPnl();
     $("save-trade").textContent = "保存修改";
     $("trade-entry-title").scrollIntoView({ behavior: "smooth", block: "start" });
@@ -569,6 +603,13 @@
     $("reset-trade-form").addEventListener("click", resetTradeForm);
     $("add-entry-leg").addEventListener("click", () => addFillRow("entry"));
     $("add-exit-leg").addEventListener("click", () => addFillRow("exit"));
+    $("trade-status").addEventListener("change", () => {
+      syncTradeStatus();
+      updateCalculatedPnl();
+      $("trade-form-error").textContent = $("trade-status").value === "open"
+        ? "持仓中记录只统计已实现盈亏，暂不进入周复盘和画像分析。"
+        : "自动盈亏暂不包含手续费、滑点和资金费率。";
+    });
     [$("entry-legs"), $("exit-legs")].forEach((container) => {
       container.addEventListener("input", updateCalculatedPnl);
       container.addEventListener("click", (event) => {

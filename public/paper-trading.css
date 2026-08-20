@@ -179,6 +179,7 @@ body:not(.monitor-active) .workspace-header { display: none; }
   width: 100%; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: #081620;
 }
 .field > input[readonly] { color: #9fe8cf; background: rgba(40,214,157,.035); cursor: default; }
+.field > input:disabled, .field select:disabled { color: #61798b; background: rgba(255,255,255,.012); cursor: not-allowed; opacity: .72; }
 .input-wrap input, .field > input, .field select { height: 38px; padding: 0 11px; }
 .input-wrap input { padding-right: 48px; }
 .field textarea { min-height: 62px; padding: 9px 10px; resize: vertical; }
@@ -209,6 +210,8 @@ body:not(.monitor-active) .workspace-header { display: none; }
 .paired-value { display: grid; gap: 2px; }
 .paired-value span:first-child { color: #a9c0d1; }
 .paired-value span:last-child { color: var(--muted); }
+.open-position-badge { display: inline-block; width: max-content; color: var(--gold); font-size: 10px; font-style: normal; font-weight: 700; }
+.realized-label { color: var(--muted); font-size: 9px; font-weight: 500; }
 .data-table tbody tr:hover { background: rgba(255,255,255,.018); }
 .empty-row td { padding: 30px 12px; color: var(--muted); text-align: center; }
 .direction-long { color: var(--green) !important; font-weight: 700; }
