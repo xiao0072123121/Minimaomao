@@ -221,8 +221,8 @@
       <label class="field"><span>成交价</span><input data-leg-field="price" type="number" min="0" step="0.01" placeholder="必填"></label>
       <label class="field"><span>数量</span><input data-leg-field="quantity" type="number" min="0.1" step="0.1" placeholder="最小 0.1"></label>
       <button class="fill-remove" type="button" aria-label="删除这条${kind === "entry" ? "加仓" : "止盈"}记录">×</button>`;
+    row.querySelector('[data-leg-field="time"]').value = toLocalInput(leg ? leg.time : Date.now());
     if (leg) {
-      row.querySelector('[data-leg-field="time"]').value = toLocalInput(leg.time);
       row.querySelector('[data-leg-field="price"]').value = String(leg.price);
       row.querySelector('[data-leg-field="quantity"]').value = String(leg.quantity);
     }
