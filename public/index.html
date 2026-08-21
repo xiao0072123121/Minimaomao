@@ -4,40 +4,36 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="dark">
-  <title>价格行为支撑压力监测</title>
-  <link rel="stylesheet" href="paper-trading.css?v=20260820-open-trades-v1">
+  <title>Binance行情分析</title>
+  <link rel="stylesheet" href="paper-trading.css?v=20260821-simulation-trading-v1">
 </head>
 <body class="monitor-active">
   <div class="app-shell">
-    <aside class="side-nav" aria-label="主导航">
-      <div class="brand-mini" aria-label="价格行为支撑压力监测">
-        <div class="brand-mark">
+    <main class="workspace">
+      <header class="workspace-header">
+        <div class="workspace-brand">
+          <div class="brand-mark" aria-hidden="true">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <path d="M12 3.75 20.25 12 12 20.25 3.75 12 12 3.75Z" stroke="currentColor" stroke-width="1.45"/>
             <path d="m12 8 4 4-4 4-4-4 4-4Z" fill="currentColor" opacity=".85"/>
           </svg>
+          </div>
+          <div class="workspace-title">
+            <h1>Binance行情分析</h1>
+            <p id="brand-subtitle">XAUUSDT · 实时价格与H4/H1固定区域</p>
+          </div>
         </div>
-      </div>
-      <nav class="nav-list">
-        <button class="nav-button active" data-view="monitor" type="button"><span class="nav-icon">⌁</span><span>价格监控</span></button>
-        <button class="nav-button" data-view="journal" type="button"><span class="nav-icon">▤</span><span>交易日志</span></button>
-        <button class="nav-button" data-view="weekly" type="button"><span class="nav-icon">⌁</span><span>周复盘</span></button>
-        <button class="nav-button" data-view="habits" type="button"><span class="nav-icon">◎</span><span>画像分析</span></button>
-      </nav>
-    </aside>
-
-    <main class="workspace">
-      <header class="workspace-header">
-        <div class="workspace-title">
-          <h1>价格行为支撑压力监测</h1>
-          <p id="brand-subtitle">XAUUSDT · 实时价格与H4/H1固定区域</p>
-        </div>
+        <nav class="top-nav" aria-label="主导航">
+          <button class="nav-button active" data-view="monitor" type="button">价格监控</button>
+          <button class="nav-button" data-view="journal" type="button">交易日志</button>
+          <button class="nav-button" data-view="weekly" type="button">周复盘</button>
+          <button class="nav-button" data-view="habits" type="button">画像分析</button>
+        </nav>
         <nav class="symbol-switcher" aria-label="切换标的物">
           <button class="symbol-button active" data-symbol="XAUUSDT" type="button">黄金 · XAUUSDT</button>
           <button class="symbol-button" data-symbol="SNDKUSDT" type="button">SanDisk · SNDKUSDT</button>
           <button class="symbol-button" data-symbol="SKHYNIXUSDT" type="button">SK hynix · SKHYNIXUSDT</button>
         </nav>
-        <div id="live-state" class="live-state"><span class="live-dot"></span><span id="live-text">正在连接实时价格</span></div>
       </header>
 
       <div id="error-banner" class="error-banner" role="alert"></div>
@@ -45,7 +41,7 @@
       <section id="view-monitor" class="app-view active monitor-view" data-app-view="monitor">
         <div class="monitor-overview">
           <article class="panel monitor-price-card">
-            <div id="market-symbol" class="monitor-eyebrow">BINANCE FUTURES · XAUUSDT</div>
+            <div class="monitor-card-head"><div id="market-symbol" class="monitor-eyebrow">BINANCE FUTURES · XAUUSDT</div><div id="live-state" class="live-state"><span class="live-dot"></span><span id="live-text">正在连接实时价格</span></div></div>
             <div class="price-line"><span id="current-price" class="price">—</span><span class="unit">USDT</span></div>
             <div class="monitor-meta">更新 <span id="price-time">等待报价</span><span>价格源：Binance Mark Price</span></div>
           </article>
@@ -93,21 +89,60 @@
           <div class="chart-foot"><span>红色上涨，绿色下跌；图中不显示支撑压力色带。</span><span id="chart-note">等待历史价格…</span></div>
         </section>
 
-        <div class="monitor-methods">
-          <article class="panel method-card"><span>H4定位</span><b>确认大周期强支撑与压力</b><p>由显著摆动高低点和重复触碰形成候选区域。</p></article>
-          <article class="panel method-card"><span>H1细化</span><b>缩小可观察的价格区间</b><p>跨周期重合区域优先，但不生成交易建议。</p></article>
-          <article class="panel method-card"><span>使用边界</span><b>只提供价格行为监控</b><p>区域会随新收盘K线变化，不代表必然反转。</p></article>
-        </div>
       </section>
 
       <section id="view-journal" class="app-view" data-app-view="journal">
-        <div class="page-head"><div><h2>交易日志录入</h2><p>录入持仓中或已完成的实盘交易；周复盘和画像分析只使用已平仓并确认纳入的记录。</p></div>
-          <div class="toolbar-actions">
-            <select id="journal-symbol-filter" class="filter-select"><option value="all">全部标的</option><option>XAUUSDT</option><option>SNDKUSDT</option><option>SKHYNIXUSDT</option></select>
-            <select id="journal-side-filter" class="filter-select"><option value="all">全部方向</option><option value="long">做多</option><option value="short">做空</option></select>
-            <select id="journal-result-filter" class="filter-select"><option value="all">全部结果</option><option value="open">持仓中</option><option value="win">盈利</option><option value="loss">亏损</option></select>
+        <section class="panel simulation-capital-panel" aria-labelledby="simulation-capital-title">
+          <div class="simulation-capital-head"><div><h2 id="simulation-capital-title">模拟账户资金</h2><p>资金规模手动设置，其余数据根据模拟交易自动计算。</p></div><span>仅统计模拟账户</span></div>
+          <div class="simulation-capital-grid">
+            <label class="simulation-capital-item simulation-capital-input"><span>资金规模</span><div><input id="simulation-capital" type="number" min="0" step="100" value="100000"><em>USDT</em><button id="save-simulation-capital" type="button">设置</button></div></label>
+            <div class="simulation-capital-item"><span>可用资金</span><strong id="simulation-available-funds">—</strong></div>
+            <div class="simulation-capital-item"><span>保证金占用比例</span><strong id="simulation-margin-ratio">—</strong></div>
+            <div class="simulation-capital-item"><span>持仓浮动盈亏</span><strong id="simulation-floating-pnl">—</strong></div>
+            <div class="simulation-capital-item"><span>已平仓盈亏</span><strong id="simulation-realized-pnl">—</strong></div>
           </div>
-        </div>
+        </section>
+        <section class="panel simulation-panel" aria-labelledby="simulation-title">
+          <div class="simulation-panel-head">
+            <div><span>SIMULATED ORDER</span><h3 id="simulation-title">模拟交易</h3><p>按币安最新报价模拟开仓；已平仓记录会纳入周复盘和画像分析。</p></div>
+          </div>
+          <div class="simulation-layout">
+            <form id="simulation-form" class="simulation-ticket">
+              <div class="simulation-ticket-head"><strong>模拟下单</strong><span>市价开仓</span></div>
+              <label class="field"><span>标的</span><select id="simulation-symbol"><option>XAUUSDT</option><option>SNDKUSDT</option><option>SKHYNIXUSDT</option></select></label>
+              <div class="field simulation-side-field"><span>方向</span><div class="simulation-side-selector" role="group" aria-label="模拟交易方向"><button id="simulation-long" class="simulation-side-button active" data-side="long" type="button">做多</button><button id="simulation-short" class="simulation-side-button" data-side="short" type="button">做空</button></div></div>
+              <div class="simulation-price-reference"><span>最新价 <b id="simulation-reference-price">—</b></span><button id="refresh-simulation-price" type="button">刷新价格</button></div>
+              <div class="simulation-field-row">
+                <label class="field"><span>开仓数量</span><input id="simulation-quantity" type="number" min="0.1" step="0.1" value="0.1"></label>
+                <label class="field"><span>杠杆倍数</span><input id="simulation-leverage" type="number" min="1" step="1" value="1"></label>
+              </div>
+              <div class="simulation-field-row">
+                <label class="field"><span>计划止损（可选）</span><input id="simulation-stop" type="number" min="0" step="0.01"></label>
+                <label class="field"><span>计划止盈（可选）</span><input id="simulation-target" type="number" min="0" step="0.01"></label>
+              </div>
+              <button id="open-simulation-trade" class="primary-button simulation-submit" type="submit">按最新价模拟开仓</button>
+              <p id="simulation-form-error" class="form-error simulation-form-error" role="alert">模拟盈亏暂不包含手续费、滑点和资金费率。</p>
+            </form>
+            <aside class="simulation-quote" aria-label="模拟交易实时价格">
+              <div class="simulation-quote-head"><span>实时价格</span><span id="simulation-connection" class="simulation-connection"><i></i>等待报价</span></div>
+              <div id="simulation-quote-symbol" class="simulation-quote-symbol">XAUUSDT · BINANCE FUTURES</div>
+              <div class="simulation-price-line"><div><strong id="simulation-live-price">—</strong><b id="simulation-day-change">—</b></div><time id="simulation-price-time">—</time></div>
+              <svg id="simulation-price-spark" class="simulation-price-spark" viewBox="0 0 700 80" preserveAspectRatio="none" aria-label="实时价格短线轨迹"></svg>
+              <div class="simulation-quote-stats">
+                <div><span>买价</span><b id="simulation-bid">—</b></div><div><span>卖价</span><b id="simulation-ask">—</b></div>
+                <div><span>24小时最高</span><b id="simulation-day-high">—</b></div><div><span>24小时最低</span><b id="simulation-day-low">—</b></div>
+              </div>
+              <p>行情持续更新；模拟开仓和平仓均以点击按钮时重新获取的最新价格为准。</p>
+            </aside>
+          </div>
+        </section>
+        <section class="panel simulation-records section-panel">
+          <div class="section-toolbar"><div><h2>模拟交易记录</h2><p>模拟记录单独保存；已平仓记录参与周复盘和画像分析。</p></div><span id="simulation-record-count" class="simulation-record-count">0 笔持仓 · 0 笔已平仓</span></div>
+          <div class="table-wrap"><table class="data-table simulation-table">
+            <thead><tr><th>标的</th><th>方向</th><th>开仓价</th><th>当前/平仓价</th><th>数量</th><th>杠杆</th><th>持仓时长</th><th>浮动/实际盈亏</th><th>止损/止盈</th><th>操作</th></tr></thead>
+            <tbody id="simulation-body"><tr class="empty-row"><td colspan="10">暂无模拟交易；填写上方表单后按最新价开仓。</td></tr></tbody>
+          </table></div>
+        </section>
         <section class="panel trade-entry-panel" aria-labelledby="trade-entry-title">
           <div class="entry-panel-head"><div><span>REAL TRADE JOURNAL</span><h3 id="trade-entry-title">录入实盘交易</h3></div><button id="reset-trade-form" class="secondary-button" type="button">清空表单</button></div>
           <input id="trade-edit-id" type="hidden">
@@ -156,7 +191,7 @@
       </section>
 
       <section id="view-weekly" class="app-view" data-app-view="weekly">
-        <div class="page-head"><div><h2>周复盘</h2><p>按自然周归纳已经发生的行为；页面打开时自动更新，不将小样本包装成稳定规律。</p></div>
+        <div class="page-head"><div><h2>周复盘</h2><p>按自然周归纳实盘与已平仓模拟交易；页面打开时自动更新，不将小样本包装成稳定规律。</p></div>
           <div class="week-controls"><button id="week-prev" class="secondary-button" type="button">上一周</button><span id="week-label" class="week-label">—</span><button id="week-next" class="secondary-button" type="button">下一周</button></div>
         </div>
         <section class="panel">
@@ -177,7 +212,7 @@
       </section>
 
       <section id="view-habits" class="app-view" data-app-view="habits">
-        <div class="page-head"><div><h2>画像分析</h2><p>从你录入并纳入分析的实盘交易中反推偏好；结论随样本增加而更新。</p></div></div>
+        <div class="page-head"><div><h2>画像分析</h2><p>从实盘记录与已平仓模拟交易中反推偏好；结论随样本增加而更新。</p></div></div>
         <section class="panel habit-panel"><h3>当前画像 <span id="habit-confidence" class="confidence">样本不足</span></h3><div id="habit-list" class="habit-list"></div></section>
         <section class="panel section-panel"><div class="section-toolbar"><div><h2>解释边界</h2><p>画像描述的是你实际做了什么，不代表这些做法必然有效。</p></div></div><div class="notice-panel">少于10笔只展示事实；10–29笔标记为“初步倾向”；达到30笔后才标记“较稳定”。即便样本较多，也会同时展示盈亏证据，避免只看交易次数。</div></section>
       </section>
@@ -186,7 +221,7 @@
   </div>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="binance-xau.js?v=20260819-paper-bridge-v1"></script>
-  <script src="paper-trading.js?v=20260820-fill-time-v1"></script>
+  <script src="binance-xau.js?v=20260821-simulation-quote-v1"></script>
+  <script src="paper-trading.js?v=20260821-simulation-trading-v1"></script>
 </body>
 </html>

@@ -32,6 +32,7 @@
     price: NaN,
     priceAt: 0,
     dayStats: null,
+    dayStatsAt: 0,
     frames: { h4: [], h1: [], m15: [] },
     zones: [],
     chartFrame: "h4",
@@ -282,9 +283,12 @@
         changePercent: Number(payload.priceChangePercent),
         high: Number(payload.highPrice),
         low: Number(payload.lowPrice),
-        lastPrice: Number(payload.lastPrice)
+        lastPrice: Number(payload.lastPrice),
+        bid: Number(payload.bidPrice),
+        ask: Number(payload.askPrice)
       };
       state.dayStats = Object.values(nextStats).every(Number.isFinite) ? nextStats : null;
+      state.dayStatsAt = state.dayStats ? Date.now() : 0;
       renderDayStats();
     } catch (error) {
       if (error.name !== "AbortError" && !state.dayStats) renderDayStats();
@@ -620,6 +624,44 @@
     }
   }
 
+  function currentQuoteSnapshot() {
+    return {
+      symbol: state.symbol,
+      price: state.price,
+      timestamp: state.priceAt,
+      changePercent: state.dayStats?.changePercent,
+      high: state.dayStats?.high,
+      low: state.dayStats?.low,
+      bid: state.dayStats?.bid,
+      ask: state.dayStats?.ask
+    };
+  }
+
+  async function getLatestQuote(symbol, { force = false, includeStats = true } = {}) {
+    if (!SYMBOLS[symbol]) throw new Error("不支持的交易标的");
+    const currentSnapshotIsFresh = symbol === state.symbol && Number.isFinite(state.price) && Date.now() - state.priceAt < 5_000;
+    const currentStatsAreFresh = symbol === state.symbol && state.dayStats && Date.now() - state.dayStatsAt < DAY_STATS_REFRESH_INTERVAL;
+    if (!force && currentSnapshotIsFresh && (!includeStats || currentStatsAreFresh)) return currentQuoteSnapshot();
+
+    const priceRequest = fetchJson(`/fapi/v1/ticker/price?symbol=${encodeURIComponent(symbol)}`);
+    const statsRequest = includeStats
+      ? fetchJson(`/fapi/v1/ticker/24hr?symbol=${encodeURIComponent(symbol)}`)
+      : Promise.resolve(null);
+    const [pricePayload, statsPayload] = await Promise.all([priceRequest, statsRequest]);
+    const quote = {
+      symbol,
+      price: Number(pricePayload?.price),
+      timestamp: Date.now(),
+      changePercent: Number(statsPayload?.priceChangePercent),
+      high: Number(statsPayload?.highPrice),
+      low: Number(statsPayload?.lowPrice),
+      bid: Number(statsPayload?.bidPrice),
+      ask: Number(statsPayload?.askPrice)
+    };
+    if (!Number.isFinite(quote.price) || quote.price <= 0) throw new Error("最新价格格式无效");
+    return quote;
+  }
+
   async function switchSymbol(symbol) {
     if (!SYMBOLS[symbol]) return;
     state.loadGeneration += 1;
@@ -635,6 +677,7 @@
     state.price = NaN;
     state.priceAt = 0;
     state.dayStats = null;
+    state.dayStatsAt = 0;
     state.frames = { h4: [], h1: [], m15: [] };
     state.zones = [];
     state.zoneRoleSignature = "";
@@ -672,6 +715,12 @@
     state.dayStatsTimer = setInterval(requestDayStats, DAY_STATS_REFRESH_INTERVAL);
     state.frameRefreshTimer = setInterval(() => loadFrames({ incremental: true, quiet: true }), FRAME_REFRESH_INTERVAL);
   }
+
+  window.marketMonitor = {
+    getSnapshot() { return currentQuoteSnapshot(); },
+    getLatestQuote,
+    switchSymbol
+  };
 
   start().catch((error) => {
     showError(`页面初始化失败：${error.message || "未知错误"}`);
