@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="dark">
   <title>Binance行情分析</title>
-  <link rel="stylesheet" href="paper-trading.css?v=20260821-low-load-profile-v1">
+  <link rel="stylesheet" href="paper-trading.css?v=20260821-three-equal-panels-v1">
 </head>
 <body class="monitor-active">
   <div class="app-shell">
@@ -73,6 +73,20 @@
             <h2 id="zones-title" class="visually-hidden">H4/H1 支撑与压力区域</h2>
             <div id="zone-map-list" class="zone-map-list"><div class="empty-row">正在读取H4/H1摆动高低点…</div></div>
           </section>
+          <section class="panel volume-profile-card" aria-labelledby="volume-profile-title">
+            <div class="volume-profile-head">
+              <div><h3 id="volume-profile-title">成交密集区</h3><p>15分钟K线成交量估算 · 不请求逐笔成交</p></div>
+              <span>低负载</span>
+            </div>
+            <div class="volume-profile-metrics">
+              <div><span>POC最大成交量价</span><b id="volume-profile-poc">—</b></div>
+              <div><span>主要价值区</span><b id="volume-profile-value-area">—</b></div>
+              <div><span>最近密集带</span><b id="volume-profile-nearest-band">—</b></div>
+            </div>
+            <div id="volume-profile-bars" class="volume-profile-bars" aria-label="POC附近成交量分布"></div>
+            <p id="volume-profile-status" class="volume-profile-status">正在等待含成交量的15分钟K线。</p>
+            <p class="volume-profile-disclaimer">仅反映Binance当前合约，用于观察价格接受区域，不等同于全球黄金成交量。</p>
+          </section>
           <aside class="panel market-analysis-card" aria-labelledby="market-analysis-title">
             <div class="market-analysis-head"><h3 id="market-analysis-title">行情分析</h3><span id="market-analysis-badge">等待区域</span></div>
             <p id="market-analysis-summary" class="market-analysis-summary">正在根据当前价格与最近支撑、压力计算区间位置。</p>
@@ -87,20 +101,6 @@
               <div class="market-position-track"><i id="analysis-position-marker"></i></div>
             </div>
             <p id="analysis-observation" class="market-analysis-observation">区域完成计算后显示观察重点。</p>
-            <section class="volume-profile-card" aria-labelledby="volume-profile-title">
-              <div class="volume-profile-head">
-                <div><h4 id="volume-profile-title">成交密集区</h4><p>15分钟K线成交量估算 · 不请求逐笔成交</p></div>
-                <span>低负载</span>
-              </div>
-              <div class="volume-profile-metrics">
-                <div><span>POC最大成交量价</span><b id="volume-profile-poc">—</b></div>
-                <div><span>主要价值区</span><b id="volume-profile-value-area">—</b></div>
-                <div><span>最近密集带</span><b id="volume-profile-nearest-band">—</b></div>
-              </div>
-              <div id="volume-profile-bars" class="volume-profile-bars" aria-label="POC附近成交量分布"></div>
-              <p id="volume-profile-status" class="volume-profile-status">正在等待含成交量的15分钟K线。</p>
-              <p class="volume-profile-disclaimer">仅反映Binance当前合约，用于观察价格接受区域，不等同于全球黄金成交量。</p>
-            </section>
           </aside>
         </div>
 
