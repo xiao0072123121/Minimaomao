@@ -25,6 +25,7 @@
         </div>
         <nav class="top-nav" aria-label="主导航">
           <button class="nav-button active" data-view="monitor" type="button">价格监控</button>
+          <button class="nav-button" data-view="simulation" type="button">模拟交易</button>
           <button class="nav-button" data-view="journal" type="button">交易日志</button>
           <button class="nav-button" data-view="weekly" type="button">周复盘</button>
           <button class="nav-button" data-view="habits" type="button">画像分析</button>
@@ -122,7 +123,7 @@
 
       </section>
 
-      <section id="view-journal" class="app-view" data-app-view="journal">
+      <section id="view-simulation" class="app-view" data-app-view="simulation">
         <section class="panel simulation-capital-panel" aria-labelledby="simulation-capital-title">
           <div class="simulation-capital-head"><div><h2 id="simulation-capital-title">模拟账户资金</h2><p>资金规模手动设置，其余数据根据模拟交易自动计算。</p></div><span>仅统计模拟账户</span></div>
           <div class="simulation-capital-grid">
@@ -176,12 +177,24 @@
           </div>
         </section>
         <section class="panel simulation-records section-panel">
-          <div class="section-toolbar"><div><h2>模拟交易记录</h2><p>记录所有模拟交易的开仓与平仓情况，并统一纳入周复盘和画像分析。</p></div><div class="record-toolbar-actions"><button id="open-trade-modal" class="record-entry-button" type="button">录入</button><span id="simulation-record-count" class="simulation-record-count">0 笔持仓 · 0 笔已平仓</span></div></div>
+          <div class="section-toolbar"><div><h2>当前持仓</h2></div><div class="record-toolbar-actions"><button id="open-trade-modal-simulation" class="record-entry-button" data-trade-status="open" type="button">录入</button></div></div>
           <div class="table-wrap"><table class="data-table simulation-table">
             <thead><tr><th>标的</th><th>方向</th><th>开仓价</th><th>开仓/平仓时间</th><th>当前/平仓价</th><th>数量</th><th>杠杆</th><th>持仓时长</th><th>浮动/实际盈亏</th><th>止损/止盈</th><th>开仓依据</th><th>操作</th></tr></thead>
-            <tbody id="simulation-body"><tr class="empty-row"><td colspan="12">暂无模拟交易；可按最新价开仓或手动录入。</td></tr></tbody>
+            <tbody id="simulation-open-body"><tr class="empty-row"><td colspan="12">暂无持仓中的交易；可按最新价开仓或手动录入。</td></tr></tbody>
           </table></div>
         </section>
+      </section>
+
+      <section id="view-journal" class="app-view journal-records-view" data-app-view="journal">
+        <section class="panel simulation-records section-panel">
+          <div class="section-toolbar"><div><h2>已平仓交易记录</h2></div><div class="record-toolbar-actions"><button id="open-trade-modal-journal" class="record-entry-button" data-trade-status="closed" type="button">录入</button></div></div>
+          <div class="table-wrap"><table class="data-table simulation-table">
+            <thead><tr><th>标的</th><th>方向</th><th>开仓价</th><th>开仓/平仓时间</th><th>当前/平仓价</th><th>数量</th><th>杠杆</th><th>持仓时长</th><th>浮动/实际盈亏</th><th>止损/止盈</th><th>开仓依据</th><th>操作</th></tr></thead>
+            <tbody id="simulation-closed-body"><tr class="empty-row"><td colspan="12">暂无已平仓交易记录。</td></tr></tbody>
+          </table></div>
+        </section>
+      </section>
+
         <div id="trade-modal" class="trade-modal" hidden>
           <div class="trade-modal-backdrop" data-close-trade-modal></div>
           <section class="panel trade-entry-panel trade-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="trade-entry-title">
@@ -214,8 +227,6 @@
             <div class="entry-actions"><p id="trade-form-error" class="form-error" role="alert">未平仓记录填写止损/止盈后，将在页面打开且行情连接时自动执行。</p><button id="cancel-trade-modal" class="secondary-button modal-cancel-button" type="button">取消</button><button id="save-trade" class="primary-button" type="button">保存模拟交易</button></div>
           </section>
         </div>
-      </section>
-
       <section id="view-weekly" class="app-view" data-app-view="weekly">
         <div class="page-head"><div><h2>周复盘</h2><p>按自然周归纳已平仓模拟交易；页面打开时自动更新，不将小样本包装成稳定规律。</p></div>
           <div class="week-controls"><button id="week-prev" class="secondary-button" type="button">上一周</button><span id="week-label" class="week-label">—</span><button id="week-next" class="secondary-button" type="button">下一周</button></div>
@@ -249,6 +260,6 @@
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="volume-profile.js?v=20260821-low-load-profile-v1"></script>
   <script src="binance-xau.js?v=20260821-low-load-profile-v1"></script>
-  <script src="paper-trading.js?v=20260821-simulation-spark-v2"></script>
+  <script src="paper-trading.js?v=20260821-split-trade-views-v1"></script>
 </body>
 </html>

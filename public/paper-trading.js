@@ -400,9 +400,14 @@
     renderSimulationCapital();
     renderSimulationQuote();
     const ordered = [...state.simulationTrades].sort((a, b) => Number(a.closed) - Number(b.closed) || b.openAt - a.openAt);
-    const openCount = ordered.filter((trade) => !trade.closed).length;
-    $("simulation-record-count").textContent = `${openCount} 笔持仓 · ${ordered.length - openCount} 笔已平仓`;
-    $("simulation-body").innerHTML = ordered.length ? ordered.map(unifiedRecordRow).join("") : '<tr class="empty-row"><td colspan="12">暂无模拟交易；可按最新价开仓或手动录入。</td></tr>';
+    const openTrades = ordered.filter((trade) => !trade.closed);
+    const closedTrades = ordered.filter((trade) => trade.closed);
+    $("simulation-open-body").innerHTML = openTrades.length
+      ? openTrades.map(unifiedRecordRow).join("")
+      : '<tr class="empty-row"><td colspan="12">暂无持仓中的交易；可按最新价开仓或手动录入。</td></tr>';
+    $("simulation-closed-body").innerHTML = closedTrades.length
+      ? closedTrades.map(unifiedRecordRow).join("")
+      : '<tr class="empty-row"><td colspan="12">暂无已平仓交易记录。</td></tr>';
   }
 
   async function refreshSimulationQuote(symbol = $("simulation-symbol").value, force = false, includeStats = true) {
@@ -536,10 +541,10 @@
 
   async function refreshOpenSimulationQuotes(force = false) {
     const openSymbols = state.simulationTrades.filter((trade) => !trade.closed).map((trade) => trade.symbol);
-    if (state.currentView !== "journal" && !openSymbols.length) return;
+    if (state.currentView !== "simulation" && !openSymbols.length) return;
     const selected = $("simulation-symbol").value;
     const symbols = [...new Set([
-      ...(state.currentView === "journal" ? [selected] : []),
+      ...(state.currentView === "simulation" ? [selected] : []),
       ...openSymbols
     ])];
     for (const symbol of symbols) await refreshSimulationQuote(symbol, force, symbol === selected);
@@ -676,6 +681,7 @@
     renderAll();
     closeTradeModal();
     resetTradeForm();
+    navigate(normalized.closed ? "journal" : "simulation");
     showToast(existing ? "模拟交易记录已更新。" : value.closed ? "已平仓模拟交易已录入并纳入分析。" : "模拟持仓已保存，止盈止损触价后将自动执行。" );
   }
 
@@ -792,10 +798,11 @@
     document.body.classList.toggle("monitor-active", view === "monitor");
     document.querySelectorAll(".nav-button[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
     document.querySelectorAll("[data-app-view]").forEach((section) => section.classList.toggle("active", section.dataset.appView === view));
-    if (view === "journal") {
+    if (view === "simulation") {
       renderSimulation();
       refreshOpenSimulationQuotes(false);
     }
+    if (view === "journal") renderSimulation();
     if (view === "weekly") renderWeekly();
     if (view === "habits") renderHabits();
   }
@@ -803,7 +810,7 @@
   function editTrade(tradeId) {
     const trade = state.simulationTrades.find((item) => item.id === tradeId);
     if (!trade) return;
-    navigate("journal");
+    navigate(trade.closed ? "journal" : "simulation");
     $("trade-edit-id").value = trade.id;
     $("trade-symbol").value = [...$("trade-symbol").options].some((option) => option.value === trade.symbol) ? trade.symbol : "其他";
     $("trade-side").value = trade.side;
@@ -830,7 +837,12 @@
   function bindEvents() {
     document.querySelectorAll(".nav-button[data-view]").forEach((button) => button.addEventListener("click", () => navigate(button.dataset.view)));
     $("save-trade").addEventListener("click", saveTradeFromForm);
-    $("open-trade-modal").addEventListener("click", () => { resetTradeForm(); openTradeModal(); });
+    [$("open-trade-modal-simulation"), $("open-trade-modal-journal")].forEach((button) => button.addEventListener("click", () => {
+      resetTradeForm();
+      $("trade-status").value = button.dataset.tradeStatus;
+      syncTradeStatus();
+      openTradeModal();
+    }));
     $("close-trade-modal").addEventListener("click", closeTradeModal);
     $("cancel-trade-modal").addEventListener("click", closeTradeModal);
     $("trade-modal").addEventListener("click", (event) => { if (event.target.closest("[data-close-trade-modal]")) closeTradeModal(); });
@@ -853,14 +865,15 @@
       $("simulation-long").classList.toggle("active", state.simulationSide === "long");
       $("simulation-short").classList.toggle("active", state.simulationSide === "short");
     }));
-    $("simulation-body").addEventListener("click", (event) => {
+    const handleRecordAction = (event) => {
       const closeButton = event.target.closest("[data-close-simulation]");
       const deleteSimulationButton = event.target.closest("[data-delete-simulation]");
       const editButton = event.target.closest("[data-edit-trade]");
       if (closeButton) closeSimulationTrade(closeButton.dataset.closeSimulation);
       if (editButton) editTrade(editButton.dataset.editTrade);
       if (deleteSimulationButton) deleteSimulationTrade(deleteSimulationButton.dataset.deleteSimulation);
-    });
+    };
+    [$("simulation-open-body"), $("simulation-closed-body")].forEach((body) => body.addEventListener("click", handleRecordAction));
     $("week-prev").addEventListener("click", () => { state.selectedWeekStart -= 7 * 24 * 60 * 60 * 1000; renderWeekly(); });
     $("week-next").addEventListener("click", () => { if (state.selectedWeekStart < startOfWeek(Date.now())) state.selectedWeekStart += 7 * 24 * 60 * 60 * 1000; renderWeekly(); });
     window.addEventListener("market-price", (event) => {

@@ -339,7 +339,6 @@ body:not(.monitor-active) .symbol-switcher { display: none; }
 .record-toolbar-actions { display: flex; align-items: center; gap: 9px; }
 .record-entry-button { padding: 7px 11px; border: 1px solid #d3a13a; border-radius: 6px; color: #201807; background: linear-gradient(180deg,#efbf58,#d49a2c); cursor: pointer; font-size: 10px; font-weight: 800; box-shadow: 0 6px 18px rgba(215,163,61,.13); }
 .record-entry-button:hover { filter: brightness(1.06); }
-.simulation-record-count { padding: 4px 8px; border: 1px solid rgba(100,164,255,.2); border-radius: 999px; color: #a9cfff; background: rgba(100,164,255,.05); font-size: 9px; white-space: nowrap; }
 .simulation-table { min-width: 1260px; }
 .simulation-status { display: block; margin-top: 2px; color: var(--muted); font-size: 9px; }
 .simulation-status.open { color: var(--gold); }
