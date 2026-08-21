@@ -340,6 +340,13 @@ body:not(.monitor-active) .symbol-switcher { display: none; }
 .record-entry-button { padding: 7px 11px; border: 1px solid #d3a13a; border-radius: 6px; color: #201807; background: linear-gradient(180deg,#efbf58,#d49a2c); cursor: pointer; font-size: 10px; font-weight: 800; box-shadow: 0 6px 18px rgba(215,163,61,.13); }
 .record-entry-button:hover { filter: brightness(1.06); }
 .simulation-table { min-width: 1260px; }
+.current-position-table { min-width: 1390px; }
+.liquidation-price { min-width: 112px; }
+.liquidation-price b { display: block; color: #f2d48c; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.liquidation-price small { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; white-space: nowrap; }
+.liquidation-price.near b { color: #f1b84b; }
+.liquidation-price.critical b,
+.liquidation-price.critical small { color: var(--red); }
 .simulation-status { display: block; margin-top: 2px; color: var(--muted); font-size: 9px; }
 .simulation-status.open { color: var(--gold); }
 .record-symbol-line { display: flex; align-items: center; gap: 6px; }

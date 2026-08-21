@@ -374,7 +374,37 @@
     return simulationPnl(trade, mark);
   }
 
-  function unifiedRecordRow(trade) {
+  function estimatedLiquidation(trade, mark) {
+    const calculator = window.BinanceLiquidationCalculator;
+    if (!calculator?.estimateIsolatedLiquidation) return null;
+    const estimate = calculator.estimateIsolatedLiquidation({
+      entryPrice: trade.entryPrice,
+      quantity: Number.isFinite(trade.remainingQuantity) ? trade.remainingQuantity : trade.quantity,
+      leverage: trade.leverage,
+      side: trade.side
+    });
+    if (!estimate) return null;
+    return {
+      ...estimate,
+      distance: calculator.distanceFromMark(mark, estimate.price, trade.side)
+    };
+  }
+
+  function liquidationPriceCell(trade, mark) {
+    const estimate = estimatedLiquidation(trade, mark);
+    if (!estimate) return '<td class="liquidation-price"><b>—</b><small>无法估算</small></td>';
+    const distance = estimate.distance;
+    const distanceText = Number.isFinite(distance)
+      ? distance <= 0 ? "已越过估算线" : `距现价 ${distance.toFixed(2)}%`
+      : "逐仓估算";
+    const riskClass = Number.isFinite(distance) && distance <= 2
+      ? " critical"
+      : Number.isFinite(distance) && distance <= 5 ? " near" : "";
+    const title = `按逐仓模式及 ${(estimate.maintenanceMarginRate * 100).toFixed(2)}% 基准维持保证金率估算；未计手续费、资金费率、追加保证金及账户档位调整。`;
+    return `<td class="liquidation-price${riskClass}" title="${escapeHtml(title)}"><b>${escapeHtml(formatPrice(estimate.price))}</b><small>${escapeHtml(distanceText)}</small></td>`;
+  }
+
+  function unifiedRecordRow(trade, includeLiquidation = false) {
     const mark = tradeDisplayMark(trade);
     const pnl = tradeDisplayPnl(trade, mark);
     const end = trade.closed ? trade.closeAt : Date.now();
@@ -391,6 +421,7 @@
       <td>${escapeHtml(formatDuration(end - trade.openAt))}</td>
       <td class="${pnl > 0 ? "metric-positive" : pnl < 0 ? "metric-negative" : ""}">${escapeHtml(formatMoney(pnl, true))}</td>
       <td><div class="paired-value"><span>损 ${escapeHtml(formatPrice(trade.stopLoss))}</span><span>盈 ${escapeHtml(formatPrice(trade.takeProfit))}</span></div></td>
+      ${includeLiquidation ? liquidationPriceCell(trade, mark) : ""}
       <td class="record-reasons">${trade.reasons.length ? trade.reasons.map(escapeHtml).join(" / ") : "未填写"}</td>
       <td><div class="row-actions">${actions}</div></td>
     </tr>`;
@@ -403,8 +434,8 @@
     const openTrades = ordered.filter((trade) => !trade.closed);
     const closedTrades = ordered.filter((trade) => trade.closed);
     $("simulation-open-body").innerHTML = openTrades.length
-      ? openTrades.map(unifiedRecordRow).join("")
-      : '<tr class="empty-row"><td colspan="12">暂无持仓中的交易；可按最新价开仓或手动录入。</td></tr>';
+      ? openTrades.map((trade) => unifiedRecordRow(trade, true)).join("")
+      : '<tr class="empty-row"><td colspan="13">暂无持仓中的交易；可按最新价开仓或手动录入。</td></tr>';
     $("simulation-closed-body").innerHTML = closedTrades.length
       ? closedTrades.map(unifiedRecordRow).join("")
       : '<tr class="empty-row"><td colspan="12">暂无已平仓交易记录。</td></tr>';
