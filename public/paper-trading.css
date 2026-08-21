@@ -75,8 +75,8 @@ body:not(.monitor-active) .symbol-switcher { display: none; }
 .account-metric { padding: 12px 16px; border-right: 1px solid rgba(255,255,255,.055); }
 .account-metric span { display: block; margin-bottom: 3px; color: var(--muted); font-size: 11px; }
 .account-metric b { font-size: 17px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.metric-positive { color: var(--green); }
-.metric-negative { color: var(--red); }
+.metric-positive, .data-table td.metric-positive { color: var(--red); }
+.metric-negative, .data-table td.metric-negative { color: var(--green); }
 .ghost-button, .secondary-button, .danger-button, .primary-button {
   border-radius: 7px; cursor: pointer; font-weight: 700;
 }
