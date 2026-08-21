@@ -277,7 +277,7 @@ body:not(.monitor-active) .symbol-switcher { display: none; }
 .simulation-panel-head > div > span { color: var(--blue); font-size: 9px; letter-spacing: .12em; }
 .simulation-panel-head h3 { margin: 2px 0 1px; font-size: 15px; }
 .simulation-panel-head p { margin: 0; color: var(--muted); font-size: 10px; }
-.simulation-layout { display: grid; grid-template-columns: minmax(430px,42%) minmax(0,58%); gap: 14px; align-items: stretch; }
+.simulation-layout { display: grid; grid-template-columns: minmax(430px,34%) minmax(0,66%); gap: 14px; align-items: stretch; }
 .simulation-ticket { min-width: 0; padding: 14px; border: 1px solid var(--border); border-radius: 8px; background: rgba(5,17,26,.5); }
 .simulation-ticket-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .simulation-ticket-head strong { font-size: 12px; }
@@ -412,7 +412,7 @@ body.modal-open { overflow: hidden; }
   .monitor-overview { grid-template-columns: 1.2fr 1fr 1fr; }
   .trade-entry-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
   .fill-sections { grid-template-columns: 1fr; }
-  .simulation-layout { grid-template-columns: minmax(360px,42%) minmax(0,58%); }
+  .simulation-layout { grid-template-columns: minmax(360px,36%) minmax(0,64%); }
   .simulation-capital-grid { grid-template-columns: repeat(3,minmax(0,1fr)); }
 }
 @media (max-width: 780px) {

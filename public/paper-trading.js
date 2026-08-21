@@ -333,7 +333,7 @@
     const span = Math.max(max - min, Math.abs(max) * 0.0002, 0.01);
     const points = values.map((value, index) => `${values.length === 1 ? 0 : index / (values.length - 1) * 700},${70 - (value - min) / span * 55}`).join(" ");
     const area = `0,80 ${points} 700,80`;
-    svg.innerHTML = `<defs><linearGradient id="simulation-spark-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#2ad6a0" stop-opacity=".25"/><stop offset="100%" stop-color="#2ad6a0" stop-opacity="0"/></linearGradient></defs><polygon points="${area}" fill="url(#simulation-spark-fill)"/><polyline points="${points}" fill="none" stroke="#2ad6a0" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>`;
+    svg.innerHTML = `<defs><linearGradient id="simulation-spark-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#2ad6a0" stop-opacity=".25"/><stop offset="100%" stop-color="#2ad6a0" stop-opacity="0"/></linearGradient></defs><polygon points="${area}" fill="url(#simulation-spark-fill)"/><polyline points="${points}" fill="none" stroke="#2ad6a0" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round"/>`;
   }
 
   function renderSimulationQuote() {
