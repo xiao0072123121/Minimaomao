@@ -8,13 +8,18 @@
   const SIMULATION_STATE_KEY = "simulation-account";
   const DEFAULT_SIMULATION_CAPITAL = 100000;
   const SIMULATION_REFRESH_INTERVAL = 15000;
+  const CLOUD_SYNC_INTERVAL = 30000;
+  const CLOUD_SYNC_DEBOUNCE = 700;
   const SIDE_LABELS = { long: "做多", short: "做空" };
   const REASON_ORDER = ["支撑/压力", "K线反转", "RSI超买超卖", "区间高抛低吸", "突破/回踩", "其他"];
   const state = {
     trades: [], simulationTrades: [], simulationCapital: DEFAULT_SIMULATION_CAPITAL,
     simulationQuotes: new Map(), quoteHistory: new Map(), simulationSide: "long",
     selectedWeekStart: startOfWeek(Date.now()), toastTimer: null, simulationTimer: null,
-    currentView: "monitor", simulationSaving: false
+    currentView: "monitor", simulationSaving: false,
+    simulationCapitalUpdatedAt: 0, simulationDeletedTrades: {}, cloudRevision: 0,
+    cloudSyncReady: false, cloudSyncTimer: null, cloudSyncInterval: null,
+    cloudSyncInFlight: false, cloudSyncQueued: false
   };
   const $ = (id) => document.getElementById(id);
   const moneyFormatter = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -136,30 +141,128 @@
 
   async function readSimulationState() {
     const database = await openDatabase();
-    if (!database) return { capital: DEFAULT_SIMULATION_CAPITAL, trades: [] };
+    if (!database) return { capital: DEFAULT_SIMULATION_CAPITAL, capitalUpdatedAt: 0, trades: [], deletedTrades: {} };
     return new Promise((resolve) => {
       const transaction = database.transaction(STORE_NAME, "readonly");
       const request = transaction.objectStore(STORE_NAME).get(SIMULATION_STATE_KEY);
       request.onsuccess = () => {
         const value = request.result?.value || {};
         const capital = Number(value.capital);
-        resolve({ capital: Number.isFinite(capital) && capital > 0 ? capital : DEFAULT_SIMULATION_CAPITAL, trades: Array.isArray(value.trades) ? value.trades : [] });
+        const savedAt = Number(request.result?.savedAt) || 0;
+        resolve({
+          capital: Number.isFinite(capital) && capital > 0 ? capital : DEFAULT_SIMULATION_CAPITAL,
+          capitalUpdatedAt: Number(value.capitalUpdatedAt) || (Number.isFinite(capital) && capital > 0 && capital !== DEFAULT_SIMULATION_CAPITAL ? savedAt : 0),
+          trades: Array.isArray(value.trades) ? value.trades : [],
+          deletedTrades: value.deletedTrades && typeof value.deletedTrades === "object" ? value.deletedTrades : {}
+        });
       };
-      request.onerror = () => resolve({ capital: DEFAULT_SIMULATION_CAPITAL, trades: [] });
+      request.onerror = () => resolve({ capital: DEFAULT_SIMULATION_CAPITAL, capitalUpdatedAt: 0, trades: [], deletedTrades: {} });
       transaction.oncomplete = () => database.close();
     });
   }
 
-  async function saveSimulationState() {
-    const database = await openDatabase();
-    if (!database) return;
-    const snapshot = { capital: state.simulationCapital, trades: state.simulationTrades };
-    await new Promise((resolve) => {
-      const transaction = database.transaction(STORE_NAME, "readwrite");
-      transaction.objectStore(STORE_NAME).put({ key: SIMULATION_STATE_KEY, value: snapshot, savedAt: Date.now() });
-      transaction.oncomplete = () => { database.close(); resolve(); };
-      transaction.onerror = () => { database.close(); resolve(); };
+  function currentCloudState() {
+    return window.TradingCloudSync.normalizeState({
+      capital: state.simulationCapital,
+      capitalUpdatedAt: state.simulationCapitalUpdatedAt,
+      trades: state.simulationTrades,
+      deletedTrades: state.simulationDeletedTrades
     });
+  }
+
+  async function saveSimulationState({ syncCloud = true } = {}) {
+    const database = await openDatabase();
+    const snapshot = currentCloudState();
+    if (database) {
+      await new Promise((resolve) => {
+        const transaction = database.transaction(STORE_NAME, "readwrite");
+        transaction.objectStore(STORE_NAME).put({ key: SIMULATION_STATE_KEY, value: snapshot, savedAt: Date.now() });
+        transaction.oncomplete = () => { database.close(); resolve(); };
+        transaction.onerror = () => { database.close(); resolve(); };
+      });
+    }
+    if (syncCloud && state.cloudSyncReady) scheduleCloudSync();
+  }
+
+  function setCloudSyncStatus(syncState, label) {
+    const element = $("cloud-sync-status");
+    if (!element) return;
+    element.dataset.state = syncState;
+    element.innerHTML = `<i></i>${escapeHtml(label)}`;
+  }
+
+  function applyCloudState(value) {
+    const normalized = window.TradingCloudSync.normalizeState(value);
+    state.simulationCapital = normalized.capital;
+    state.simulationCapitalUpdatedAt = normalized.capitalUpdatedAt;
+    state.simulationDeletedTrades = normalized.deletedTrades;
+    state.simulationTrades = normalized.trades.map(normalizeSimulationTrade).filter(Boolean);
+  }
+
+  async function requestCloudSnapshot() {
+    const response = await fetch("/api/sync", { headers: { Accept: "application/json" }, cache: "no-store" });
+    if (!response.ok) throw new Error(`云端读取失败（${response.status}）`);
+    return response.json();
+  }
+
+  async function writeCloudSnapshot(revision, snapshot) {
+    return fetch("/api/sync", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ revision, state: snapshot })
+    });
+  }
+
+  async function syncCloudState() {
+    if (!state.cloudSyncReady || state.cloudSyncInFlight) {
+      if (state.cloudSyncInFlight) state.cloudSyncQueued = true;
+      return;
+    }
+    state.cloudSyncInFlight = true;
+    clearTimeout(state.cloudSyncTimer);
+    setCloudSyncStatus("syncing", "云端同步中");
+    try {
+      let envelope = await requestCloudSnapshot();
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const local = currentCloudState();
+        const remote = window.TradingCloudSync.normalizeState(envelope.state);
+        const merged = window.TradingCloudSync.mergeStates(local, remote);
+        applyCloudState(merged);
+        await saveSimulationState({ syncCloud: false });
+        renderAll();
+        if (window.TradingCloudSync.statesEqual(remote, merged)) {
+          state.cloudRevision = Number(envelope.revision) || 0;
+          setCloudSyncStatus("synced", "云端已同步");
+          return;
+        }
+        const response = await writeCloudSnapshot(Number(envelope.revision) || 0, merged);
+        if (response.status === 409) {
+          envelope = await requestCloudSnapshot();
+          continue;
+        }
+        if (!response.ok) throw new Error(`云端写入失败（${response.status}）`);
+        const result = await response.json();
+        state.cloudRevision = Number(result.revision) || 0;
+        setCloudSyncStatus("synced", "云端已同步");
+        return;
+      }
+      throw new Error("云端版本冲突，请稍后重试");
+    } catch (error) {
+      setCloudSyncStatus(navigator.onLine ? "error" : "offline", navigator.onLine ? "本地已保存，等待同步" : "离线缓存中");
+      console.warn("Cloud sync deferred:", error);
+    } finally {
+      state.cloudSyncInFlight = false;
+      if (state.cloudSyncQueued) {
+        state.cloudSyncQueued = false;
+        scheduleCloudSync(100);
+      }
+    }
+  }
+
+  function scheduleCloudSync(delay = CLOUD_SYNC_DEBOUNCE) {
+    if (!state.cloudSyncReady) return;
+    clearTimeout(state.cloudSyncTimer);
+    state.cloudSyncTimer = window.setTimeout(syncCloudState, delay);
   }
 
   function normalizeTrade(trade) {
@@ -239,7 +342,8 @@
       lastPriceAt: Number(trade?.lastPriceAt) || openAt, exitReason: closed ? String(trade?.exitReason || "手动平仓") : "",
       reasons: Array.isArray(trade?.reasons) ? trade.reasons.map(String) : [],
       note: String(trade?.note || ""), includeInAnalysis: trade?.includeInAnalysis !== false,
-      rMultiple: closed && Number.isFinite(risk) && risk > 0 ? pnl / risk : null
+      rMultiple: closed && Number.isFinite(risk) && risk > 0 ? pnl / risk : null,
+      updatedAt: window.TradingCloudSync.tradeTimestamp(trade)
     };
   }
 
@@ -499,7 +603,7 @@
       id: id(), symbol, side: state.simulationSide, status: "open", closed: false,
       openAt: now, entryPrice: Number(quote.price), quantity: form.quantity, leverage: form.leverage,
       stopLoss: form.stopLoss, takeProfit: form.takeProfit, pnl: 0, lastPrice: Number(quote.price), lastPriceAt: now,
-      reasons: form.reasons, includeInAnalysis: true
+      reasons: form.reasons, includeInAnalysis: true, updatedAt: now
     }));
     await saveSimulationState();
     $("simulation-form-error").textContent = "页面保持打开且行情连接正常时，止损/止盈触价会自动平仓；模拟盈亏暂不包含费用。";
@@ -521,6 +625,7 @@
     trade.closed = true;
     trade.remainingQuantity = 0;
     trade.exitReason = reason;
+    trade.updatedAt = Date.now();
     const risk = Number.isFinite(trade.stopLoss) ? Math.abs(trade.entryPrice - trade.stopLoss) * trade.quantity * trade.leverage : NaN;
     trade.rMultiple = Number.isFinite(risk) && risk > 0 ? trade.pnl / risk : null;
     return true;
@@ -555,6 +660,7 @@
 
   async function deleteSimulationTrade(tradeId) {
     if (!window.confirm("确定删除这笔模拟交易吗？删除后无法恢复。")) return;
+    state.simulationDeletedTrades[tradeId] = Date.now();
     state.simulationTrades = state.simulationTrades.filter((trade) => trade.id !== tradeId);
     await saveSimulationState();
     renderAll();
@@ -565,6 +671,7 @@
     const capital = Number($("simulation-capital").value);
     if (!Number.isFinite(capital) || capital <= 0) return showToast("资金规模必须大于 0。", true);
     state.simulationCapital = capital;
+    state.simulationCapitalUpdatedAt = Date.now();
     await saveSimulationState();
     renderSimulationCapital();
     showToast("模拟账户资金规模已更新。");
@@ -702,6 +809,7 @@
     if (value.error) return;
     const existing = state.simulationTrades.find((trade) => trade.id === value.id);
     if (existing) value.includeInAnalysis = existing.includeInAnalysis;
+    value.updatedAt = Date.now();
     const normalized = normalizeSimulationTrade(value);
     if (!normalized) {
       $("trade-form-error").textContent = "交易数据不完整，请检查价格、数量、杠杆和时间。";
@@ -914,13 +1022,21 @@
       recordQuote({ ...previous, symbol: detail.symbol, price: Number(detail.price), timestamp: Number(detail.timestamp) || Date.now() });
       checkSimulationTriggers(detail.symbol, Number(detail.price), Number(detail.timestamp) || Date.now()).then(() => renderSimulation());
     });
-    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refreshOpenSimulationQuotes(false); });
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState !== "visible") return;
+      refreshOpenSimulationQuotes(false);
+      scheduleCloudSync(100);
+    });
+    window.addEventListener("online", () => scheduleCloudSync(100));
+    window.addEventListener("offline", () => setCloudSyncStatus("offline", "离线缓存中"));
   }
 
   async function start() {
     bindEvents();
     const [storedTrades, storedSimulation] = await Promise.all([readTrades(), readSimulationState()]);
     state.simulationCapital = storedSimulation.capital;
+    state.simulationCapitalUpdatedAt = storedSimulation.capitalUpdatedAt;
+    state.simulationDeletedTrades = storedSimulation.deletedTrades;
     const migrated = storedTrades.map(normalizeTrade).filter(Boolean);
     const combined = [...storedSimulation.trades.map(normalizeSimulationTrade).filter(Boolean), ...migrated];
     state.simulationTrades = [...new Map(combined.map((trade) => [trade.id, trade])).values()];
@@ -932,8 +1048,11 @@
     if (snapshot?.price) recordQuote(snapshot);
     resetTradeForm();
     renderAll();
+    state.cloudSyncReady = true;
+    await syncCloudState();
     await refreshSimulationQuote($("simulation-symbol").value, false, true);
     state.simulationTimer = window.setInterval(() => refreshOpenSimulationQuotes(false), SIMULATION_REFRESH_INTERVAL);
+    state.cloudSyncInterval = window.setInterval(syncCloudState, CLOUD_SYNC_INTERVAL);
   }
 
   window.paperTrading = {

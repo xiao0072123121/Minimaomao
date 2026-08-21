@@ -7,5 +7,13 @@
     "directory": "./public/",
     "binding": "ASSETS",
     "run_worker_first": true
-  }
+  },
+  "d1_databases": [
+    {
+      "binding": "TRADING_DB",
+      "database_name": "minimaomao-trading",
+      "database_id": "30fcb172-2efc-45af-a8ac-16b4868b3cc2",
+      "migrations_dir": "migrations"
+    }
+  ]
 }

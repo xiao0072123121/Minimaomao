@@ -125,7 +125,7 @@
 
       <section id="view-simulation" class="app-view" data-app-view="simulation">
         <section class="panel simulation-capital-panel" aria-labelledby="simulation-capital-title">
-          <div class="simulation-capital-head"><div><h2 id="simulation-capital-title">模拟账户资金</h2><p>资金规模手动设置，其余数据根据模拟交易自动计算。</p></div><span>仅统计模拟账户</span></div>
+          <div class="simulation-capital-head"><div><h2 id="simulation-capital-title">模拟账户资金</h2><p>资金规模手动设置，其余数据根据模拟交易自动计算。</p></div><span id="cloud-sync-status" class="cloud-sync-status" data-state="syncing"><i></i>云端同步中</span></div>
           <div class="simulation-capital-grid">
             <label class="simulation-capital-item simulation-capital-input"><span>资金规模</span><div><input id="simulation-capital" type="number" min="0" step="100" value="100000"><em>USDT</em><button id="save-simulation-capital" type="button">设置</button></div></label>
             <div class="simulation-capital-item"><span>可用资金</span><strong id="simulation-available-funds">—</strong></div>
@@ -261,6 +261,7 @@
   <script src="volume-profile.js?v=20260821-low-load-profile-v1"></script>
   <script src="binance-xau.js?v=20260821-low-load-profile-v1"></script>
   <script src="liquidation-calculator.js?v=20260821-binance-liquidation-v1"></script>
-  <script src="paper-trading.js?v=20260821-binance-liquidation-v1"></script>
+  <script src="cloud-sync.js?v=20260822-cloud-sync-v1"></script>
+  <script src="paper-trading.js?v=20260822-cloud-sync-v1"></script>
 </body>
 </html>

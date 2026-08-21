@@ -2,6 +2,9 @@ const DEFAULT_USERNAME = "monitor";
 const MINIMUM_PASSWORD_LENGTH = 12;
 const AUTH_REALM = "muti-monitor";
 const BINANCE_API_PREFIX = "/api/binance";
+const CLOUD_SYNC_PATH = "/api/sync";
+const CLOUD_ACCOUNT_ID = "primary";
+const MAX_SYNC_BODY_BYTES = 1_500_000;
 const BINANCE_API_HOSTS = [
   "https://fapi.binance.com",
   "https://fapi1.binance.com",
@@ -16,6 +19,7 @@ const BINANCE_SYMBOLS = new Set(["XAUUSDT", "SNDKUSDT", "SKHYNIXUSDT"]);
 const BINANCE_INTERVALS = new Set(["15m", "1h", "4h"]);
 
 const encoder = new TextEncoder();
+let cloudSchemaReady = null;
 
 function securityHeaders() {
   return {
@@ -114,6 +118,98 @@ function binanceError(message, status = 400) {
       "Content-Type": "application/json; charset=UTF-8"
     }
   });
+}
+
+function jsonResponse(value, status = 200) {
+  return new Response(JSON.stringify(value), {
+    status,
+    headers: {
+      ...securityHeaders(),
+      "Content-Type": "application/json; charset=UTF-8"
+    }
+  });
+}
+
+async function ensureCloudSchema(database) {
+  if (!cloudSchemaReady) {
+    cloudSchemaReady = database.prepare(`CREATE TABLE IF NOT EXISTS cloud_snapshots (
+      account_id TEXT PRIMARY KEY,
+      revision INTEGER NOT NULL,
+      payload TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`).run().catch((error) => {
+      cloudSchemaReady = null;
+      throw error;
+    });
+  }
+  await cloudSchemaReady;
+}
+
+function emptyCloudState() {
+  return { capital: 100000, capitalUpdatedAt: 0, trades: [], deletedTrades: {} };
+}
+
+function validCloudState(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    && Array.isArray(value.trades)
+    && value.deletedTrades && typeof value.deletedTrades === "object" && !Array.isArray(value.deletedTrades)
+    && Number.isFinite(Number(value.capital)) && Number(value.capital) > 0;
+}
+
+async function readCloudSnapshot(database) {
+  const row = await database.prepare(
+    "SELECT revision, payload, updated_at FROM cloud_snapshots WHERE account_id = ?"
+  ).bind(CLOUD_ACCOUNT_ID).first();
+  if (!row) return { revision: 0, updatedAt: 0, state: emptyCloudState() };
+  try {
+    const state = JSON.parse(row.payload);
+    if (!validCloudState(state)) throw new Error("invalid cloud state");
+    return { revision: Number(row.revision), updatedAt: Number(row.updated_at), state };
+  } catch (_) {
+    throw new Error("云端交易数据格式异常");
+  }
+}
+
+async function handleCloudSync(request, env) {
+  if (!env.TRADING_DB) return jsonResponse({ error: "云端数据库尚未绑定" }, 503);
+  try {
+    await ensureCloudSchema(env.TRADING_DB);
+    if (request.method === "GET") return jsonResponse(await readCloudSnapshot(env.TRADING_DB));
+    if (request.method !== "PUT") return jsonResponse({ error: "仅支持GET和PUT请求" }, 405);
+
+    const origin = request.headers.get("Origin");
+    if (origin && origin !== new URL(request.url).origin) return jsonResponse({ error: "跨站写入被拒绝" }, 403);
+    const declaredLength = Number(request.headers.get("Content-Length"));
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_SYNC_BODY_BYTES) {
+      return jsonResponse({ error: "同步数据超过大小限制" }, 413);
+    }
+    const rawBody = await request.text();
+    if (encoder.encode(rawBody).byteLength > MAX_SYNC_BODY_BYTES) return jsonResponse({ error: "同步数据超过大小限制" }, 413);
+    let body;
+    try { body = JSON.parse(rawBody); } catch (_) { return jsonResponse({ error: "JSON格式无效" }, 400); }
+    const revision = Number(body?.revision);
+    if (!Number.isSafeInteger(revision) || revision < 0 || !validCloudState(body?.state)) {
+      return jsonResponse({ error: "同步数据格式无效" }, 400);
+    }
+    const payload = JSON.stringify(body.state);
+    const updatedAt = Date.now();
+    let result;
+    if (revision === 0) {
+      result = await env.TRADING_DB.prepare(
+        "INSERT OR IGNORE INTO cloud_snapshots (account_id, revision, payload, updated_at) VALUES (?, 1, ?, ?)"
+      ).bind(CLOUD_ACCOUNT_ID, payload, updatedAt).run();
+    } else {
+      result = await env.TRADING_DB.prepare(
+        "UPDATE cloud_snapshots SET revision = revision + 1, payload = ?, updated_at = ? WHERE account_id = ? AND revision = ?"
+      ).bind(payload, updatedAt, CLOUD_ACCOUNT_ID, revision).run();
+    }
+    if (!result.success || Number(result.meta?.changes) !== 1) {
+      return jsonResponse({ error: "云端版本已更新", ...(await readCloudSnapshot(env.TRADING_DB)) }, 409);
+    }
+    return jsonResponse({ revision: revision + 1, updatedAt });
+  } catch (error) {
+    return jsonResponse({ error: error?.message || "云端同步暂不可用" }, 500);
+  }
 }
 
 function validateBinanceRequest(url) {
@@ -218,7 +314,9 @@ export default {
       : DEFAULT_USERNAME;
 
     if (!(await isAuthorized(request, username, password))) return unauthorized();
-    if (new URL(request.url).pathname.startsWith(BINANCE_API_PREFIX)) {
+    const pathname = new URL(request.url).pathname;
+    if (pathname === CLOUD_SYNC_PATH) return handleCloudSync(request, env);
+    if (pathname.startsWith(BINANCE_API_PREFIX)) {
       return handleBinanceApi(request, executionContext);
     }
     return protectAssetResponse(await env.ASSETS.fetch(request));
