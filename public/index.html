@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="dark">
   <title>Binance行情分析</title>
-  <link rel="stylesheet" href="paper-trading.css?v=20260821-simulation-trading-v1">
+  <link rel="stylesheet" href="paper-trading.css?v=20260821-analysis-journal-v2">
 </head>
 <body class="monitor-active">
   <div class="app-shell">
@@ -68,10 +68,27 @@
           <h2>价格行为支撑与压力区间</h2>
           <span>摆动高低点聚类 · 重复触碰确认 · 区域在下一次H1收盘后统一重算</span>
         </div>
-        <section class="panel monitor-zone-card" aria-labelledby="zones-title">
-          <h2 id="zones-title" class="visually-hidden">H4/H1 支撑与压力区域</h2>
-          <div id="zone-map-list" class="zone-map-list"><div class="empty-row">正在读取H4/H1摆动高低点…</div></div>
-        </section>
+        <div class="monitor-zone-layout">
+          <section class="panel monitor-zone-card" aria-labelledby="zones-title">
+            <h2 id="zones-title" class="visually-hidden">H4/H1 支撑与压力区域</h2>
+            <div id="zone-map-list" class="zone-map-list"><div class="empty-row">正在读取H4/H1摆动高低点…</div></div>
+          </section>
+          <aside class="panel market-analysis-card" aria-labelledby="market-analysis-title">
+            <div class="market-analysis-head"><h3 id="market-analysis-title">行情分析</h3><span id="market-analysis-badge">等待区域</span></div>
+            <p id="market-analysis-summary" class="market-analysis-summary">正在根据当前价格与最近支撑、压力计算区间位置。</p>
+            <div class="market-analysis-metrics">
+              <div><span>当前价</span><b id="analysis-current-price">—</b></div>
+              <div><span>最近压力</span><b id="analysis-nearest-resistance" class="metric-negative">—</b></div>
+              <div><span>最近支撑</span><b id="analysis-nearest-support" class="metric-positive">—</b></div>
+              <div><span>区间位置</span><b id="analysis-range-position">—</b></div>
+            </div>
+            <div class="market-position" aria-label="当前价格在支撑压力区间中的位置">
+              <div class="market-position-label"><span>支撑端</span><strong id="analysis-position-label">等待计算</strong><span>压力端</span></div>
+              <div class="market-position-track"><i id="analysis-position-marker"></i></div>
+            </div>
+            <p id="analysis-observation" class="market-analysis-observation">区域完成计算后显示观察重点。</p>
+          </aside>
+        </div>
 
         <section class="panel monitor-chart-card">
           <div class="chart-head">
@@ -121,7 +138,7 @@
                 <label class="field"><span>计划止盈（可选）</span><input id="simulation-target" type="number" min="0" step="0.01"></label>
               </div>
               <button id="open-simulation-trade" class="primary-button simulation-submit" type="submit">按最新价模拟开仓</button>
-              <p id="simulation-form-error" class="form-error simulation-form-error" role="alert">模拟盈亏暂不包含手续费、滑点和资金费率。</p>
+              <p id="simulation-form-error" class="form-error simulation-form-error" role="alert">页面保持打开且行情连接正常时，止损/止盈触价会自动平仓；模拟盈亏暂不包含费用。</p>
             </form>
             <aside class="simulation-quote" aria-label="模拟交易实时价格">
               <div class="simulation-quote-head"><span>实时价格</span><span id="simulation-connection" class="simulation-connection"><i></i>等待报价</span></div>
@@ -137,16 +154,18 @@
           </div>
         </section>
         <section class="panel simulation-records section-panel">
-          <div class="section-toolbar"><div><h2>模拟交易记录</h2><p>模拟记录单独保存；已平仓记录参与周复盘和画像分析。</p></div><span id="simulation-record-count" class="simulation-record-count">0 笔持仓 · 0 笔已平仓</span></div>
+          <div class="section-toolbar"><div><h2>模拟交易记录</h2><p>记录所有模拟交易的开仓与平仓情况，并统一纳入周复盘和画像分析。</p></div><div class="record-toolbar-actions"><button id="open-trade-modal" class="record-entry-button" type="button">＋ 录入模拟交易</button><span id="simulation-record-count" class="simulation-record-count">0 笔持仓 · 0 笔已平仓</span></div></div>
           <div class="table-wrap"><table class="data-table simulation-table">
-            <thead><tr><th>标的</th><th>方向</th><th>开仓价</th><th>当前/平仓价</th><th>数量</th><th>杠杆</th><th>持仓时长</th><th>浮动/实际盈亏</th><th>止损/止盈</th><th>操作</th></tr></thead>
-            <tbody id="simulation-body"><tr class="empty-row"><td colspan="10">暂无模拟交易；填写上方表单后按最新价开仓。</td></tr></tbody>
+            <thead><tr><th>标的</th><th>方向</th><th>开仓价</th><th>开仓/平仓时间</th><th>当前/平仓价</th><th>数量</th><th>杠杆</th><th>持仓时长</th><th>浮动/实际盈亏</th><th>止损/止盈</th><th>操作</th></tr></thead>
+            <tbody id="simulation-body"><tr class="empty-row"><td colspan="11">暂无模拟交易；可按最新价开仓或手动录入。</td></tr></tbody>
           </table></div>
         </section>
-        <section class="panel trade-entry-panel" aria-labelledby="trade-entry-title">
-          <div class="entry-panel-head"><div><span>REAL TRADE JOURNAL</span><h3 id="trade-entry-title">录入实盘交易</h3></div><button id="reset-trade-form" class="secondary-button" type="button">清空表单</button></div>
-          <input id="trade-edit-id" type="hidden">
-          <div class="trade-entry-grid">
+        <div id="trade-modal" class="trade-modal" hidden>
+          <div class="trade-modal-backdrop" data-close-trade-modal></div>
+          <section class="panel trade-entry-panel trade-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="trade-entry-title">
+            <div class="entry-panel-head"><div><span>SIMULATED TRADE</span><h3 id="trade-entry-title">录入模拟交易</h3></div><button id="close-trade-modal" class="modal-close-button" type="button" aria-label="关闭录入模拟交易弹窗">×</button></div>
+            <input id="trade-edit-id" type="hidden">
+            <div class="trade-entry-grid">
             <label class="field"><span>标的</span><select id="trade-symbol"><option>XAUUSDT</option><option>SNDKUSDT</option><option>SKHYNIXUSDT</option><option>其他</option></select></label>
             <label class="field"><span>方向</span><select id="trade-side"><option value="long">做多</option><option value="short">做空</option></select></label>
             <label class="field"><span>交易状态</span><select id="trade-status"><option value="closed">已平仓</option><option value="open">持仓中</option></select></label>
@@ -169,29 +188,14 @@
               <label class="reason-option"><input type="checkbox" name="real-entry-reason" value="其他">其他</label>
             </div></div>
             <label class="field entry-note"><span>复盘备注</span><textarea id="trade-note" maxlength="500" placeholder="记录当时看到的区域、形态、进出场考虑和执行偏差…"></textarea></label>
-          </div>
-          <div class="fill-sections">
-            <section class="fill-panel" aria-labelledby="entry-legs-title">
-              <div class="fill-panel-head"><div><h4 id="entry-legs-title">分批加仓</h4><p>记录首次开仓后的每一笔加仓，可添加多条。</p></div><button id="add-entry-leg" class="secondary-button" type="button">＋ 添加加仓</button></div>
-              <div id="entry-legs" class="fill-list"><p class="fill-empty">暂无加仓记录</p></div>
-            </section>
-            <section class="fill-panel" aria-labelledby="exit-legs-title">
-              <div class="fill-panel-head"><div><h4 id="exit-legs-title">分批止盈</h4><p>记录最终平仓前的减仓；最终平仓会自动结算剩余数量。</p></div><button id="add-exit-leg" class="secondary-button" type="button">＋ 添加止盈</button></div>
-              <div id="exit-legs" class="fill-list"><p class="fill-empty">暂无分批止盈记录</p></div>
-            </section>
-          </div>
-          <div class="entry-actions"><p id="trade-form-error" class="form-error" role="alert">自动盈亏暂不包含手续费、滑点和资金费率。</p><button id="save-trade" class="primary-button" type="button">保存实盘交易</button></div>
-        </section>
-        <section class="panel journal-layout section-panel">
-          <div class="table-wrap"><table class="data-table">
-            <thead><tr><th>标的</th><th>方向</th><th>开仓/平仓</th><th>开仓/平仓时间</th><th>持仓数量</th><th>持仓时长</th><th>盈亏</th><th>杠杆</th><th>退出原因</th><th>分析依据</th><th>纳入分析</th><th>操作</th></tr></thead>
-            <tbody id="journal-body"><tr class="empty-row"><td colspan="12">录入第一笔实盘交易后，这里会形成可复盘证据。</td></tr></tbody>
-          </table></div>
-        </section>
+            </div>
+            <div class="entry-actions"><p id="trade-form-error" class="form-error" role="alert">未平仓记录填写止损/止盈后，将在页面打开且行情连接时自动执行。</p><button id="cancel-trade-modal" class="secondary-button modal-cancel-button" type="button">取消</button><button id="save-trade" class="primary-button" type="button">保存模拟交易</button></div>
+          </section>
+        </div>
       </section>
 
       <section id="view-weekly" class="app-view" data-app-view="weekly">
-        <div class="page-head"><div><h2>周复盘</h2><p>按自然周归纳实盘与已平仓模拟交易；页面打开时自动更新，不将小样本包装成稳定规律。</p></div>
+        <div class="page-head"><div><h2>周复盘</h2><p>按自然周归纳已平仓模拟交易；页面打开时自动更新，不将小样本包装成稳定规律。</p></div>
           <div class="week-controls"><button id="week-prev" class="secondary-button" type="button">上一周</button><span id="week-label" class="week-label">—</span><button id="week-next" class="secondary-button" type="button">下一周</button></div>
         </div>
         <section class="panel">
@@ -212,7 +216,7 @@
       </section>
 
       <section id="view-habits" class="app-view" data-app-view="habits">
-        <div class="page-head"><div><h2>画像分析</h2><p>从实盘记录与已平仓模拟交易中反推偏好；结论随样本增加而更新。</p></div></div>
+        <div class="page-head"><div><h2>画像分析</h2><p>从已平仓模拟交易中反推偏好；结论随样本增加而更新。</p></div></div>
         <section class="panel habit-panel"><h3>当前画像 <span id="habit-confidence" class="confidence">样本不足</span></h3><div id="habit-list" class="habit-list"></div></section>
         <section class="panel section-panel"><div class="section-toolbar"><div><h2>解释边界</h2><p>画像描述的是你实际做了什么，不代表这些做法必然有效。</p></div></div><div class="notice-panel">少于10笔只展示事实；10–29笔标记为“初步倾向”；达到30笔后才标记“较稳定”。即便样本较多，也会同时展示盈亏证据，避免只看交易次数。</div></section>
       </section>
@@ -222,6 +226,6 @@
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="binance-xau.js?v=20260821-simulation-quote-v1"></script>
-  <script src="paper-trading.js?v=20260821-simulation-trading-v1"></script>
+  <script src="paper-trading.js?v=20260821-analysis-journal-v2"></script>
 </body>
 </html>

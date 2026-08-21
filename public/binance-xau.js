@@ -104,6 +104,7 @@
       mapMeta.textContent = `实时Mark Price · 更新 ${formatTime(timestamp)}`;
     }
     setConnection(true, "实时价格已连接");
+    renderMarketAnalysis(value);
     window.dispatchEvent(new CustomEvent("market-price", { detail: { symbol: state.symbol, price: value, timestamp } }));
     const nextSignature = state.zones.map((zone) => zoneRole(zone, value)).join("|");
     if (nextSignature !== state.zoneRoleSignature) {
@@ -444,6 +445,82 @@
     return "重复触碰";
   }
 
+  function renderMarketAnalysis(referencePrice = state.price) {
+    const currentPrice = Number(referencePrice);
+    const currentElement = $("analysis-current-price");
+    if (!currentElement) return;
+    const badge = $("market-analysis-badge");
+    const summary = $("market-analysis-summary");
+    const resistanceElement = $("analysis-nearest-resistance");
+    const supportElement = $("analysis-nearest-support");
+    const positionElement = $("analysis-range-position");
+    const positionLabel = $("analysis-position-label");
+    const marker = $("analysis-position-marker");
+    const observation = $("analysis-observation");
+    currentElement.textContent = formatPrice(currentPrice);
+
+    if (!Number.isFinite(currentPrice) || !state.zones.length) {
+      badge.textContent = "等待区域";
+      summary.textContent = "正在根据当前价格与最近支撑、压力计算区间位置。";
+      resistanceElement.textContent = "—";
+      supportElement.textContent = "—";
+      positionElement.textContent = "—";
+      positionLabel.textContent = "等待计算";
+      marker.style.left = "50%";
+      observation.textContent = "区域完成计算后显示观察重点。";
+      return;
+    }
+
+    const nearestResistance = state.zones
+      .filter((zone) => zoneRole(zone, currentPrice) === "resistance")
+      .sort((a, b) => a.low - b.low)[0];
+    const nearestSupport = state.zones
+      .filter((zone) => zoneRole(zone, currentPrice) === "support")
+      .sort((a, b) => b.high - a.high)[0];
+    const active = state.zones
+      .filter((zone) => zoneRole(zone, currentPrice) === "active")
+      .sort((a, b) => Math.abs(a.center - currentPrice) - Math.abs(b.center - currentPrice))[0];
+
+    resistanceElement.textContent = formatZone(nearestResistance);
+    supportElement.textContent = formatZone(nearestSupport);
+    if (active) {
+      const activePosition = clamp((currentPrice - active.low) / Math.max(active.high - active.low, .01) * 100, 0, 100);
+      badge.textContent = "关键区内";
+      summary.textContent = `价格正在 ${formatZone(active)} 区域内运行，关注是否出现有效离开。`;
+      positionElement.textContent = `区域内 ${Math.round(activePosition)}%`;
+      positionLabel.textContent = "关键区内";
+      marker.style.left = `${activePosition}%`;
+      observation.textContent = `观察：价格能否有效离开 ${formatZone(active)}；仅短暂刺穿不视为区域失效。`;
+      return;
+    }
+
+    if (nearestSupport && nearestResistance && nearestResistance.low > nearestSupport.high) {
+      const position = clamp((currentPrice - nearestSupport.high) / (nearestResistance.low - nearestSupport.high) * 100, 0, 100);
+      const location = position >= 72 ? "区间上部" : position <= 28 ? "区间下部" : "区间中部";
+      badge.textContent = position >= 72 ? "临近压力" : position <= 28 ? "临近支撑" : "区间运行";
+      summary.textContent = position >= 72
+        ? "价格位于区间上部，正在接近上方压力。"
+        : position <= 28 ? "价格位于区间下部，正在接近下方支撑。" : "价格位于最近支撑与压力之间，暂处区间中部。";
+      positionElement.textContent = `${location} ${Math.round(position)}%`;
+      positionLabel.textContent = `${Math.round(position)}%`;
+      marker.style.left = `${position}%`;
+      observation.textContent = position >= 72
+        ? `观察：能否突破 ${formatPrice(nearestResistance.high)} 并回踩确认；若受阻，关注 ${formatPrice(nearestSupport.high)} 附近反应。`
+        : position <= 28
+          ? `观察：能否守住 ${formatPrice(nearestSupport.low)} 并重新回到区间；若失守，等待下一支撑区域。`
+          : `观察：上方 ${formatZone(nearestResistance)}，下方 ${formatZone(nearestSupport)}；等待价格靠近边界。`;
+      return;
+    }
+
+    const fallbackZone = nearestResistance || nearestSupport;
+    badge.textContent = nearestResistance ? "上方有压力" : "下方有支撑";
+    summary.textContent = nearestResistance ? "当前仅识别到上方最近压力，等待下方支撑完善。" : "当前仅识别到下方最近支撑，等待上方压力完善。";
+    positionElement.textContent = "单侧区域";
+    positionLabel.textContent = "等待双侧";
+    marker.style.left = nearestResistance ? "78%" : "22%";
+    observation.textContent = `观察：最近有效区域为 ${formatZone(fallbackZone)}，待H1收盘后继续更新。`;
+  }
+
   function recalculateZones() {
     state.zones = buildZones();
     $("bar-counts").textContent = `H4 ${state.frames.h4.length} · H1 ${state.frames.h1.length}`;
@@ -492,6 +569,7 @@
     </div>`;
     $("zone-map-list").innerHTML = [...upperBands, currentBand, ...lowerBands].join("");
     state.zoneRoleSignature = state.zones.map((zone) => zoneRole(zone, referencePrice)).join("|");
+    renderMarketAnalysis(referencePrice);
   }
 
   function svgElement(name, attributes = {}) {
