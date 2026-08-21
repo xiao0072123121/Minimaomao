@@ -35,6 +35,7 @@
     dayStatsAt: 0,
     frames: { h4: [], h1: [], m15: [] },
     zones: [],
+    volumeProfile: null,
     chartFrame: "h4",
     visibleBars: 100,
     loadGeneration: 0,
@@ -65,6 +66,16 @@
 
   function formatZone(zone) {
     return zone ? `${formatPrice(zone.low)} – ${formatPrice(zone.high)}` : "—";
+  }
+
+  function formatProfilePrice(value, binSize = 1) {
+    if (!Number.isFinite(value)) return "—";
+    const digits = binSize >= 1 ? 0 : binSize >= 0.1 ? 1 : 2;
+    return new Intl.NumberFormat("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(value);
+  }
+
+  function formatProfileRange(range, binSize) {
+    return range ? `${formatProfilePrice(range.low, binSize)} – ${formatProfilePrice(range.high, binSize)}` : "—";
   }
 
   function formatTime(timestamp) {
@@ -105,6 +116,7 @@
     }
     setConnection(true, "实时价格已连接");
     renderMarketAnalysis(value);
+    renderVolumeProfile(value);
     window.dispatchEvent(new CustomEvent("market-price", { detail: { symbol: state.symbol, price: value, timestamp } }));
     const nextSignature = state.zones.map((zone) => zoneRole(zone, value)).join("|");
     if (nextSignature !== state.zoneRoleSignature) {
@@ -196,6 +208,7 @@
       h: Number(item[2]),
       l: Number(item[3]),
       c: Number(item[4]),
+      v: Number(item[5]),
       ct: Number(item[6])
     };
     return Object.values(candle).every(Number.isFinite) ? candle : null;
@@ -521,13 +534,50 @@
     observation.textContent = `观察：最近有效区域为 ${formatZone(fallbackZone)}，待H1收盘后继续更新。`;
   }
 
+  function renderVolumeProfile(referencePrice = state.price) {
+    const pocElement = $("volume-profile-poc");
+    if (!pocElement) return;
+    const valueAreaElement = $("volume-profile-value-area");
+    const nearestBandElement = $("volume-profile-nearest-band");
+    const barsElement = $("volume-profile-bars");
+    const statusElement = $("volume-profile-status");
+    const profile = state.volumeProfile;
+    if (!profile) {
+      pocElement.textContent = "—";
+      valueAreaElement.textContent = "—";
+      nearestBandElement.textContent = "—";
+      barsElement.innerHTML = "";
+      const volumeCandles = state.frames.m15.filter((candle) => Number.isFinite(candle.v) && candle.v > 0).length;
+      statusElement.textContent = volumeCandles
+        ? `有效样本仅${volumeCandles}根，需要至少40根已收盘15分钟K线。`
+        : "正在等待含成交量的15分钟K线。";
+      return;
+    }
+
+    const nearestBand = window.LowLoadVolumeProfile.selectNearestDenseBand(profile, Number(referencePrice));
+    pocElement.textContent = formatProfilePrice(profile.poc, profile.binSize);
+    valueAreaElement.textContent = formatProfileRange(profile.valueArea, profile.binSize);
+    nearestBandElement.textContent = formatProfileRange(nearestBand, profile.binSize);
+    barsElement.innerHTML = profile.displayBins.map((bin) => `<div class="volume-profile-row${bin.poc ? " poc" : ""}">
+      <span>${escapeHtml(formatProfilePrice(bin.center, profile.binSize))}</span>
+      <i style="width:${Math.max(3, Math.round(bin.ratio * 100))}%"></i>
+    </div>`).join("");
+    statusElement.textContent = `基于${profile.candlesUsed}根已收盘M15 K线 · 70%价值区 · ${formatTime(state.frames.m15.at(-1)?.ct)}`;
+  }
+
   function recalculateZones() {
     state.zones = buildZones();
+    state.volumeProfile = window.LowLoadVolumeProfile?.buildVolumeProfile(state.frames.m15, {
+      maxCandles: FRAME_CONFIG.m15.limit,
+      binCount: 48,
+      valueAreaRatio: 0.7
+    }) || null;
     $("bar-counts").textContent = `H4 ${state.frames.h4.length} · H1 ${state.frames.h1.length}`;
     const enough = state.frames.h4.length >= 30 && state.frames.h1.length >= 60;
     $("zone-state").textContent = enough ? `已识别 ${state.zones.length} 个固定区域` : "历史样本不足，等待补充";
     $("zone-updated").textContent = formatTime(Date.now());
     renderZones();
+    renderVolumeProfile(Number.isFinite(state.price) ? state.price : state.frames.m15.at(-1)?.c);
     renderChart();
   }
 
@@ -758,6 +808,7 @@
     state.dayStatsAt = 0;
     state.frames = { h4: [], h1: [], m15: [] };
     state.zones = [];
+    state.volumeProfile = null;
     state.zoneRoleSignature = "";
     state.visibleBars = 100;
     state.reconnectAttempt = 0;
@@ -773,6 +824,7 @@
     $("zone-updated").textContent = "—";
     showError("");
     renderZones();
+    renderVolumeProfile();
     renderChart();
     setConnection(false, "正在连接实时价格");
     requestPriceOnce();

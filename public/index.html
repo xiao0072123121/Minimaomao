@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="dark">
   <title>Binance行情分析</title>
-  <link rel="stylesheet" href="paper-trading.css?v=20260821-simulation-layout-v3">
+  <link rel="stylesheet" href="paper-trading.css?v=20260821-low-load-profile-v1">
 </head>
 <body class="monitor-active">
   <div class="app-shell">
@@ -60,7 +60,7 @@
         </div>
 
         <div class="monitor-notice">
-          <span>H4/H1/M15 K线仅提取开、高、低、收四项；其中H4/H1用于区域计算，M15只用于图表展示。</span>
+          <span>H4/H1用于支撑压力区域计算；M15用于图表与低负载成交分布估算，不请求逐笔成交。</span>
           <strong><span id="zone-state">等待H4/H1收盘K线</span> · <span id="bar-counts">H4 0 · H1 0</span> · 更新 <span id="zone-updated">—</span></strong>
         </div>
 
@@ -87,6 +87,20 @@
               <div class="market-position-track"><i id="analysis-position-marker"></i></div>
             </div>
             <p id="analysis-observation" class="market-analysis-observation">区域完成计算后显示观察重点。</p>
+            <section class="volume-profile-card" aria-labelledby="volume-profile-title">
+              <div class="volume-profile-head">
+                <div><h4 id="volume-profile-title">成交密集区</h4><p>15分钟K线成交量估算 · 不请求逐笔成交</p></div>
+                <span>低负载</span>
+              </div>
+              <div class="volume-profile-metrics">
+                <div><span>POC最大成交量价</span><b id="volume-profile-poc">—</b></div>
+                <div><span>主要价值区</span><b id="volume-profile-value-area">—</b></div>
+                <div><span>最近密集带</span><b id="volume-profile-nearest-band">—</b></div>
+              </div>
+              <div id="volume-profile-bars" class="volume-profile-bars" aria-label="POC附近成交量分布"></div>
+              <p id="volume-profile-status" class="volume-profile-status">正在等待含成交量的15分钟K线。</p>
+              <p class="volume-profile-disclaimer">仅反映Binance当前合约，用于观察价格接受区域，不等同于全球黄金成交量。</p>
+            </section>
           </aside>
         </div>
 
@@ -130,8 +144,8 @@
               <div class="field simulation-side-field"><span>方向</span><div class="simulation-side-selector" role="group" aria-label="模拟交易方向"><button id="simulation-long" class="simulation-side-button active" data-side="long" type="button">做多</button><button id="simulation-short" class="simulation-side-button" data-side="short" type="button">做空</button></div></div>
               <div class="simulation-price-reference"><span>最新价 <b id="simulation-reference-price">—</b></span><button id="refresh-simulation-price" type="button">刷新价格</button></div>
               <div class="simulation-field-row">
-                <label class="field"><span>开仓数量</span><input id="simulation-quantity" type="number" min="0.1" step="0.1" value="0.1"></label>
-                <label class="field"><span>杠杆倍数</span><input id="simulation-leverage" type="number" min="1" step="1" value="1"></label>
+                <label class="field"><span>开仓数量</span><input id="simulation-quantity" type="number" min="0.1" step="0.1" value="0.5"></label>
+                <label class="field"><span>杠杆倍数</span><input id="simulation-leverage" type="number" min="1" step="1" value="20"></label>
               </div>
               <div class="simulation-field-row">
                 <label class="field"><span>计划止损（可选）</span><input id="simulation-stop" type="number" min="0" step="0.01"></label>
@@ -233,7 +247,8 @@
   </div>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="binance-xau.js?v=20260821-simulation-quote-v1"></script>
+  <script src="volume-profile.js?v=20260821-low-load-profile-v1"></script>
+  <script src="binance-xau.js?v=20260821-low-load-profile-v1"></script>
   <script src="paper-trading.js?v=20260821-simulation-spark-v2"></script>
 </body>
 </html>
