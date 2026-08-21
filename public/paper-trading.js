@@ -391,6 +391,7 @@
       <td>${escapeHtml(formatDuration(end - trade.openAt))}</td>
       <td class="${pnl > 0 ? "metric-positive" : pnl < 0 ? "metric-negative" : ""}">${escapeHtml(formatMoney(pnl, true))}</td>
       <td><div class="paired-value"><span>损 ${escapeHtml(formatPrice(trade.stopLoss))}</span><span>盈 ${escapeHtml(formatPrice(trade.takeProfit))}</span></div></td>
+      <td class="record-reasons">${trade.reasons.length ? trade.reasons.map(escapeHtml).join(" / ") : "未填写"}</td>
       <td><div class="row-actions">${actions}</div></td>
     </tr>`;
   }
@@ -401,7 +402,7 @@
     const ordered = [...state.simulationTrades].sort((a, b) => Number(a.closed) - Number(b.closed) || b.openAt - a.openAt);
     const openCount = ordered.filter((trade) => !trade.closed).length;
     $("simulation-record-count").textContent = `${openCount} 笔持仓 · ${ordered.length - openCount} 笔已平仓`;
-    $("simulation-body").innerHTML = ordered.length ? ordered.map(unifiedRecordRow).join("") : '<tr class="empty-row"><td colspan="11">暂无模拟交易；可按最新价开仓或手动录入。</td></tr>';
+    $("simulation-body").innerHTML = ordered.length ? ordered.map(unifiedRecordRow).join("") : '<tr class="empty-row"><td colspan="12">暂无模拟交易；可按最新价开仓或手动录入。</td></tr>';
   }
 
   async function refreshSimulationQuote(symbol = $("simulation-symbol").value, force = false, includeStats = true) {
@@ -426,9 +427,11 @@
     const leverage = Number($("simulation-leverage").value);
     const stopLoss = Number($("simulation-stop").value);
     const takeProfit = Number($("simulation-target").value);
+    const reasons = [...document.querySelectorAll('input[name="simulation-entry-reason"]:checked')].map((input) => input.value);
     if (!Number.isFinite(entryPrice) || entryPrice <= 0) return { error: "暂未取得有效报价，请刷新价格后再试。" };
     if (!Number.isFinite(quantity) || quantity < 0.1) return { error: "开仓数量最小为 0.1。" };
     if (!Number.isFinite(leverage) || leverage < 1) return { error: "杠杆倍数最小为 1。" };
+    if (!reasons.length) return { error: "请至少选择一项开仓依据。" };
     const stop = Number.isFinite(stopLoss) && stopLoss > 0 ? stopLoss : null;
     const target = Number.isFinite(takeProfit) && takeProfit > 0 ? takeProfit : null;
     if (state.simulationSide === "long" && stop !== null && stop >= entryPrice) return { error: "做多止损应低于开仓价。" };
@@ -437,7 +440,7 @@
     if (state.simulationSide === "short" && target !== null && target >= entryPrice) return { error: "做空止盈应低于开仓价。" };
     const requiredMargin = entryPrice * quantity;
     if (requiredMargin > simulationAccountMetrics().available) return { error: `可用资金不足，本次需要保证金 ${formatMoney(requiredMargin)}。` };
-    return { quantity, leverage, stopLoss: stop, takeProfit: target };
+    return { quantity, leverage, stopLoss: stop, takeProfit: target, reasons };
   }
 
   async function openSimulationTrade(event) {
@@ -460,12 +463,13 @@
       id: id(), symbol, side: state.simulationSide, status: "open", closed: false,
       openAt: now, entryPrice: Number(quote.price), quantity: form.quantity, leverage: form.leverage,
       stopLoss: form.stopLoss, takeProfit: form.takeProfit, pnl: 0, lastPrice: Number(quote.price), lastPriceAt: now,
-      includeInAnalysis: true
+      reasons: form.reasons, includeInAnalysis: true
     }));
     await saveSimulationState();
     $("simulation-form-error").textContent = "页面保持打开且行情连接正常时，止损/止盈触价会自动平仓；模拟盈亏暂不包含费用。";
     state.simulationSaving = false;
     $("open-simulation-trade").disabled = false;
+    document.querySelectorAll('input[name="simulation-entry-reason"]').forEach((input) => { input.checked = false; });
     renderSimulation();
     showToast(`${symbol} 已按 ${formatPrice(Number(quote.price))} 模拟开仓。`);
   }

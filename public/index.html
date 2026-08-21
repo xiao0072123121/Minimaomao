@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="dark">
   <title>Binance行情分析</title>
-  <link rel="stylesheet" href="paper-trading.css?v=20260821-analysis-journal-v2">
+  <link rel="stylesheet" href="paper-trading.css?v=20260821-entry-reason-v1">
 </head>
 <body class="monitor-active">
   <div class="app-shell">
@@ -137,6 +137,14 @@
                 <label class="field"><span>计划止损（可选）</span><input id="simulation-stop" type="number" min="0" step="0.01"></label>
                 <label class="field"><span>计划止盈（可选）</span><input id="simulation-target" type="number" min="0" step="0.01"></label>
               </div>
+              <div class="reason-group simulation-entry-reasons"><span>开仓依据（至少选择一项）</span><div class="reason-list">
+                <label class="reason-option"><input type="checkbox" name="simulation-entry-reason" value="支撑/压力">支撑/压力</label>
+                <label class="reason-option"><input type="checkbox" name="simulation-entry-reason" value="K线反转">K线反转</label>
+                <label class="reason-option"><input type="checkbox" name="simulation-entry-reason" value="RSI超买超卖">RSI超买超卖</label>
+                <label class="reason-option"><input type="checkbox" name="simulation-entry-reason" value="区间高抛低吸">区间高抛低吸</label>
+                <label class="reason-option"><input type="checkbox" name="simulation-entry-reason" value="突破/回踩">突破/回踩</label>
+                <label class="reason-option"><input type="checkbox" name="simulation-entry-reason" value="其他">其他</label>
+              </div></div>
               <button id="open-simulation-trade" class="primary-button simulation-submit" type="submit">按最新价模拟开仓</button>
               <p id="simulation-form-error" class="form-error simulation-form-error" role="alert">页面保持打开且行情连接正常时，止损/止盈触价会自动平仓；模拟盈亏暂不包含费用。</p>
             </form>
@@ -156,8 +164,8 @@
         <section class="panel simulation-records section-panel">
           <div class="section-toolbar"><div><h2>模拟交易记录</h2><p>记录所有模拟交易的开仓与平仓情况，并统一纳入周复盘和画像分析。</p></div><div class="record-toolbar-actions"><button id="open-trade-modal" class="record-entry-button" type="button">录入</button><span id="simulation-record-count" class="simulation-record-count">0 笔持仓 · 0 笔已平仓</span></div></div>
           <div class="table-wrap"><table class="data-table simulation-table">
-            <thead><tr><th>标的</th><th>方向</th><th>开仓价</th><th>开仓/平仓时间</th><th>当前/平仓价</th><th>数量</th><th>杠杆</th><th>持仓时长</th><th>浮动/实际盈亏</th><th>止损/止盈</th><th>操作</th></tr></thead>
-            <tbody id="simulation-body"><tr class="empty-row"><td colspan="11">暂无模拟交易；可按最新价开仓或手动录入。</td></tr></tbody>
+            <thead><tr><th>标的</th><th>方向</th><th>开仓价</th><th>开仓/平仓时间</th><th>当前/平仓价</th><th>数量</th><th>杠杆</th><th>持仓时长</th><th>浮动/实际盈亏</th><th>止损/止盈</th><th>开仓依据</th><th>操作</th></tr></thead>
+            <tbody id="simulation-body"><tr class="empty-row"><td colspan="12">暂无模拟交易；可按最新价开仓或手动录入。</td></tr></tbody>
           </table></div>
         </section>
         <div id="trade-modal" class="trade-modal" hidden>
@@ -226,6 +234,6 @@
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="binance-xau.js?v=20260821-simulation-quote-v1"></script>
-  <script src="paper-trading.js?v=20260821-analysis-journal-v2"></script>
+  <script src="paper-trading.js?v=20260821-entry-reason-v1"></script>
 </body>
 </html>
