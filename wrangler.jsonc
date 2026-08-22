@@ -12,7 +12,7 @@
     {
       "binding": "TRADING_DB",
       "database_name": "minimaomao-trading",
-      "database_id": "30fcb172-2efc-45af-a8ac-16b4868b3cc2",
+      "database_id": "cd6563b0-7524-4de1-9985-a24d2da2a330",
       "migrations_dir": "migrations"
     }
   ]
