@@ -541,7 +541,7 @@
       ? openTrades.map((trade) => unifiedRecordRow(trade, true)).join("")
       : '<tr class="empty-row"><td colspan="13">暂无持仓中的交易；可按最新价开仓或手动录入。</td></tr>';
     $("simulation-closed-body").innerHTML = closedTrades.length
-      ? closedTrades.map(unifiedRecordRow).join("")
+      ? closedTrades.map((trade) => unifiedRecordRow(trade, false)).join("")
       : '<tr class="empty-row"><td colspan="12">暂无已平仓交易记录。</td></tr>';
   }
 
