@@ -32,6 +32,7 @@
         </nav>
         <nav class="symbol-switcher" aria-label="切换标的物">
           <button class="symbol-button active" data-symbol="XAUUSDT" type="button">黄金 · XAUUSDT</button>
+          <button class="symbol-button" data-symbol="BTCUSDT" type="button">比特币 · BTCUSDT</button>
           <button class="symbol-button" data-symbol="SNDKUSDT" type="button">SanDisk · SNDKUSDT</button>
           <button class="symbol-button" data-symbol="SKHYNIXUSDT" type="button">SK hynix · SKHYNIXUSDT</button>
         </nav>
@@ -141,7 +142,7 @@
           <div class="simulation-layout">
             <form id="simulation-form" class="simulation-ticket">
               <div class="simulation-ticket-head"><strong>模拟下单</strong><span>市价开仓</span></div>
-              <label class="field"><span>标的</span><select id="simulation-symbol"><option>XAUUSDT</option><option>SNDKUSDT</option><option>SKHYNIXUSDT</option></select></label>
+              <label class="field"><span>标的</span><select id="simulation-symbol"><option>XAUUSDT</option><option>BTCUSDT</option><option>SNDKUSDT</option><option>SKHYNIXUSDT</option></select></label>
               <div class="field simulation-side-field"><span>方向</span><div class="simulation-side-selector" role="group" aria-label="模拟交易方向"><button id="simulation-long" class="simulation-side-button active" data-side="long" type="button">做多</button><button id="simulation-short" class="simulation-side-button" data-side="short" type="button">做空</button></div></div>
               <div class="simulation-price-reference"><span>最新价 <b id="simulation-reference-price">—</b></span><button id="refresh-simulation-price" type="button">刷新价格</button></div>
               <div class="simulation-field-row">
@@ -201,7 +202,7 @@
             <div class="entry-panel-head"><div><span>SIMULATED TRADE</span><h3 id="trade-entry-title">录入模拟交易</h3></div><button id="close-trade-modal" class="modal-close-button" type="button" aria-label="关闭录入模拟交易弹窗">×</button></div>
             <input id="trade-edit-id" type="hidden">
             <div class="trade-entry-grid">
-            <label class="field"><span>标的</span><select id="trade-symbol"><option>XAUUSDT</option><option>SNDKUSDT</option><option>SKHYNIXUSDT</option><option>其他</option></select></label>
+            <label class="field"><span>标的</span><select id="trade-symbol"><option>XAUUSDT</option><option>BTCUSDT</option><option>SNDKUSDT</option><option>SKHYNIXUSDT</option><option>其他</option></select></label>
             <label class="field"><span>方向</span><select id="trade-side"><option value="long">做多</option><option value="short">做空</option></select></label>
             <label class="field"><span>交易状态</span><select id="trade-status"><option value="closed">已平仓</option><option value="open">持仓中</option></select></label>
             <label class="field"><span>首次开仓时间</span><input id="trade-open-time" type="datetime-local"></label>

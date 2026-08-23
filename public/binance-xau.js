@@ -14,6 +14,7 @@
   });
   const SYMBOLS = Object.freeze({
     XAUUSDT: { label: "黄金", base: "XAU" },
+    BTCUSDT: { label: "比特币", base: "BTC" },
     SNDKUSDT: { label: "SanDisk", base: "SNDK" },
     SKHYNIXUSDT: { label: "SK hynix", base: "SKHYNIX" }
   });

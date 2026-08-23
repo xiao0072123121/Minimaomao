@@ -4,7 +4,7 @@ Binance 多标的价格行为监测与模拟交易复盘网页。
 
 ## 当前功能
 
-- 支持 XAUUSDT、SNDKUSDT、SKHYNIXUSDT 切换。
+- 支持 XAUUSDT、BTCUSDT、SNDKUSDT、SKHYNIXUSDT 切换。
 - 实时链路只订阅 Binance Mark Price；断线时使用价格接口低频回退。
 - 每分钟读取一次24小时统计，只保留涨跌幅、最高价、最低价和最新成交价。
 - 历史数据请求 H4、H1 与 M15 K线，并立即裁剪为 `time/open/high/low/close/volume/closeTime`；H4/H1用于固定区域计算，M15成交量用于低负载成交量剖面。
