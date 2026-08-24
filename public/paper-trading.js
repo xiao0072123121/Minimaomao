@@ -520,7 +520,7 @@
       <td class="${trade.side === "long" ? "direction-long" : "direction-short"}">${SIDE_LABELS[trade.side]}</td>
       <td>${escapeHtml(formatPrice(trade.entryPrice))}</td>
       <td><div class="paired-value"><span>开 ${escapeHtml(formatDate(trade.openAt))}</span><span>${trade.closed ? `平 ${escapeHtml(formatDate(trade.closeAt))}` : "平 —"}</span></div></td>
-      <td>${escapeHtml(formatPrice(mark))}</td>
+      ${includeLiquidation ? "" : `<td>${escapeHtml(formatPrice(trade.closePrice))}</td>`}
       <td>${escapeHtml(formatQuantity(quantity))}</td><td>${escapeHtml(`${trade.leverage}x`)}</td>
       <td>${escapeHtml(formatDuration(end - trade.openAt))}</td>
       <td class="${pnl > 0 ? "metric-positive" : pnl < 0 ? "metric-negative" : ""}">${escapeHtml(formatMoney(pnl, true))}</td>
@@ -539,7 +539,7 @@
     const closedTrades = ordered.filter((trade) => trade.closed);
     $("simulation-open-body").innerHTML = openTrades.length
       ? openTrades.map((trade) => unifiedRecordRow(trade, true)).join("")
-      : '<tr class="empty-row"><td colspan="13">暂无持仓中的交易；可按最新价开仓或手动录入。</td></tr>';
+      : '<tr class="empty-row"><td colspan="12">暂无持仓中的交易；可按最新价开仓或手动录入。</td></tr>';
     $("simulation-closed-body").innerHTML = closedTrades.length
       ? closedTrades.map((trade) => unifiedRecordRow(trade, false)).join("")
       : '<tr class="empty-row"><td colspan="12">暂无已平仓交易记录。</td></tr>';
