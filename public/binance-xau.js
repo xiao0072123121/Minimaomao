@@ -53,6 +53,7 @@
 
   const $ = (id) => document.getElementById(id);
   const priceFormatter = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const zonePriceFormatter = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
   const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
     month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false
   });
@@ -65,8 +66,12 @@
     return Number.isFinite(value) ? priceFormatter.format(value) : "—";
   }
 
+  function formatZonePrice(value) {
+    return Number.isFinite(value) ? zonePriceFormatter.format(Math.round(value)) : "—";
+  }
+
   function formatZone(zone) {
-    return zone ? `${formatPrice(zone.low)} – ${formatPrice(zone.high)}` : "—";
+    return zone ? `${formatZonePrice(zone.low)} – ${formatZonePrice(zone.high)}` : "—";
   }
 
   function formatProfilePrice(value, binSize = 1) {
@@ -432,9 +437,9 @@
       positionLabel.textContent = `${Math.round(position)}%`;
       marker.style.left = `${position}%`;
       observation.textContent = position >= 72
-        ? `观察：能否突破 ${formatPrice(nearestResistance.high)} 并回踩确认；若受阻，关注 ${formatPrice(nearestSupport.high)} 附近反应。`
+        ? `观察：能否突破 ${formatZonePrice(nearestResistance.high)} 并回踩确认；若受阻，关注 ${formatZonePrice(nearestSupport.high)} 附近反应。`
         : position <= 28
-          ? `观察：能否守住 ${formatPrice(nearestSupport.low)} 并重新回到区间；若失守，等待下一支撑区域。`
+          ? `观察：能否守住 ${formatZonePrice(nearestSupport.low)} 并重新回到区间；若失守，等待下一支撑区域。`
           : `观察：上方 ${formatZone(nearestResistance)}，下方 ${formatZone(nearestSupport)}；等待价格靠近边界。`;
       return;
     }
