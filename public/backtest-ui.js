@@ -159,6 +159,7 @@
   function readSettings() {
     return {
       symbol: byId("backtest-symbol").value,
+      strategyMode: byId("backtest-strategy-mode").value,
       days: number("backtest-days", 180), capital: number("backtest-capital", 100000), risk: number("backtest-risk", 1),
       fee: number("backtest-fee", 0.04), slippage: number("backtest-slippage", 0.5), targetOne: number("backtest-target-one", 1),
       targetTwo: number("backtest-target-two", 2), split: number("backtest-split", 0.5), useRsi: byId("backtest-rsi").checked,
@@ -167,9 +168,12 @@
   }
 
   function validateSettings(settings) {
-    if (![settings.longWick, settings.engulfing, settings.reclaim].some(Boolean)) throw new Error("至少启用一种M15反转形态");
-    if (settings.targetTwo <= settings.targetOne) throw new Error("第二目标必须高于第一目标");
-    if (settings.capital <= 0 || settings.risk <= 0 || settings.risk > 5) throw new Error("请检查初始资金和单笔风险");
+    if (settings.strategyMode === "price-action") {
+      if (![settings.longWick, settings.engulfing, settings.reclaim].some(Boolean)) throw new Error("至少启用一种M15反转形态");
+      if (settings.targetTwo <= settings.targetOne) throw new Error("第二目标必须高于第一目标");
+      if (settings.risk <= 0 || settings.risk > 5) throw new Error("请检查单笔风险");
+    }
+    if (settings.capital <= 0) throw new Error("请检查初始资金");
   }
 
   function saveSettings(showMessage = true) {
@@ -181,10 +185,23 @@
     try {
       const settings = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "null");
       if (!settings) return;
-      const mapping = { symbol: "backtest-symbol", days: "backtest-days", capital: "backtest-capital", risk: "backtest-risk", fee: "backtest-fee", slippage: "backtest-slippage", targetOne: "backtest-target-one", targetTwo: "backtest-target-two", split: "backtest-split" };
+      const mapping = { symbol: "backtest-symbol", strategyMode: "backtest-strategy-mode", days: "backtest-days", capital: "backtest-capital", risk: "backtest-risk", fee: "backtest-fee", slippage: "backtest-slippage", targetOne: "backtest-target-one", targetTwo: "backtest-target-two", split: "backtest-split" };
       for (const [key, id] of Object.entries(mapping)) if (settings[key] !== undefined && byId(id)) byId(id).value = settings[key];
       for (const [key, id] of [["useRsi", "backtest-rsi"], ["longWick", "backtest-long-wick"], ["engulfing", "backtest-engulfing"], ["reclaim", "backtest-reclaim"]]) if (settings[key] !== undefined) byId(id).checked = settings[key];
     } catch (_) {}
+  }
+
+  function syncStrategyMode() {
+    const rsiMode = byId("backtest-strategy-mode")?.value === "rsi-reversal";
+    document.querySelector(".backtest-rule-set")?.classList.toggle("rsi-mode", rsiMode);
+    for (const id of ["backtest-risk", "backtest-stop-mode", "backtest-target-one", "backtest-target-two", "backtest-split", "backtest-rsi", "backtest-long-wick", "backtest-engulfing", "backtest-reclaim"]) {
+      const node = byId(id);
+      if (node) node.disabled = rsiMode || (id === "backtest-stop-mode");
+    }
+    const note = byId("backtest-method-note");
+    if (note) note.textContent = rsiMode
+      ? "仅使用已收盘M15的Wilder RSI(14)：上穿75做空、下破35平空；下穿30做多、上破60平多。下一根M15开盘成交，同时仅持1笔，按1倍账户权益名义仓位计算，手续费与滑点计入。"
+      : "H4/H1只保留多次独立触碰的强区域；同一区域每次进出周期只触发一笔，最多同时2笔、组合风险不超过2%、名义杠杆不超过4倍，手续费与滑点计入风险。";
   }
 
   const formatPct = (value) => Number.isFinite(value) ? `${value >= 0 ? "+" : ""}${value.toFixed(2)}%` : "—";
@@ -239,10 +256,18 @@
     const summary = result.summary;
     const metrics = [["backtest-net-return", summary.netReturn, formatPct], ["backtest-max-drawdown", summary.maximumDrawdown, formatPct], ["backtest-trade-count", summary.tradeCount, (value) => `${value}笔`], ["backtest-win-rate", summary.winRate, (value) => `${value.toFixed(2)}%`], ["backtest-profit-factor", summary.profitFactor, formatPF]];
     for (const [id, value, formatter] of metrics) { const node = byId(id); node.textContent = formatter(value); if (["backtest-net-return", "backtest-max-drawdown"].includes(id)) tone(node, value); }
-    byId("backtest-data-summary").textContent = `${result.data.m15.toLocaleString()}根M15 · H1 ${result.data.h1.toLocaleString()} · H4 ${result.data.h4.toLocaleString()} · 强区域 ${result.data.strongZones} · 北京时间`;
+    const rsiMode = result.options.strategyMode === "rsi-reversal";
+    byId("backtest-data-summary").textContent = rsiMode
+      ? `${result.data.m15.toLocaleString()}根M15 · Wilder RSI(14) · 下一根开盘成交 · 北京时间`
+      : `${result.data.m15.toLocaleString()}根M15 · H1 ${result.data.h1.toLocaleString()} · H4 ${result.data.h4.toLocaleString()} · 强区域 ${result.data.strongZones} · 北京时间`;
     const long = result.groups.find((group) => group.label === "支撑位做多");
     const short = result.groups.find((group) => group.label === "压力位做空");
     const range = result.stages.find((stage) => stage.label === "震荡阶段");
+    const segmentLabels = document.querySelectorAll(".backtest-segments > div > span");
+    if (segmentLabels.length >= 2) {
+      segmentLabels[0].textContent = rsiMode ? "RSI超卖做多" : "支撑位做多";
+      segmentLabels[1].textContent = rsiMode ? "RSI超买做空" : "压力位做空";
+    }
     byId("backtest-long-stats").textContent = `${long.count}笔 · ${formatPct(long.netReturn)}`;
     byId("backtest-short-stats").textContent = `${short.count}笔 · ${formatPct(short.netReturn)}`;
     byId("backtest-range-stats").textContent = range ? `${range.profitablePct.toFixed(0)}%窗口盈利` : "样本不足";
@@ -250,11 +275,15 @@
 
   function tradeRow(trade) {
     const result = trade.pnl > 0 ? "盈利" : trade.pnl < 0 ? "亏损" : "持平";
-    return `<tr><td>${formatTime(trade.openAt)}</td><td class="${trade.side === "long" ? "positive" : "negative"}">${trade.side === "long" ? "做多" : "做空"}</td><td>${trade.zoneLabel}<small>${formatPrice(trade.zoneLow)}–${formatPrice(trade.zoneHigh)}</small></td><td>${formatPrice(trade.entryPrice)}</td><td>${formatPrice(trade.initialStop)}</td><td>${formatPrice(trade.target1)}</td><td>${formatPrice(trade.target2)}</td><td class="${trade.pnl > 0 ? "positive" : trade.pnl < 0 ? "negative" : ""}">${result}<small>${formatMoney(trade.pnl)} · ${trade.rMultiple.toFixed(2)}R</small></td><td>${formatDuration(trade.closeAt - trade.openAt)}</td><td>${trade.signal}<small>${trade.rsiNote}</small></td></tr>`;
+    const rsiMode = trade.strategyMode === "rsi-reversal";
+    const area = rsiMode ? `${trade.zoneLabel}<small>${trade.rsiNote}</small>` : `${trade.zoneLabel}<small>${formatPrice(trade.zoneLow)}–${formatPrice(trade.zoneHigh)}</small>`;
+    const outcome = rsiMode ? `${formatMoney(trade.pnl)} · ${formatPct(trade.returnPct)}` : `${formatMoney(trade.pnl)} · ${trade.rMultiple.toFixed(2)}R`;
+    return `<tr><td>${formatTime(trade.openAt)}</td><td class="${trade.side === "long" ? "positive" : "negative"}">${trade.side === "long" ? "做多" : "做空"}</td><td>${area}</td><td>${formatPrice(trade.entryPrice)}</td><td>${rsiMode ? "—" : formatPrice(trade.initialStop)}</td><td>${rsiMode ? trade.target1Label : formatPrice(trade.target1)}</td><td>${rsiMode ? "—" : formatPrice(trade.target2)}</td><td class="${trade.pnl > 0 ? "positive" : trade.pnl < 0 ? "negative" : ""}">${result}<small>${outcome}</small></td><td>${formatDuration(trade.closeAt - trade.openAt)}</td><td>${trade.signal}<small>${rsiMode ? `平仓：${trade.exitReason}` : trade.rsiNote}</small></td></tr>`;
   }
 
   function renderTrades(result) {
-    nodes.trades.innerHTML = result.trades.length ? result.trades.slice().reverse().slice(0, 10).map(tradeRow).join("") : `<tr class="empty-row"><td colspan="10">该参数组合没有触发交易，请先检查区域与形态条件，不要为增加笔数盲目放宽。</td></tr>`;
+    const emptyText = result.options.strategyMode === "rsi-reversal" ? "所选区间内没有出现完整的RSI阈值穿越。" : "该参数组合没有触发交易，请先检查区域与形态条件，不要为增加笔数盲目放宽。";
+    nodes.trades.innerHTML = result.trades.length ? result.trades.slice().reverse().slice(0, 10).map(tradeRow).join("") : `<tr class="empty-row"><td colspan="10">${emptyText}</td></tr>`;
   }
 
   function computeDrawdowns(result) {
@@ -293,11 +322,16 @@
     reviewIndex = Math.max(0, Math.min(reviewIndex, trades.length - 1));
     const trade = trades[reviewIndex];
     byId("backtest-review-count").textContent = `第 ${reviewIndex + 1} / ${trades.length} 笔`;
-    const steps = [
-      ["区域确认", formatPrice((trade.zoneLow + trade.zoneHigh) / 2)], ["M15触发", trade.signal], ["进场", formatPrice(trade.entryPrice)],
-      ["第一目标", trade.target1Hit ? formatPrice(trade.target1) : "未到达"], ["第二目标", trade.exitReason], ["平仓", formatPrice(trade.closePrice)]
-    ];
-    nodes.review.innerHTML = `<div class="backtest-review-layout"><div class="backtest-review-timeline">${steps.map(([label, value], index) => `<div class="backtest-review-step"><span>${label}</span><b>${index + 1}</b><em>${value}</em><small>${index === 0 ? formatTime(trade.openAt) : ""}</small></div>`).join("")}</div><div class="backtest-review-metrics"><div><span>方向</span><b>${trade.side === "long" ? "做多" : "做空"}</b></div><div><span>结果</span><b class="${trade.pnl >= 0 ? "positive" : "negative"}">${formatMoney(trade.pnl)}</b></div><div><span>R倍数</span><b>${trade.rMultiple.toFixed(2)}R</b></div><div><span>持仓</span><b>${formatDuration(trade.closeAt - trade.openAt)}</b></div></div><div class="backtest-review-note">依据：${trade.zoneLabel}重复触碰区域内出现${trade.signal}；${trade.rsiNote}。止损设在确认结构外侧，分批目标为${currentResult.options.firstTargetR}R / ${currentResult.options.secondTargetR}R。</div></div>`;
+    const rsiMode = trade.strategyMode === "rsi-reversal";
+    const steps = rsiMode
+      ? [["M15信号", trade.signal], ["信号收盘", formatTime(trade.signalAt)], ["下根开盘", formatPrice(trade.entryPrice)], ["持仓等待", trade.target1Label], ["出场信号", trade.exitReason], ["平仓", formatPrice(trade.closePrice)]]
+      : [["区域确认", formatPrice((trade.zoneLow + trade.zoneHigh) / 2)], ["M15触发", trade.signal], ["进场", formatPrice(trade.entryPrice)], ["第一目标", trade.target1Hit ? formatPrice(trade.target1) : "未到达"], ["第二目标", trade.exitReason], ["平仓", formatPrice(trade.closePrice)]];
+    const performanceLabel = rsiMode ? "收益率" : "R倍数";
+    const performanceValue = rsiMode ? formatPct(trade.returnPct) : `${trade.rMultiple.toFixed(2)}R`;
+    const note = rsiMode
+      ? `依据：${trade.rsiNote}，${trade.signal}后在下一根M15开盘执行；${trade.exitReason}时平仓。策略没有价格止损，同时只持有一笔。`
+      : `依据：${trade.zoneLabel}重复触碰区域内出现${trade.signal}；${trade.rsiNote}。止损设在确认结构外侧，分批目标为${currentResult.options.firstTargetR}R / ${currentResult.options.secondTargetR}R。`;
+    nodes.review.innerHTML = `<div class="backtest-review-layout"><div class="backtest-review-timeline">${steps.map(([label, value], index) => `<div class="backtest-review-step"><span>${label}</span><b>${index + 1}</b><em>${value}</em><small>${index === 0 ? formatTime(trade.openAt) : ""}</small></div>`).join("")}</div><div class="backtest-review-metrics"><div><span>方向</span><b>${trade.side === "long" ? "做多" : "做空"}</b></div><div><span>结果</span><b class="${trade.pnl >= 0 ? "positive" : "negative"}">${formatMoney(trade.pnl)}</b></div><div><span>${performanceLabel}</span><b>${performanceValue}</b></div><div><span>持仓</span><b>${formatDuration(trade.closeAt - trade.openAt)}</b></div></div><div class="backtest-review-note">${note}</div></div>`;
   }
 
   function renderDetails(result) {
@@ -322,13 +356,13 @@
   }
 
   function engineOptions(settings) {
-    return { symbol: settings.symbol, initialCapital: settings.capital, riskPct: settings.risk, feeRate: settings.fee / 100, slippage: settings.slippage, firstTargetR: settings.targetOne, secondTargetR: settings.targetTwo, firstExitShare: settings.split, useRsi: settings.useRsi, enabled: { longWick: settings.longWick, engulfing: settings.engulfing, reclaim: settings.reclaim }, analysisStart: Date.now() - settings.days * DAY };
+    return { symbol: settings.symbol, strategyMode: settings.strategyMode, initialCapital: settings.capital, riskPct: settings.risk, feeRate: settings.fee / 100, slippage: settings.slippage, firstTargetR: settings.targetOne, secondTargetR: settings.targetTwo, firstExitShare: settings.split, useRsi: settings.useRsi, enabled: { longWick: settings.longWick, engulfing: settings.engulfing, reclaim: settings.reclaim }, analysisStart: Date.now() - settings.days * DAY };
   }
 
   async function runWithCandles(candles, suppliedSettings) {
     const settings = { ...readSettings(), ...(suppliedSettings || {}) };
     validateSettings(settings);
-    setProgress("本地计算H1/H4区域与M15反转信号…");
+    setProgress(settings.strategyMode === "rsi-reversal" ? "本地计算M15 RSI信号…" : "本地计算H1/H4区域与M15反转信号…");
     await new Promise((resolve) => setTimeout(resolve, 30));
     const result = engine.runBacktest(candles, engineOptions(settings));
     renderResult(result);
@@ -364,7 +398,7 @@
   function exportCsv() {
     if (!currentResult) return;
     const header = ["时间", "方向", "区域", "进场价", "止损", "第一目标", "第二目标", "平仓价", "盈亏", "R倍数", "持仓分钟", "形态"];
-    const rows = currentResult.trades.map((trade) => [new Date(trade.openAt).toISOString(), trade.side, trade.zoneLabel, trade.entryPrice, trade.initialStop, trade.target1, trade.target2, trade.closePrice, trade.pnl, trade.rMultiple, Math.round((trade.closeAt - trade.openAt) / 60_000), trade.signal]);
+    const rows = currentResult.trades.map((trade) => [new Date(trade.openAt).toISOString(), trade.side, trade.zoneLabel, trade.entryPrice, Number.isFinite(trade.initialStop) ? trade.initialStop : "", Number.isFinite(trade.target1) ? trade.target1 : trade.target1Label, Number.isFinite(trade.target2) ? trade.target2 : "", trade.closePrice, trade.pnl, Number.isFinite(trade.rMultiple) ? trade.rMultiple : "", Math.round((trade.closeAt - trade.openAt) / 60_000), trade.signal]);
     const csv = [header, ...rows].map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(",")).join("\n");
     const link = document.createElement("a");
     link.href = URL.createObjectURL(new Blob(["\ufeff", csv], { type: "text/csv;charset=utf-8" }));
@@ -381,8 +415,10 @@
   byId("backtest-export")?.addEventListener("click", exportCsv);
   byId("backtest-review-prev")?.addEventListener("click", () => { reviewIndex -= 1; renderReview(); });
   byId("backtest-review-next")?.addEventListener("click", () => { reviewIndex += 1; renderReview(); });
+  byId("backtest-strategy-mode")?.addEventListener("change", syncStrategyMode);
   byId("backtest-days")?.addEventListener("change", () => { const days = number("backtest-days", 180); byId("backtest-memory-estimate").textContent = days <= 90 ? "120 MB以内" : days <= 180 ? "220 MB以内" : "380 MB以内"; });
 
   restoreSettings();
+  syncStrategyMode();
   window.backtestApp = { run, runWithCandles, getResult: () => currentResult, loadCandles };
 })();

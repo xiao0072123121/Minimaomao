@@ -292,8 +292,143 @@
     return { windows, stages };
   }
 
+  function cleanCandles(inputCandles) {
+    return inputCandles
+      .filter((candle) => [candle.t, candle.o, candle.h, candle.l, candle.c].every(Number.isFinite))
+      .sort((left, right) => left.t - right.t);
+  }
+
+  function runRsiBacktest(inputCandles, userOptions = {}) {
+    const candles = cleanCandles(inputCandles);
+    if (candles.length < 200) throw new Error("至少需要200根M15收盘K线");
+    const options = {
+      initialCapital: 100000,
+      feeRate: 0.0004,
+      slippage: 0.5,
+      analysisStart: candles[0].t,
+      symbol: "XAUUSDT",
+      strategyMode: "rsi-reversal",
+      rsiPeriod: 14,
+      rsiShortEntry: 75,
+      rsiShortExit: 35,
+      rsiLongEntry: 30,
+      rsiLongExit: 60,
+      ...userOptions,
+      maximumConcurrent: 1,
+      maximumLeverage: 1
+    };
+    const rsi = rsiSeries(candles, options.rsiPeriod);
+    const h1 = aggregateCandles(candles, 60);
+    const h4 = aggregateCandles(candles, 240);
+    const trades = [];
+    const equityCurve = [];
+    let cash = options.initialCapital;
+    let position = null;
+
+    const finishPosition = (bar, rawPrice, reason, timestamp = bar.t) => {
+      const closed = position;
+      cash += closePart(closed, rawPrice, closed.remaining, timestamp, reason, options);
+      closed.closed = true;
+      closed.closeAt = timestamp;
+      closed.closePrice = closed.exits[closed.exits.length - 1].price;
+      closed.exitReason = reason;
+      const initialNotional = Math.abs(closed.entryPrice * closed.quantity);
+      closed.returnPct = initialNotional ? closed.pnl / initialNotional * 100 : 0;
+      closed.rMultiple = NaN;
+      trades.push(closed);
+      position = null;
+    };
+
+    for (let index = options.rsiPeriod + 2; index < candles.length; index += 1) {
+      const bar = candles[index];
+      const signalIndex = index - 1;
+      const previousSignalIndex = index - 2;
+      const signalRsi = rsi[signalIndex];
+      const previousRsi = rsi[previousSignalIndex];
+      let closedThisBar = false;
+
+      if (position && Number.isFinite(signalRsi) && Number.isFinite(previousRsi)) {
+        const exitLong = position.side === "long" && previousRsi < options.rsiLongExit && signalRsi >= options.rsiLongExit;
+        const exitShort = position.side === "short" && previousRsi > options.rsiShortExit && signalRsi <= options.rsiShortExit;
+        if (exitLong || exitShort) {
+          finishPosition(bar, bar.o, exitLong ? `RSI≥${options.rsiLongExit}` : `RSI≤${options.rsiShortExit}`);
+          closedThisBar = true;
+        }
+      }
+
+      if (!position && !closedThisBar && bar.t >= options.analysisStart && Number.isFinite(signalRsi) && Number.isFinite(previousRsi)) {
+        const shortSignal = previousRsi < options.rsiShortEntry && signalRsi >= options.rsiShortEntry;
+        const longSignal = previousRsi > options.rsiLongEntry && signalRsi <= options.rsiLongEntry;
+        const side = shortSignal ? "short" : longSignal ? "long" : null;
+        if (side && cash > 0) {
+          const rawEntry = bar.o;
+          const entryPrice = priceWithSlippage(rawEntry, side, true, options.slippage);
+          const quantity = cash / Math.max(Math.abs(entryPrice), Number.EPSILON);
+          const entryFee = Math.abs(entryPrice * quantity) * options.feeRate;
+          const entrySlippageCost = Math.abs(entryPrice - rawEntry) * quantity;
+          cash -= entryFee;
+          position = {
+            id: `rsi-${side}-${bar.t}`,
+            strategyMode: "rsi-reversal",
+            symbol: options.symbol,
+            side,
+            signal: side === "short" ? `RSI上穿${options.rsiShortEntry}` : `RSI下穿${options.rsiLongEntry}`,
+            signalAt: candles[signalIndex].ct,
+            zoneLabel: side === "short" ? "M15 RSI超买" : "M15 RSI超卖",
+            zoneLow: NaN,
+            zoneHigh: NaN,
+            openAt: bar.t,
+            entryIndex: index,
+            entryPrice,
+            quantity,
+            remaining: quantity,
+            initialStop: NaN,
+            stopPrice: NaN,
+            target1: NaN,
+            target2: NaN,
+            target1Label: side === "short" ? `RSI≤${options.rsiShortExit}` : `RSI≥${options.rsiLongExit}`,
+            target2Label: "—",
+            target1Hit: false,
+            riskAmount: NaN,
+            rsi: signalRsi,
+            rsiNote: `信号RSI ${signalRsi.toFixed(2)}`,
+            pnl: -entryFee,
+            commission: entryFee,
+            slippageCost: entrySlippageCost,
+            exits: [],
+            closed: false
+          };
+        }
+      }
+
+      if (bar.t >= options.analysisStart) {
+        const unrealized = position ? (bar.c - position.entryPrice) * position.remaining * directionValue(position.side) : 0;
+        equityCurve.push({ time: bar.ct, equity: cash + unrealized, price: bar.c });
+      }
+    }
+
+    const finalBar = candles[candles.length - 1];
+    if (position) finishPosition(finalBar, finalBar.c, "区间结束", finalBar.ct);
+    const finalEquity = cash;
+    if (equityCurve.length) equityCurve[equityCurve.length - 1].equity = finalEquity;
+    trades.sort((left, right) => left.closeAt - right.closeAt);
+    const summary = summarize(trades, equityCurve, options.initialCapital, finalEquity);
+    const rolling = rollingWindows(trades, candles, options.analysisStart, options.initialCapital);
+    return {
+      options,
+      summary,
+      trades,
+      equityCurve,
+      groups: groupedPerformance(trades, options.initialCapital),
+      windows: rolling.windows,
+      stages: rolling.stages,
+      data: { m15: candles.length, h1: h1.length, h4: h4.length, zones: 0, strongZones: 0, start: options.analysisStart, end: finalBar.ct }
+    };
+  }
+
   function runBacktest(inputCandles, userOptions = {}) {
-    const candles = inputCandles.filter((candle) => [candle.t, candle.o, candle.h, candle.l, candle.c].every(Number.isFinite)).sort((a, b) => a.t - b.t);
+    if (userOptions.strategyMode === "rsi-reversal") return runRsiBacktest(inputCandles, userOptions);
+    const candles = cleanCandles(inputCandles);
     if (candles.length < 200) throw new Error("至少需要200根M15收盘K线");
     const options = {
       initialCapital: 100000,
@@ -487,5 +622,5 @@
     };
   }
 
-  return { aggregateCandles, pivotEvents, rsiSeries, reversalSignal, isStrongZone, runBacktest, clamp };
+  return { aggregateCandles, pivotEvents, rsiSeries, reversalSignal, isStrongZone, runRsiBacktest, runBacktest, clamp };
 });

@@ -119,3 +119,30 @@ test("cost-aware risk, portfolio cap and true break-even remain internally consi
   assert.ok(maximumConcurrent(result.trades) <= result.options.maximumConcurrent);
   assert.ok(result.trades.every((trade) => trade.commission >= 0 && trade.slippageCost >= 0));
 });
+
+test("runs the fixed M15 RSI strategy without duplicate positions", () => {
+  const candles = syntheticCandles(3000);
+  const options = { strategyMode: "rsi-reversal", analysisStart: candles[200].t, feeRate: 0, slippage: 0 };
+  const result = engine.runBacktest(candles, options);
+  assert.ok(result.summary.tradeCount > 10);
+  assert.ok(result.trades.some((trade) => trade.side === "long"));
+  assert.ok(result.trades.some((trade) => trade.side === "short"));
+  assert.ok(result.trades.every((trade) => trade.strategyMode === "rsi-reversal"));
+  assert.ok(result.trades.every((trade) => trade.openAt > trade.signalAt));
+  assert.ok(result.trades.every((trade) => trade.openAt - trade.signalAt === 1));
+  assert.ok(result.trades.every((trade) => trade.exitReason === "RSI≥60" || trade.exitReason === "RSI≤35" || trade.exitReason === "区间结束"));
+  assert.ok(maximumConcurrent(result.trades) <= 1);
+  assert.equal(result.options.maximumLeverage, 1);
+});
+
+test("executes an RSI signal at the next M15 open without look-ahead", () => {
+  const candles = syntheticCandles(1000);
+  const result = engine.runRsiBacktest(candles, { analysisStart: candles[100].t, feeRate: 0, slippage: 0 });
+  assert.ok(result.trades.length > 0);
+  for (const trade of result.trades) {
+    const executionCandle = candles.find((candle) => candle.t === trade.openAt);
+    assert.ok(executionCandle);
+    assert.equal(trade.entryPrice, executionCandle.o);
+    assert.ok(trade.signalAt < trade.openAt);
+  }
+});
