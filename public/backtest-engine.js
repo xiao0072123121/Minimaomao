@@ -369,11 +369,15 @@
       }
 
       if (!position && !closedThisBar && bar.t >= options.analysisStart && Number.isFinite(signalRsi) && Number.isFinite(previousRsi)) {
-        const shortSignal = previousRsi < options.rsiShortEntry && signalRsi >= options.rsiShortEntry;
-        const longSignal = previousRsi > options.rsiLongEntry && signalRsi <= options.rsiLongEntry;
+        const signalCandle = candles[signalIndex];
+        const shortSignal = previousRsi >= options.rsiShortEntry
+          && signalRsi < previousRsi
+          && signalCandle.c < signalCandle.o;
+        const longSignal = previousRsi <= options.rsiLongEntry
+          && signalRsi > previousRsi
+          && signalCandle.c > signalCandle.o;
         const side = shortSignal ? "short" : longSignal ? "long" : null;
         if (side && cash > 0) {
-          const signalCandle = candles[signalIndex];
           const rawEntry = bar.o;
           const entryPrice = priceWithSlippage(rawEntry, side, true, options.slippage);
           const stopPrice = side === "long"
@@ -394,7 +398,7 @@
               strategyMode: "rsi-reversal",
               symbol: options.symbol,
               side,
-              signal: side === "short" ? `RSI上穿${options.rsiShortEntry}` : `RSI下穿${options.rsiLongEntry}`,
+              signal: side === "short" ? `RSI≥${options.rsiShortEntry}后转弱` : `RSI≤${options.rsiLongEntry}后转强`,
               signalAt: signalCandle.ct,
               signalLow: signalCandle.l,
               signalHigh: signalCandle.h,
@@ -415,7 +419,8 @@
               target1Hit: false,
               riskAmount: quantity * lossPerUnit,
               rsi: signalRsi,
-              rsiNote: `信号RSI ${signalRsi.toFixed(2)}`,
+              previousRsi,
+              rsiNote: `RSI ${previousRsi.toFixed(2)}→${signalRsi.toFixed(2)} · ${side === "short" ? "收阴" : "收阳"}`,
               pnl: -entryFee,
               commission: entryFee,
               slippageCost: entrySlippageCost,

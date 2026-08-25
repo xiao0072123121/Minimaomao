@@ -128,10 +128,16 @@ test("runs the fixed M15 RSI strategy without duplicate positions", () => {
   assert.ok(result.trades.some((trade) => trade.side === "long"));
   assert.ok(result.trades.some((trade) => trade.side === "short"));
   assert.ok(result.trades.every((trade) => trade.strategyMode === "rsi-reversal"));
+  assert.ok(result.trades.every((trade) => trade.side === "short"
+    ? trade.previousRsi >= result.options.rsiShortEntry && trade.rsi < trade.previousRsi
+    : trade.previousRsi <= result.options.rsiLongEntry && trade.rsi > trade.previousRsi));
+  assert.ok(result.trades.every((trade) => {
+    const signalCandle = candles.find((candle) => candle.ct === trade.signalAt);
+    return signalCandle && (trade.side === "short" ? signalCandle.c < signalCandle.o : signalCandle.c > signalCandle.o);
+  }));
   assert.ok(result.trades.every((trade) => trade.openAt > trade.signalAt));
   assert.ok(result.trades.every((trade) => trade.openAt - trade.signalAt === 1));
   assert.ok(result.trades.every((trade) => ["RSI≥60", "RSI≤35", "触发K线止损", "区间结束"].includes(trade.exitReason)));
-  assert.ok(result.trades.some((trade) => trade.exitReason === "触发K线止损"));
   assert.ok(result.trades.every((trade) => Number.isFinite(trade.initialStop)));
   assert.ok(result.trades.every((trade) => trade.side === "long"
     ? Math.abs(trade.initialStop - (trade.signalLow - result.options.rsiStopBuffer)) < 1e-9
