@@ -200,7 +200,7 @@
     }
     const note = byId("backtest-method-note");
     if (note) note.textContent = rsiMode
-      ? "仅使用已收盘M15的Wilder RSI(14)：RSI首次进入≥75，下一根开盘做空、RSI≤35平空；RSI首次进入≤30，下一根开盘做多、RSI≥60平多。每次极值过程只触发1笔；止损放在信号K线高/低点外0.01。"
+      ? "仅使用已收盘M15的Wilder RSI(14)：RSI首次进入≥75做空、≤30做多，下一根开盘成交。做多后首个确认RSI低谷低于入场RSI则止损；做空对称比较首个RSI高峰。止盈仍为做空≤35、做多≥60。"
       : "H4/H1只保留多次独立触碰的强区域；同一区域每次进出周期只触发一笔，最多同时2笔、组合风险不超过2%、名义杠杆不超过4倍，手续费与滑点计入风险。";
   }
 
@@ -278,7 +278,7 @@
     const rsiMode = trade.strategyMode === "rsi-reversal";
     const area = rsiMode ? `${trade.zoneLabel}<small>${trade.rsiNote}</small>` : `${trade.zoneLabel}<small>${formatPrice(trade.zoneLow)}–${formatPrice(trade.zoneHigh)}</small>`;
     const outcome = rsiMode ? `${formatMoney(trade.pnl)} · ${formatPct(trade.returnPct)}` : `${formatMoney(trade.pnl)} · ${trade.rMultiple.toFixed(2)}R`;
-    return `<tr><td>${formatTime(trade.openAt)}</td><td class="${trade.side === "long" ? "positive" : "negative"}">${trade.side === "long" ? "做多" : "做空"}</td><td>${area}</td><td>${formatPrice(trade.entryPrice)}</td><td>${formatPrice(trade.initialStop)}</td><td>${rsiMode ? trade.target1Label : formatPrice(trade.target1)}</td><td>${rsiMode ? "—" : formatPrice(trade.target2)}</td><td class="${trade.pnl > 0 ? "positive" : trade.pnl < 0 ? "negative" : ""}">${result}<small>${outcome}</small></td><td>${formatDuration(trade.closeAt - trade.openAt)}</td><td>${trade.signal}<small>${rsiMode ? `平仓：${trade.exitReason}` : trade.rsiNote}</small></td></tr>`;
+    return `<tr><td>${formatTime(trade.openAt)}</td><td class="${trade.side === "long" ? "positive" : "negative"}">${trade.side === "long" ? "做多" : "做空"}</td><td>${area}</td><td>${formatPrice(trade.entryPrice)}</td><td>${rsiMode ? trade.stopLabel : formatPrice(trade.initialStop)}</td><td>${rsiMode ? trade.target1Label : formatPrice(trade.target1)}</td><td>${rsiMode ? "—" : formatPrice(trade.target2)}</td><td class="${trade.pnl > 0 ? "positive" : trade.pnl < 0 ? "negative" : ""}">${result}<small>${outcome}</small></td><td>${formatDuration(trade.closeAt - trade.openAt)}</td><td>${trade.signal}<small>${rsiMode ? `平仓：${trade.exitReason}` : trade.rsiNote}</small></td></tr>`;
   }
 
   function renderTrades(result) {
@@ -329,7 +329,7 @@
     const performanceLabel = rsiMode ? "收益率" : "R倍数";
     const performanceValue = rsiMode ? formatPct(trade.returnPct) : `${trade.rMultiple.toFixed(2)}R`;
     const note = rsiMode
-      ? `依据：${trade.rsiNote}，${trade.signal}后在下一根M15开盘执行；止损设在触发K线${trade.side === "long" ? "低点" : "高点"}外侧（${formatPrice(trade.initialStop)}），或在${trade.exitReason}时平仓。`
+      ? `依据：${trade.rsiNote}，${trade.signal}后在下一根M15开盘执行；${trade.stopLabel}${Number.isFinite(trade.rsiStopObserved) ? `（已确认RSI ${trade.rsiStopObserved.toFixed(2)}）` : ""}，最终因${trade.exitReason}平仓。`
       : `依据：${trade.zoneLabel}重复触碰区域内出现${trade.signal}；${trade.rsiNote}。止损设在确认结构外侧，分批目标为${currentResult.options.firstTargetR}R / ${currentResult.options.secondTargetR}R。`;
     nodes.review.innerHTML = `<div class="backtest-review-layout"><div class="backtest-review-timeline">${steps.map(([label, value], index) => `<div class="backtest-review-step"><span>${label}</span><b>${index + 1}</b><em>${value}</em><small>${index === 0 ? formatTime(trade.openAt) : ""}</small></div>`).join("")}</div><div class="backtest-review-metrics"><div><span>方向</span><b>${trade.side === "long" ? "做多" : "做空"}</b></div><div><span>结果</span><b class="${trade.pnl >= 0 ? "positive" : "negative"}">${formatMoney(trade.pnl)}</b></div><div><span>${performanceLabel}</span><b>${performanceValue}</b></div><div><span>持仓</span><b>${formatDuration(trade.closeAt - trade.openAt)}</b></div></div><div class="backtest-review-note">${note}</div></div>`;
   }
@@ -398,7 +398,7 @@
   function exportCsv() {
     if (!currentResult) return;
     const header = ["时间", "方向", "区域", "进场价", "止损", "第一目标", "第二目标", "平仓价", "盈亏", "R倍数", "持仓分钟", "形态"];
-    const rows = currentResult.trades.map((trade) => [new Date(trade.openAt).toISOString(), trade.side, trade.zoneLabel, trade.entryPrice, Number.isFinite(trade.initialStop) ? trade.initialStop : "", Number.isFinite(trade.target1) ? trade.target1 : trade.target1Label, Number.isFinite(trade.target2) ? trade.target2 : "", trade.closePrice, trade.pnl, Number.isFinite(trade.rMultiple) ? trade.rMultiple : "", Math.round((trade.closeAt - trade.openAt) / 60_000), trade.signal]);
+    const rows = currentResult.trades.map((trade) => [new Date(trade.openAt).toISOString(), trade.side, trade.zoneLabel, trade.entryPrice, trade.strategyMode === "rsi-reversal" ? trade.stopLabel : Number.isFinite(trade.initialStop) ? trade.initialStop : "", Number.isFinite(trade.target1) ? trade.target1 : trade.target1Label, Number.isFinite(trade.target2) ? trade.target2 : "", trade.closePrice, trade.pnl, Number.isFinite(trade.rMultiple) ? trade.rMultiple : "", Math.round((trade.closeAt - trade.openAt) / 60_000), trade.signal]);
     const csv = [header, ...rows].map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(",")).join("\n");
     const link = document.createElement("a");
     link.href = URL.createObjectURL(new Blob(["\ufeff", csv], { type: "text/csv;charset=utf-8" }));

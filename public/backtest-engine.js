@@ -313,7 +313,6 @@
       rsiShortExit: 35,
       rsiLongEntry: 30,
       rsiLongExit: 60,
-      rsiStopBuffer: 0.01,
       ...userOptions,
       maximumConcurrent: 1,
       maximumLeverage: 1
@@ -344,8 +343,10 @@
       const bar = candles[index];
       const signalIndex = index - 1;
       const previousSignalIndex = index - 2;
+      const earlierSignalIndex = index - 3;
       const signalRsi = rsi[signalIndex];
       const previousRsi = rsi[previousSignalIndex];
+      const earlierRsi = rsi[earlierSignalIndex];
       let closedThisBar = false;
 
       if (position && Number.isFinite(signalRsi) && Number.isFinite(previousRsi)) {
@@ -357,14 +358,22 @@
         }
       }
 
-      if (position && !closedThisBar) {
-        const stopHit = position.side === "long" ? bar.l <= position.stopPrice : bar.h >= position.stopPrice;
-        if (stopHit) {
-          const rawStopFill = position.side === "long"
-            ? Math.min(position.stopPrice, bar.o)
-            : Math.max(position.stopPrice, bar.o);
-          finishPosition(bar, rawStopFill, "触发K线止损", bar.ct);
-          closedThisBar = true;
+      if (position && !closedThisBar && !position.rsiStopChecked
+        && previousSignalIndex >= position.entryIndex
+        && [earlierRsi, previousRsi, signalRsi].every(Number.isFinite)) {
+        const confirmedTrough = earlierRsi > previousRsi && signalRsi > previousRsi;
+        const confirmedPeak = earlierRsi < previousRsi && signalRsi < previousRsi;
+        const relevantPivot = position.side === "long" ? confirmedTrough : confirmedPeak;
+        if (relevantPivot) {
+          position.rsiStopChecked = true;
+          position.rsiStopObserved = previousRsi;
+          const stopHit = position.side === "long"
+            ? previousRsi < position.rsiStopReference
+            : previousRsi > position.rsiStopReference;
+          if (stopHit) {
+            finishPosition(bar, bar.o, position.side === "long" ? "RSI低谷下破" : "RSI高峰上破");
+            closedThisBar = true;
+          }
         }
       }
 
@@ -376,56 +385,48 @@
         if (side && cash > 0) {
           const rawEntry = bar.o;
           const entryPrice = priceWithSlippage(rawEntry, side, true, options.slippage);
-          const stopPrice = side === "long"
-            ? signalCandle.l - options.rsiStopBuffer
-            : signalCandle.h + options.rsiStopBuffer;
-          const invalidBeforeEntry = side === "long" ? rawEntry <= stopPrice : rawEntry >= stopPrice;
-          if (!invalidBeforeEntry) {
-            const quantity = cash / Math.max(Math.abs(entryPrice), Number.EPSILON);
-            const entryFee = Math.abs(entryPrice * quantity) * options.feeRate;
-            const entrySlippageCost = Math.abs(entryPrice - rawEntry) * quantity;
-            const stopExecutionPrice = priceWithSlippage(stopPrice, side, false, options.slippage);
-            const lossPerUnit = Math.abs(entryPrice - stopExecutionPrice)
-              + Math.abs(entryPrice) * options.feeRate
-              + Math.abs(stopExecutionPrice) * options.feeRate;
-            cash -= entryFee;
-            position = {
-              id: `rsi-${side}-${bar.t}`,
-              strategyMode: "rsi-reversal",
-              symbol: options.symbol,
-              side,
-              signal: side === "short" ? `RSI首次进入≥${options.rsiShortEntry}` : `RSI首次进入≤${options.rsiLongEntry}`,
-              signalAt: signalCandle.ct,
-              signalLow: signalCandle.l,
-              signalHigh: signalCandle.h,
-              zoneLabel: side === "short" ? "M15 RSI超买" : "M15 RSI超卖",
-              zoneLow: NaN,
-              zoneHigh: NaN,
-              openAt: bar.t,
-              entryIndex: index,
-              entryPrice,
-              quantity,
-              remaining: quantity,
-              initialStop: stopPrice,
-              stopPrice,
-              target1: NaN,
-              target2: NaN,
-              target1Label: side === "short" ? `RSI≤${options.rsiShortExit}` : `RSI≥${options.rsiLongExit}`,
-              target2Label: "—",
-              target1Hit: false,
-              riskAmount: quantity * lossPerUnit,
-              rsi: signalRsi,
-              previousRsi,
-              rsiNote: `RSI ${previousRsi.toFixed(2)}→${signalRsi.toFixed(2)} · 首次进入${side === "short" ? "超买" : "超卖"}区`,
-              pnl: -entryFee,
-              commission: entryFee,
-              slippageCost: entrySlippageCost,
-              exits: [],
-              closed: false
-            };
-            const sameBarStopHit = side === "long" ? bar.l <= stopPrice : bar.h >= stopPrice;
-            if (sameBarStopHit) finishPosition(bar, stopPrice, "触发K线止损", bar.ct);
-          }
+          const quantity = cash / Math.max(Math.abs(entryPrice), Number.EPSILON);
+          const entryFee = Math.abs(entryPrice * quantity) * options.feeRate;
+          const entrySlippageCost = Math.abs(entryPrice - rawEntry) * quantity;
+          cash -= entryFee;
+          position = {
+            id: `rsi-${side}-${bar.t}`,
+            strategyMode: "rsi-reversal",
+            symbol: options.symbol,
+            side,
+            signal: side === "short" ? `RSI首次进入≥${options.rsiShortEntry}` : `RSI首次进入≤${options.rsiLongEntry}`,
+            signalAt: signalCandle.ct,
+            signalLow: signalCandle.l,
+            signalHigh: signalCandle.h,
+            zoneLabel: side === "short" ? "M15 RSI超买" : "M15 RSI超卖",
+            zoneLow: NaN,
+            zoneHigh: NaN,
+            openAt: bar.t,
+            entryIndex: index,
+            entryPrice,
+            quantity,
+            remaining: quantity,
+            initialStop: NaN,
+            stopPrice: NaN,
+            stopLabel: side === "long" ? "下一RSI低谷下破" : "下一RSI高峰上破",
+            rsiStopReference: signalRsi,
+            rsiStopObserved: NaN,
+            rsiStopChecked: false,
+            target1: NaN,
+            target2: NaN,
+            target1Label: side === "short" ? `RSI≤${options.rsiShortExit}` : `RSI≥${options.rsiLongExit}`,
+            target2Label: "—",
+            target1Hit: false,
+            riskAmount: NaN,
+            rsi: signalRsi,
+            previousRsi,
+            rsiNote: `RSI ${previousRsi.toFixed(2)}→${signalRsi.toFixed(2)} · 首次进入${side === "short" ? "超买" : "超卖"}区`,
+            pnl: -entryFee,
+            commission: entryFee,
+            slippageCost: entrySlippageCost,
+            exits: [],
+            closed: false
+          };
         }
       }
 

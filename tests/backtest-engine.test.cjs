@@ -133,11 +133,12 @@ test("runs the fixed M15 RSI strategy without duplicate positions", () => {
     : trade.previousRsi > result.options.rsiLongEntry && trade.rsi <= result.options.rsiLongEntry));
   assert.ok(result.trades.every((trade) => trade.openAt > trade.signalAt));
   assert.ok(result.trades.every((trade) => trade.openAt - trade.signalAt === 1));
-  assert.ok(result.trades.every((trade) => ["RSI≥60", "RSI≤35", "触发K线止损", "区间结束"].includes(trade.exitReason)));
-  assert.ok(result.trades.every((trade) => Number.isFinite(trade.initialStop)));
-  assert.ok(result.trades.every((trade) => trade.side === "long"
-    ? Math.abs(trade.initialStop - (trade.signalLow - result.options.rsiStopBuffer)) < 1e-9
-    : Math.abs(trade.initialStop - (trade.signalHigh + result.options.rsiStopBuffer)) < 1e-9));
+  assert.ok(result.trades.every((trade) => ["RSI≥60", "RSI≤35", "RSI低谷下破", "RSI高峰上破", "区间结束"].includes(trade.exitReason)));
+  assert.ok(result.trades.every((trade) => !Number.isFinite(trade.initialStop)));
+  assert.ok(result.trades.every((trade) => trade.stopLabel === (trade.side === "long" ? "下一RSI低谷下破" : "下一RSI高峰上破")));
+  assert.ok(result.trades.filter((trade) => ["RSI低谷下破", "RSI高峰上破"].includes(trade.exitReason)).every((trade) => trade.side === "long"
+    ? trade.rsiStopObserved < trade.rsiStopReference
+    : trade.rsiStopObserved > trade.rsiStopReference));
   assert.ok(maximumConcurrent(result.trades) <= 1);
   assert.equal(result.options.maximumLeverage, 1);
 });
