@@ -130,7 +130,12 @@ test("runs the fixed M15 RSI strategy without duplicate positions", () => {
   assert.ok(result.trades.every((trade) => trade.strategyMode === "rsi-reversal"));
   assert.ok(result.trades.every((trade) => trade.openAt > trade.signalAt));
   assert.ok(result.trades.every((trade) => trade.openAt - trade.signalAt === 1));
-  assert.ok(result.trades.every((trade) => trade.exitReason === "RSI≥60" || trade.exitReason === "RSI≤35" || trade.exitReason === "区间结束"));
+  assert.ok(result.trades.every((trade) => ["RSI≥60", "RSI≤35", "触发K线止损", "区间结束"].includes(trade.exitReason)));
+  assert.ok(result.trades.some((trade) => trade.exitReason === "触发K线止损"));
+  assert.ok(result.trades.every((trade) => Number.isFinite(trade.initialStop)));
+  assert.ok(result.trades.every((trade) => trade.side === "long"
+    ? Math.abs(trade.initialStop - (trade.signalLow - result.options.rsiStopBuffer)) < 1e-9
+    : Math.abs(trade.initialStop - (trade.signalHigh + result.options.rsiStopBuffer)) < 1e-9));
   assert.ok(maximumConcurrent(result.trades) <= 1);
   assert.equal(result.options.maximumLeverage, 1);
 });
