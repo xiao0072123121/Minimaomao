@@ -239,7 +239,7 @@
     const summary = result.summary;
     const metrics = [["backtest-net-return", summary.netReturn, formatPct], ["backtest-max-drawdown", summary.maximumDrawdown, formatPct], ["backtest-trade-count", summary.tradeCount, (value) => `${value}笔`], ["backtest-win-rate", summary.winRate, (value) => `${value.toFixed(2)}%`], ["backtest-profit-factor", summary.profitFactor, formatPF]];
     for (const [id, value, formatter] of metrics) { const node = byId(id); node.textContent = formatter(value); if (["backtest-net-return", "backtest-max-drawdown"].includes(id)) tone(node, value); }
-    byId("backtest-data-summary").textContent = `${result.data.m15.toLocaleString()}根M15 · H1 ${result.data.h1.toLocaleString()} · H4 ${result.data.h4.toLocaleString()} · 北京时间`;
+    byId("backtest-data-summary").textContent = `${result.data.m15.toLocaleString()}根M15 · H1 ${result.data.h1.toLocaleString()} · H4 ${result.data.h4.toLocaleString()} · 强区域 ${result.data.strongZones} · 北京时间`;
     const long = result.groups.find((group) => group.label === "支撑位做多");
     const short = result.groups.find((group) => group.label === "压力位做空");
     const range = result.stages.find((stage) => stage.label === "震荡阶段");
@@ -302,7 +302,11 @@
 
   function renderDetails(result) {
     const summary = result.summary;
-    nodes.detailMetrics.innerHTML = [["净收益", formatPct(summary.netReturn)], ["最大回撤", formatPct(summary.maximumDrawdown)], ["交易", `${summary.tradeCount}笔`], ["胜率", `${summary.winRate.toFixed(2)}%`], ["利润因子", formatPF(summary.profitFactor)], ["平均持仓", formatDuration(summary.averageHoldMs)]].map(([label, value]) => `<div><span>${label}</span><b>${value}</b></div>`).join("");
+    nodes.detailMetrics.innerHTML = [
+      ["净收益", formatPct(summary.netReturn)], ["毛收益", formatMoney(summary.grossBeforeCosts)], ["手续费", formatMoney(-summary.commission)],
+      ["滑点成本", formatMoney(-summary.slippageCost)], ["最大回撤", formatPct(summary.maximumDrawdown)], ["交易", `${summary.tradeCount}笔`],
+      ["胜率", `${summary.winRate.toFixed(2)}%`], ["利润因子", formatPF(summary.profitFactor)], ["平均持仓", formatDuration(summary.averageHoldMs)]
+    ].map(([label, value]) => `<div><span>${label}</span><b>${value}</b></div>`).join("");
     drawRolling(result);
     nodes.stages.innerHTML = result.stages.map((stage) => `<div><span>${stage.label} · ${stage.count}个窗口</span><b>${stage.count ? `${stage.profitablePct.toFixed(1)}%盈利` : "样本不足"}</b></div>`).join("");
     const drawdowns = computeDrawdowns(result);
@@ -328,7 +332,13 @@
     await new Promise((resolve) => setTimeout(resolve, 30));
     const result = engine.runBacktest(candles, engineOptions(settings));
     renderResult(result);
-    if (loadNotice) setProgress(loadNotice, true);
+    if (loadNotice) {
+      const notice = loadNotice;
+      setProgress(notice, true);
+      setTimeout(() => {
+        if (nodes.progress?.querySelector("span")?.textContent === notice) setProgress("", false);
+      }, 3000);
+    }
     else setProgress("", false);
     return result;
   }

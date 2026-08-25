@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="dark">
   <title>Binance行情分析</title>
-  <link rel="stylesheet" href="paper-trading.css?v=20260825-price-action-backtest-v1">
+  <link rel="stylesheet" href="paper-trading.css?v=20260825-backtest-risk-fix-v1">
 </head>
 <body class="monitor-active">
   <div class="app-shell">
@@ -227,8 +227,8 @@
                 <label><span>第二目标</span><span class="backtest-input-unit"><input id="backtest-target-two" type="number" min="1" step="0.1" value="2"><em>R</em></span></label>
                 <label><span>分批止盈</span><select id="backtest-split"><option value="0.5">50% / 50%</option><option value="0.3">30% / 70%</option><option value="0.7">70% / 30%</option></select></label>
               </fieldset>
-              <div class="backtest-memory"><span>预计峰值内存</span><b id="backtest-memory-estimate">320 MB以内</b></div>
-              <p class="backtest-method-note">H4/H1只确定重复触碰区域，M15收盘后确认形态；同一时刻最多4笔持仓，先触发止损按保守顺序结算。</p>
+              <div class="backtest-memory"><span>预计峰值内存</span><b id="backtest-memory-estimate">220 MB以内</b></div>
+              <p class="backtest-method-note">H4/H1只保留多次独立触碰的强区域；同一区域每次进出周期只触发一笔，最多同时2笔、组合风险不超过2%、名义杠杆不超过4倍，手续费与滑点计入风险。</p>
             </form>
 
             <div class="backtest-results">
@@ -332,7 +332,7 @@
   <script src="liquidation-calculator.js?v=20260821-binance-liquidation-v1"></script>
   <script src="cloud-sync.js?v=20260822-cloud-sync-v1"></script>
   <script src="paper-trading.js?v=20260822-journal-columns-v1"></script>
-  <script src="backtest-engine.js?v=20260825-price-action-v1"></script>
-  <script src="backtest-ui.js?v=20260825-price-action-v2"></script>
+  <script src="backtest-engine.js?v=20260825-backtest-risk-fix-v1"></script>
+  <script src="backtest-ui.js?v=20260825-backtest-risk-fix-v1"></script>
 </body>
 </html>

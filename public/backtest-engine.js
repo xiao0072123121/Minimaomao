@@ -9,6 +9,7 @@
   const DAY = 24 * 60 * MINUTE;
   const directionValue = (side) => side === "long" ? 1 : -1;
   const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value));
+  const TOUCH_SEPARATION = 4 * 60 * MINUTE;
 
   function aggregateCandles(candles, minutes) {
     const interval = minutes * MINUTE;
@@ -53,7 +54,7 @@
     let distance = Infinity;
     for (const cluster of clusters) {
       const currentDistance = Math.abs(cluster.center - event.price);
-      if (cluster.kind === event.kind && currentDistance <= Math.max(tolerance, cluster.tolerance) && currentDistance < distance) {
+      if (cluster.active && cluster.kind === event.kind && currentDistance <= Math.max(tolerance, cluster.tolerance) && currentDistance < distance) {
         match = cluster;
         distance = currentDistance;
       }
@@ -68,20 +69,59 @@
         high: event.price + tolerance,
         tolerance,
         touches: 1,
+        touchTimes: [event.pivotAt],
         weight,
         lastEventAt: event.pivotAt,
-        timeframes: new Set([event.timeframe])
+        timeframes: new Set([event.timeframe]),
+        active: true,
+        armed: true,
+        invalidatedAt: 0
       });
       return;
     }
     match.center = (match.center * match.weight + event.price * weight) / (match.weight + weight);
     match.weight += weight;
     match.touches += 1;
+    if (!match.touchTimes.some((timestamp) => Math.abs(timestamp - event.pivotAt) < TOUCH_SEPARATION)) {
+      match.touchTimes.push(event.pivotAt);
+    }
     match.tolerance = Math.max(match.tolerance, tolerance);
     match.low = match.center - match.tolerance;
     match.high = match.center + match.tolerance;
     match.lastEventAt = Math.max(match.lastEventAt, event.pivotAt);
     match.timeframes.add(event.timeframe);
+  }
+
+  function isStrongZone(zone) {
+    const physicalTouches = zone.touchTimes?.length || 0;
+    const hasH4 = zone.timeframes.has("H4");
+    const hasH1 = zone.timeframes.has("H1");
+    if (hasH4 && hasH1) return physicalTouches >= 2;
+    if (hasH4) return physicalTouches >= 2;
+    return physicalTouches >= 3;
+  }
+
+  function updateZoneLifecycle(clusters, candle, options) {
+    for (const zone of clusters) {
+      if (!zone.active) continue;
+      const breakBuffer = Math.max(zone.tolerance * options.zoneBreakBuffer, Math.abs(zone.center) * 0.0002);
+      const broken = zone.kind === "support"
+        ? candle.c < zone.low - breakBuffer
+        : candle.c > zone.high + breakBuffer;
+      if (broken) {
+        zone.active = false;
+        zone.armed = false;
+        zone.invalidatedAt = candle.ct;
+        continue;
+      }
+      if (!zone.armed) {
+        const rearmBuffer = zone.tolerance * options.zoneRearmDistance;
+        const leftZone = zone.kind === "support"
+          ? candle.l > zone.high + rearmBuffer
+          : candle.h < zone.low - rearmBuffer;
+        if (leftZone) zone.armed = true;
+      }
+    }
   }
 
   function rsiSeries(candles, period = 14) {
@@ -120,6 +160,8 @@
     const reclaim = side === "long"
       ? candle.l < zone.low && candle.c > zone.low && candle.c > candle.o
       : candle.h > zone.high && candle.c < zone.high && candle.c < candle.o;
+    const rejectedZone = side === "long" ? candle.c >= zone.low : candle.c <= zone.high;
+    if (!rejectedZone) return null;
     if (enabled.reclaim && reclaim) return "假突破收回";
     if (enabled.engulfing && engulfing) return "M15吞没";
     if (enabled.longWick && longWick) return "M15长影线";
@@ -129,7 +171,7 @@
   function findActiveZone(clusters, kind, candle, timestamp, options) {
     const maximumAge = options.maxZoneAgeDays * DAY;
     return clusters
-      .filter((zone) => zone.kind === kind && zone.touches >= options.minimumTouches)
+      .filter((zone) => zone.active && zone.armed && zone.kind === kind && isStrongZone(zone))
       .filter((zone) => timestamp - zone.lastEventAt <= maximumAge)
       .filter((zone) => candle.h >= zone.low && candle.l <= zone.high)
       .sort((left, right) => right.weight - left.weight || Math.abs(candle.c - left.center) - Math.abs(candle.c - right.center))[0] || null;
@@ -144,16 +186,42 @@
     const exitPrice = priceWithSlippage(rawPrice, position.side, false, options.slippage);
     const gross = (exitPrice - position.entryPrice) * quantity * directionValue(position.side);
     const fee = Math.abs(exitPrice * quantity) * options.feeRate;
+    const slippageCost = Math.abs(exitPrice - rawPrice) * quantity;
     position.pnl += gross - fee;
+    position.commission += fee;
+    position.slippageCost += slippageCost;
     position.remaining -= quantity;
-    position.exits.push({ time: timestamp, price: exitPrice, quantity, reason });
+    position.exits.push({ time: timestamp, rawPrice, price: exitPrice, quantity, fee, slippageCost, reason });
     return gross - fee;
+  }
+
+  function projectedPnlAtStop(position, rawStop, options) {
+    if (position.remaining <= 0) return position.pnl;
+    const exitPrice = priceWithSlippage(rawStop, position.side, false, options.slippage);
+    const gross = (exitPrice - position.entryPrice) * position.remaining * directionValue(position.side);
+    const fee = Math.abs(exitPrice * position.remaining) * options.feeRate;
+    return position.pnl + gross - fee;
+  }
+
+  function breakEvenRawStop(position, options) {
+    const quantity = position.remaining;
+    if (quantity <= 0) return position.entryPrice;
+    let executionPrice;
+    if (position.side === "long") {
+      executionPrice = (position.entryPrice * quantity - position.pnl) / Math.max(Number.EPSILON, quantity * (1 - options.feeRate));
+      return executionPrice + options.slippage;
+    }
+    executionPrice = (position.pnl + position.entryPrice * quantity) / (quantity * (1 + options.feeRate));
+    return executionPrice - options.slippage;
   }
 
   function summarize(trades, equityCurve, initialCapital, finalEquity) {
     const wins = trades.filter((trade) => trade.pnl > 0);
     const grossProfit = wins.reduce((sum, trade) => sum + trade.pnl, 0);
     const grossLoss = Math.abs(trades.filter((trade) => trade.pnl < 0).reduce((sum, trade) => sum + trade.pnl, 0));
+    const commission = trades.reduce((sum, trade) => sum + trade.commission, 0);
+    const slippageCost = trades.reduce((sum, trade) => sum + trade.slippageCost, 0);
+    const netPnl = finalEquity - initialCapital;
     let peak = initialCapital;
     let maximumDrawdown = 0;
     for (const point of equityCurve) {
@@ -163,6 +231,10 @@
     return {
       initialCapital,
       finalEquity,
+      grossBeforeCosts: netPnl + commission + slippageCost,
+      commission,
+      slippageCost,
+      totalCosts: commission + slippageCost,
       netReturn: (finalEquity / initialCapital - 1) * 100,
       maximumDrawdown,
       tradeCount: trades.length,
@@ -235,7 +307,11 @@
       zoneWidthPct: 0.0012,
       maxZoneAgeDays: 90,
       cooldownBars: 8,
-      maximumConcurrent: 4,
+      zoneBreakBuffer: 0.25,
+      zoneRearmDistance: 0.5,
+      maximumConcurrent: 2,
+      maximumPortfolioRiskPct: 2,
+      maximumLeverage: 4,
       useRsi: true,
       enabled: { longWick: true, engulfing: true, reclaim: true },
       analysisStart: candles[0].t,
@@ -271,6 +347,7 @@
         addPivotToClusters(clusters, events[eventIndex], options.zoneWidthPct);
         eventIndex += 1;
       }
+      updateZoneLifecycle(clusters, bar, options);
 
       for (let positionIndex = open.length - 1; positionIndex >= 0; positionIndex -= 1) {
         const position = open[positionIndex];
@@ -287,7 +364,10 @@
           const quantity = Math.min(position.remaining, position.quantity * options.firstExitShare);
           cash += closePart(position, position.target1, quantity, bar.ct, "第一目标", options);
           position.target1Hit = true;
-          position.stopPrice = position.entryPrice;
+          const breakEven = breakEvenRawStop(position, options);
+          position.stopPrice = position.side === "long"
+            ? Math.max(position.stopPrice, breakEven)
+            : Math.min(position.stopPrice, breakEven);
         }
         if (target2Hit && position.remaining > 0) {
           finishPosition(position, bar, position.target2, "第二目标");
@@ -304,6 +384,7 @@
           ...candidate,
           signal: reversalSignal(candidate.side, bar, candles[index - 1], candidate.zone, options.enabled)
         })).filter((candidate) => candidate.signal)
+          .filter((candidate) => !open.some((position) => position.zoneId === candidate.zone.id))
           .filter((candidate) => index - (lastEntryByZone.get(candidate.zone.id) ?? -Infinity) >= options.cooldownBars)
           .sort((left, right) => right.zone.weight - left.zone.weight)[0];
 
@@ -316,17 +397,30 @@
             ? Math.min(qualified.zone.low, bar.l) - structuralBuffer
             : Math.max(qualified.zone.high, bar.h) + structuralBuffer;
           const riskDistance = Math.abs(entryPrice - stopPrice);
-          const riskAmount = Math.max(cash, 0) * options.riskPct / 100;
-          const quantity = riskDistance > 0 ? riskAmount / riskDistance : 0;
+          const markedEquity = cash + open.reduce((sum, position) => sum + (bar.c - position.entryPrice) * position.remaining * directionValue(position.side), 0);
+          const committedRisk = open.reduce((sum, position) => sum + Math.max(0, -projectedPnlAtStop(position, position.stopPrice, options)), 0);
+          const availableRisk = Math.max(0, markedEquity * options.maximumPortfolioRiskPct / 100 - committedRisk);
+          const riskBudget = Math.min(Math.max(markedEquity, 0) * options.riskPct / 100, availableRisk);
+          const stopExecutionPrice = priceWithSlippage(stopPrice, side, false, options.slippage);
+          const lossPerUnit = Math.abs(entryPrice - stopExecutionPrice)
+            + Math.abs(entryPrice) * options.feeRate
+            + Math.abs(stopExecutionPrice) * options.feeRate;
+          const desiredQuantity = lossPerUnit > 0 ? riskBudget / lossPerUnit : 0;
+          const openNotional = open.reduce((sum, position) => sum + Math.abs(bar.c * position.remaining), 0);
+          const availableNotional = Math.max(0, markedEquity * options.maximumLeverage - openNotional);
+          const quantity = Math.min(desiredQuantity, availableNotional / Math.max(Math.abs(entryPrice), Number.EPSILON));
           if (quantity > 0 && Number.isFinite(quantity)) {
             const direction = directionValue(side);
             const target1 = entryPrice + direction * riskDistance * options.firstTargetR;
             const target2 = entryPrice + direction * riskDistance * options.secondTargetR;
             const entryFee = Math.abs(entryPrice * quantity) * options.feeRate;
+            const entrySlippageCost = Math.abs(entryPrice - rawEntry) * quantity;
+            const plannedRisk = quantity * lossPerUnit;
             cash -= entryFee;
             const rsiValue = rsi[index];
             const position = {
               id: `${side}-${bar.t}-${qualified.zone.id}`,
+              zoneId: qualified.zone.id,
               symbol: options.symbol || "XAUUSDT",
               side,
               signal: qualified.signal,
@@ -343,21 +437,27 @@
               target1,
               target2,
               target1Hit: false,
-              riskAmount,
+              riskAmount: plannedRisk,
               rsi: rsiValue,
               rsiNote: options.useRsi && Number.isFinite(rsiValue) ? rsiValue >= 70 ? "RSI超买" : rsiValue <= 30 ? "RSI超卖" : "RSI中性" : "RSI未启用",
               pnl: -entryFee,
+              commission: entryFee,
+              slippageCost: entrySlippageCost,
               exits: [],
               closed: false
             };
             open.push(position);
+            qualified.zone.armed = false;
+            qualified.zone.lastTriggeredAt = bar.ct;
             lastEntryByZone.set(qualified.zone.id, index);
           }
         }
       }
 
-      const markedEquity = cash + open.reduce((sum, position) => sum + (bar.c - position.entryPrice) * position.remaining * directionValue(position.side), 0);
-      equityCurve.push({ time: bar.ct, equity: markedEquity, price: bar.c });
+      if (bar.t >= options.analysisStart) {
+        const markedEquity = cash + open.reduce((sum, position) => sum + (bar.c - position.entryPrice) * position.remaining * directionValue(position.side), 0);
+        equityCurve.push({ time: bar.ct, equity: markedEquity, price: bar.c });
+      }
     }
 
     const finalBar = candles[candles.length - 1];
@@ -375,9 +475,17 @@
       groups: groupedPerformance(trades, options.initialCapital),
       windows: rolling.windows,
       stages: rolling.stages,
-      data: { m15: candles.length, h1: h1.length, h4: h4.length, start: options.analysisStart, end: finalBar.ct }
+      data: {
+        m15: candles.length,
+        h1: h1.length,
+        h4: h4.length,
+        zones: clusters.length,
+        strongZones: clusters.filter((zone) => zone.active && isStrongZone(zone)).length,
+        start: options.analysisStart,
+        end: finalBar.ct
+      }
     };
   }
 
-  return { aggregateCandles, pivotEvents, rsiSeries, reversalSignal, runBacktest, clamp };
+  return { aggregateCandles, pivotEvents, rsiSeries, reversalSignal, isStrongZone, runBacktest, clamp };
 });
