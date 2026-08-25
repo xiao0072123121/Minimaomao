@@ -8,8 +8,8 @@
   const WS_ROOT = "wss://fstream.binance.com/ws";
   const HOUR = 60 * 60 * 1000;
   const FRAME_CONFIG = Object.freeze({
-    h4: { interval: "4h", ms: 4 * HOUR, limit: 240, pivotWindow: 2, label: "H4" },
-    h1: { interval: "1h", ms: HOUR, limit: 320, pivotWindow: 2, label: "H1" },
+    h4: { interval: "4h", ms: 4 * HOUR, limit: 1000, label: "H4" },
+    h1: { interval: "1h", ms: HOUR, limit: 320, label: "H1" },
     m15: { interval: "15m", ms: 15 * 60 * 1000, limit: 320, label: "M15" }
   });
   const SYMBOLS = Object.freeze({
@@ -119,7 +119,7 @@
     renderMarketAnalysis(value);
     renderVolumeProfile(value);
     window.dispatchEvent(new CustomEvent("market-price", { detail: { symbol: state.symbol, price: value, timestamp } }));
-    const nextSignature = state.zones.map((zone) => zoneRole(zone, value)).join("|");
+    const nextSignature = displayZoneSignature(value);
     if (nextSignature !== state.zoneRoleSignature) {
       renderZones();
       renderChart();
@@ -345,118 +345,35 @@
     };
   }
 
-  function median(values) {
-    const clean = values.filter(Number.isFinite).sort((a, b) => a - b);
-    if (!clean.length) return NaN;
-    const middle = Math.floor(clean.length / 2);
-    return clean.length % 2 ? clean[middle] : (clean[middle - 1] + clean[middle]) / 2;
-  }
-
-  function findPivots(frameKey, candles) {
-    const config = FRAME_CONFIG[frameKey];
-    const windowSize = config.pivotWindow;
-    const pivots = [];
-    for (let index = windowSize; index < candles.length - windowSize; index += 1) {
-      const current = candles[index];
-      const neighbors = candles.slice(index - windowSize, index + windowSize + 1);
-      const other = neighbors.filter((_, neighborIndex) => neighborIndex !== windowSize);
-      const swingHigh = other.every((candle) => current.h >= candle.h) && other.some((candle) => current.h > candle.h);
-      const swingLow = other.every((candle) => current.l <= candle.l) && other.some((candle) => current.l < candle.l);
-      if (swingHigh) pivots.push({ price: current.h, time: current.t, frame: frameKey, kind: "high" });
-      if (swingLow) pivots.push({ price: current.l, time: current.t, frame: frameKey, kind: "low" });
-    }
-    return pivots;
-  }
-
-  function frameHalfWidth(frameKey, candles, referencePrice) {
-    const recent = candles.slice(-120);
-    const medianRange = median(recent.map((candle) => candle.h - candle.l));
-    if (!Number.isFinite(medianRange) || !Number.isFinite(referencePrice)) return referencePrice * .001;
-    if (frameKey === "h4") return clamp(medianRange * .16, referencePrice * .001, referencePrice * .0045);
-    return clamp(medianRange * .2, referencePrice * .0007, referencePrice * .0032);
-  }
-
   function buildZones() {
     const fallbackPrice = state.frames.h1.at(-1)?.c || state.frames.h4.at(-1)?.c;
     const referencePrice = Number.isFinite(state.price) ? state.price : fallbackPrice;
-    if (!Number.isFinite(referencePrice)) return [];
-
-    const widths = {
-      h4: frameHalfWidth("h4", state.frames.h4, referencePrice),
-      h1: frameHalfWidth("h1", state.frames.h1, referencePrice)
-    };
-    const pivots = [
-      ...findPivots("h4", state.frames.h4),
-      ...findPivots("h1", state.frames.h1)
-    ].sort((a, b) => a.price - b.price);
-
-    const clusters = [];
-    for (const pivot of pivots) {
-      const weight = pivot.frame === "h4" ? 2 : 1;
-      const halfWidth = widths[pivot.frame];
-      let best = null;
-      let bestDistance = Infinity;
-      for (const cluster of clusters) {
-        const distance = Math.abs(cluster.center - pivot.price);
-        if (distance <= Math.max(cluster.halfWidth, halfWidth) && distance < bestDistance) {
-          best = cluster;
-          bestDistance = distance;
-        }
-      }
-      if (!best) {
-        clusters.push({
-          center: pivot.price,
-          weightedPrice: pivot.price * weight,
-          totalWeight: weight,
-          halfWidth,
-          pivots: [pivot]
-        });
-      } else {
-        best.weightedPrice += pivot.price * weight;
-        best.totalWeight += weight;
-        best.center = best.weightedPrice / best.totalWeight;
-        best.halfWidth = Math.max(best.halfWidth, halfWidth);
-        best.pivots.push(pivot);
-      }
-    }
-
-    return clusters
-      .map((cluster) => {
-        const frames = [...new Set(cluster.pivots.map((pivot) => pivot.frame))];
-        const highTouches = cluster.pivots.filter((pivot) => pivot.kind === "high").length;
-        const lowTouches = cluster.pivots.length - highTouches;
-        const newest = Math.max(...cluster.pivots.map((pivot) => pivot.time));
-        const low = cluster.center - cluster.halfWidth;
-        const high = cluster.center + cluster.halfWidth;
-        return {
-          center: cluster.center,
-          low,
-          high,
-          touches: cluster.pivots.length,
-          frames,
-          highTouches,
-          lowTouches,
-          newest,
-          confluence: frames.length > 1
-        };
-      })
-      .filter((zone) => zone.touches >= 2 || zone.confluence)
-      .filter((zone) => zone.high - zone.low <= referencePrice * .012)
-      .sort((a, b) => a.center - b.center);
+    return window.PriceActionZones?.buildZones(state.frames, referencePrice) || [];
   }
 
   function zoneRole(zone, price) {
-    if (!Number.isFinite(price)) return "unknown";
-    if (price < zone.low) return "resistance";
-    if (price > zone.high) return "support";
-    return "active";
+    return window.PriceActionZones?.zoneRole(zone, price) || "unknown";
   }
 
   function zoneQuality(zone) {
-    if (zone.confluence && zone.touches >= 3) return "H4/H1共振";
-    if (zone.frames.includes("h4") && zone.touches >= 3) return "H4重复触碰";
+    if (zone.resistanceKind === "support-flip") return "历史支撑转压力 · 尚待回测";
+    if (zone.resistanceKind === "box-upper") return "箱体上沿多次受阻";
+    if (zone.doubleBottom && zone.frames.includes("h4")) return "双底强支撑";
+    if (zone.highTouches > zone.lowTouches && zoneRole(zone, state.price) !== "resistance") return "历史压力转支撑";
+    if (zone.confluence && zone.touches >= 3) return "H4/H1共振承接";
+    if (zone.frames.includes("h4") && zone.touches >= 3) return "H4重复承接";
     if (zone.confluence) return "H4/H1重合";
     return "重复触碰";
+  }
+
+  function displayZoneSignature(referencePrice) {
+    const selection = window.PriceActionZones?.selectForDisplay(state.zones, referencePrice)
+      || { active: null, supports: [], resistances: [] };
+    return [
+      selection.active?.center,
+      ...selection.resistances.map((zone) => zone.center),
+      ...selection.supports.map((zone) => zone.center)
+    ].filter(Number.isFinite).join("|");
   }
 
   function renderMarketAnalysis(referencePrice = state.price) {
@@ -485,15 +402,11 @@
       return;
     }
 
-    const nearestResistance = state.zones
-      .filter((zone) => zoneRole(zone, currentPrice) === "resistance")
-      .sort((a, b) => a.low - b.low)[0];
-    const nearestSupport = state.zones
-      .filter((zone) => zoneRole(zone, currentPrice) === "support")
-      .sort((a, b) => b.high - a.high)[0];
-    const active = state.zones
-      .filter((zone) => zoneRole(zone, currentPrice) === "active")
-      .sort((a, b) => Math.abs(a.center - currentPrice) - Math.abs(b.center - currentPrice))[0];
+    const selection = window.PriceActionZones?.selectForDisplay(state.zones, currentPrice)
+      || { active: null, supports: [], resistances: [] };
+    const nearestResistance = selection.resistances[0];
+    const nearestSupport = selection.active || selection.supports[0];
+    const active = selection.active;
 
     resistanceElement.textContent = formatZone(nearestResistance);
     supportElement.textContent = formatZone(nearestSupport);
@@ -527,12 +440,16 @@
     }
 
     const fallbackZone = nearestResistance || nearestSupport;
-    badge.textContent = nearestResistance ? "上方有压力" : "下方有支撑";
-    summary.textContent = nearestResistance ? "当前仅识别到上方最近压力，等待下方支撑完善。" : "当前仅识别到下方最近支撑，等待上方压力完善。";
+    badge.textContent = nearestResistance ? "上方参考压力" : "暂无近端压力";
+    summary.textContent = nearestResistance
+      ? "当前没有确认的近端压力；上方仅保留历史结构参考区。"
+      : "当前未识别到明确近端压力，页面不会用普通摆动高点强行补位。";
     positionElement.textContent = "单侧区域";
     positionLabel.textContent = "等待双侧";
     marker.style.left = nearestResistance ? "78%" : "22%";
-    observation.textContent = `观察：最近有效区域为 ${formatZone(fallbackZone)}，待H1收盘后继续更新。`;
+    observation.textContent = fallbackZone
+      ? `观察：最近有效支撑为 ${formatZone(nearestSupport || fallbackZone)}；参考压力需等待价格回测后确认。`
+      : "观察：等待H4/H1形成新的重复承接或支阻互换区域。";
   }
 
   function renderVolumeProfile(referencePrice = state.price) {
@@ -574,8 +491,12 @@
       valueAreaRatio: 0.7
     }) || null;
     $("bar-counts").textContent = `H4 ${state.frames.h4.length} · H1 ${state.frames.h1.length}`;
-    const enough = state.frames.h4.length >= 30 && state.frames.h1.length >= 60;
-    $("zone-state").textContent = enough ? `已识别 ${state.zones.length} 个固定区域` : "历史样本不足，等待补充";
+    const enough = state.frames.h4.length >= 60 && state.frames.h1.length >= 60;
+    const referencePrice = Number.isFinite(state.price) ? state.price : state.frames.h1.at(-1)?.c;
+    const selection = window.PriceActionZones?.selectForDisplay(state.zones, referencePrice)
+      || { active: null, supports: [], resistances: [] };
+    const visibleCount = selection.supports.length + selection.resistances.length + (selection.active ? 1 : 0);
+    $("zone-state").textContent = enough ? `已筛选 ${visibleCount} 个主要区域` : "历史样本不足，等待补充";
     $("zone-updated").textContent = formatTime(Date.now());
     renderZones();
     renderVolumeProfile(Number.isFinite(state.price) ? state.price : state.frames.m15.at(-1)?.c);
@@ -585,7 +506,16 @@
   function zoneBandMarkup(zone, role) {
     const frames = zone.frames.map((frame) => FRAME_CONFIG[frame].label).join("/");
     const frameLabel = zone.confluence ? "H4/H1共振" : zone.frames.includes("h4") ? "H4" : "H1";
-    const title = role === "resistance" ? `${frameLabel}上方压力区` : `${frameLabel}下方支撑区`;
+    let title;
+    if (role === "resistance") {
+      title = zone.resistanceKind === "support-flip" ? "历史支阻互换参考压力" : "箱体上沿压力区";
+    } else if (zone.doubleBottom && zone.frames.includes("h4")) {
+      title = "H4双底强支撑区";
+    } else if (zone.highTouches > zone.lowTouches) {
+      title = `${frameLabel}压力转支撑区`;
+    } else {
+      title = `${frameLabel}下方支撑区`;
+    }
     return `<div class="zone-band ${role}">
       <div class="zone-band-copy">
         <strong>${escapeHtml(title)}</strong>
@@ -597,17 +527,9 @@
 
   function renderZones() {
     const referencePrice = Number.isFinite(state.price) ? state.price : state.frames.h1.at(-1)?.c || state.frames.h4.at(-1)?.c;
-    const supports = state.zones
-      .filter((zone) => zoneRole(zone, referencePrice) === "support")
-      .sort((a, b) => b.high - a.high)
-      .slice(0, 4);
-    const resistances = state.zones
-      .filter((zone) => zoneRole(zone, referencePrice) === "resistance")
-      .sort((a, b) => a.low - b.low)
-      .slice(0, 4);
-    const active = state.zones
-      .filter((zone) => zoneRole(zone, referencePrice) === "active")
-      .sort((a, b) => Math.abs(a.center - referencePrice) - Math.abs(b.center - referencePrice))[0];
+    const selection = window.PriceActionZones?.selectForDisplay(state.zones, referencePrice)
+      || { active: null, supports: [], resistances: [] };
+    const { supports, resistances, active } = selection;
 
     const upperBands = [...resistances].sort((a, b) => b.center - a.center).map((zone) => zoneBandMarkup(zone, "resistance"));
     const lowerBands = [...supports].sort((a, b) => b.center - a.center).map((zone) => zoneBandMarkup(zone, "support"));
@@ -619,7 +541,7 @@
       <b id="zone-current-price" class="zone-band-price">${escapeHtml(formatPrice(referencePrice))}</b>
     </div>`;
     $("zone-map-list").innerHTML = [...upperBands, currentBand, ...lowerBands].join("");
-    state.zoneRoleSignature = state.zones.map((zone) => zoneRole(zone, referencePrice)).join("|");
+    state.zoneRoleSignature = displayZoneSignature(referencePrice);
     renderMarketAnalysis(referencePrice);
   }
 
