@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="dark">
   <title>Binance行情分析</title>
-  <link rel="stylesheet" href="paper-trading.css?v=20260821-balanced-panels-modal-v1">
+  <link rel="stylesheet" href="paper-trading.css?v=20260825-price-action-backtest-v1">
 </head>
 <body class="monitor-active">
   <div class="app-shell">
@@ -27,6 +27,7 @@
           <button class="nav-button active" data-view="monitor" type="button">价格监控</button>
           <button class="nav-button" data-view="simulation" type="button">模拟交易</button>
           <button class="nav-button" data-view="journal" type="button">交易日志</button>
+          <button class="nav-button" data-view="backtest" type="button">回测</button>
           <button class="nav-button" data-view="weekly" type="button">周复盘</button>
           <button class="nav-button" data-view="habits" type="button">画像分析</button>
         </nav>
@@ -196,6 +197,73 @@
         </section>
       </section>
 
+      <section id="view-backtest" class="app-view backtest-view" data-app-view="backtest">
+        <div id="backtest-main-screen">
+          <div class="backtest-page-head">
+            <div><h2>策略回测</h2><p>关键区域 + M15反转 · 低内存本地计算</p></div>
+            <div class="backtest-head-actions"><button id="backtest-save-settings" class="secondary-button" type="button">保存方案</button><button id="backtest-run" class="primary-button" type="button">开始回测</button></div>
+          </div>
+          <div class="backtest-workspace">
+            <form id="backtest-form" class="panel backtest-settings">
+              <h3>回测设置</h3>
+              <div class="backtest-control-list">
+                <label><span>标的</span><select id="backtest-symbol"><option value="XAUUSDT">XAUUSDT</option><option value="BTCUSDT">BTCUSDT</option><option value="SNDKUSDT">SNDKUSDT</option><option value="SKHYNIXUSDT">SKHYNIXUSDT</option></select></label>
+                <label><span>数据区间</span><select id="backtest-days"><option value="30">最近30天</option><option value="90">最近90天</option><option value="180" selected>最近180天</option><option value="360">最近360天</option></select></label>
+                <label><span>初始资金</span><span class="backtest-input-unit"><input id="backtest-capital" type="number" min="1000" step="1000" value="100000"><em>USDT</em></span></label>
+                <label><span>单笔风险</span><span class="backtest-input-unit"><input id="backtest-risk" type="number" min="0.1" max="5" step="0.1" value="1"><em>%</em></span></label>
+                <label><span>手续费</span><span class="backtest-input-unit"><input id="backtest-fee" type="number" min="0" max="1" step="0.01" value="0.04"><em>%</em></span></label>
+                <label><span>滑点</span><span class="backtest-input-unit"><input id="backtest-slippage" type="number" min="0" step="0.1" value="0.5"><em>USDT</em></span></label>
+              </div>
+              <fieldset class="backtest-rule-set"><legend>策略条件</legend>
+                <label><input type="checkbox" checked disabled>H4/H1强支撑压力</label>
+                <label><input id="backtest-long-wick" type="checkbox" checked>M15长影线</label>
+                <label><input id="backtest-engulfing" type="checkbox" checked>M15吞没</label>
+                <label><input id="backtest-reclaim" type="checkbox" checked>假突破收回</label>
+                <label><input id="backtest-rsi" type="checkbox" checked>RSI仅作辅助</label>
+              </fieldset>
+              <fieldset class="backtest-exit-set"><legend>出场规则</legend>
+                <label><span>止损</span><select id="backtest-stop-mode"><option value="structure">结构位外侧</option></select></label>
+                <label><span>第一目标</span><span class="backtest-input-unit"><input id="backtest-target-one" type="number" min="0.5" step="0.1" value="1"><em>R</em></span></label>
+                <label><span>第二目标</span><span class="backtest-input-unit"><input id="backtest-target-two" type="number" min="1" step="0.1" value="2"><em>R</em></span></label>
+                <label><span>分批止盈</span><select id="backtest-split"><option value="0.5">50% / 50%</option><option value="0.3">30% / 70%</option><option value="0.7">70% / 30%</option></select></label>
+              </fieldset>
+              <div class="backtest-memory"><span>预计峰值内存</span><b id="backtest-memory-estimate">320 MB以内</b></div>
+              <p class="backtest-method-note">H4/H1只确定重复触碰区域，M15收盘后确认形态；同一时刻最多4笔持仓，先触发止损按保守顺序结算。</p>
+            </form>
+
+            <div class="backtest-results">
+              <div class="panel backtest-metrics" aria-label="回测核心结果">
+                <div><span>净收益</span><b id="backtest-net-return">—</b></div><div><span>最大回撤</span><b id="backtest-max-drawdown">—</b></div><div><span>交易</span><b id="backtest-trade-count">—</b></div><div><span>胜率</span><b id="backtest-win-rate">—</b></div><div><span>利润因子</span><b id="backtest-profit-factor">—</b></div>
+              </div>
+              <section class="panel backtest-chart-panel">
+                <div class="backtest-section-title"><div><h3>账户权益</h3><p id="backtest-data-summary">尚未运行回测</p></div><div class="backtest-chart-legend"><span class="strategy">本策略</span><span class="benchmark">买入持有</span></div></div>
+                <svg id="backtest-equity-chart" class="backtest-equity-chart" viewBox="0 0 960 330" preserveAspectRatio="none" aria-label="回测账户权益曲线"></svg>
+                <div id="backtest-progress" class="backtest-progress" hidden><i></i><span>准备历史数据…</span></div>
+              </section>
+              <div class="panel backtest-segments"><div><span>支撑位做多</span><b id="backtest-long-stats">—</b></div><div><span>压力位做空</span><b id="backtest-short-stats">—</b></div><div><span>震荡窗口</span><b id="backtest-range-stats">—</b></div></div>
+              <section class="panel backtest-trades-preview">
+                <div class="backtest-section-title"><div><h3>交易明细</h3><p>仅使用当时已经确认的区域和M15收盘信号</p></div><button id="backtest-open-details" class="secondary-button" type="button" disabled>查看完整报告</button></div>
+                <div class="table-wrap"><table class="data-table backtest-table"><thead><tr><th>时间</th><th>方向</th><th>入场区域</th><th>进场价</th><th>止损</th><th>第一目标</th><th>第二目标</th><th>结果</th><th>持仓时长</th><th>依据</th></tr></thead><tbody id="backtest-trades-body"><tr class="empty-row"><td colspan="10">设置参数后点击“开始回测”。</td></tr></tbody></table></div>
+              </section>
+            </div>
+          </div>
+        </div>
+
+        <div id="backtest-detail-screen" hidden>
+          <div class="backtest-page-head">
+            <div><h2>回测结果详情</h2><p id="backtest-detail-subtitle">关键区域 + M15反转</p></div>
+            <div class="backtest-head-actions"><button id="backtest-back-main" class="secondary-button" type="button">返回设置</button><button id="backtest-export" class="primary-button" type="button">导出明细</button></div>
+          </div>
+          <div id="backtest-detail-metrics" class="panel backtest-detail-metrics"></div>
+          <div class="backtest-detail-grid">
+            <section class="panel backtest-rolling-panel"><h3>30天滚动表现</h3><svg id="backtest-rolling-chart" viewBox="0 0 920 310" preserveAspectRatio="none" aria-label="30天滚动表现"></svg></section>
+            <aside class="backtest-stability-column"><section class="panel"><h3>阶段稳定性</h3><div id="backtest-stage-list" class="backtest-stage-list"></div></section><section class="panel"><h3>最大回撤阶段（前三）</h3><div id="backtest-drawdown-list" class="backtest-stage-list"></div></section></aside>
+          </div>
+          <section class="panel backtest-group-panel"><h3>分组表现</h3><div class="table-wrap"><table class="data-table"><thead><tr><th>分组</th><th>交易数</th><th>胜率</th><th>净收益</th><th>利润因子</th></tr></thead><tbody id="backtest-groups-body"></tbody></table></div></section>
+          <section class="panel backtest-trade-review"><div class="backtest-section-title"><div><h3>单笔交易复核</h3><p id="backtest-review-count">—</p></div><div><button id="backtest-review-prev" class="secondary-button" type="button">上一笔</button><button id="backtest-review-next" class="primary-button" type="button">下一笔</button></div></div><div id="backtest-review-content"></div></section>
+        </div>
+      </section>
+
         <div id="trade-modal" class="trade-modal" hidden>
           <div class="trade-modal-backdrop" data-close-trade-modal></div>
           <section class="panel trade-entry-panel trade-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="trade-entry-title">
@@ -264,5 +332,7 @@
   <script src="liquidation-calculator.js?v=20260821-binance-liquidation-v1"></script>
   <script src="cloud-sync.js?v=20260822-cloud-sync-v1"></script>
   <script src="paper-trading.js?v=20260822-journal-columns-v1"></script>
+  <script src="backtest-engine.js?v=20260825-price-action-v1"></script>
+  <script src="backtest-ui.js?v=20260825-price-action-v1"></script>
 </body>
 </html>

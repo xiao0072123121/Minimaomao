@@ -225,9 +225,18 @@ function validateBinanceRequest(url) {
       return { error: "limit参数无效" };
     }
     const requestedLimit = Number(limit || 320);
-    url.searchParams.set("limit", String(Math.min(320, Math.max(1, requestedLimit))));
+    url.searchParams.set("limit", String(Math.min(1000, Math.max(1, requestedLimit))));
+    for (const name of ["startTime", "endTime"]) {
+      const value = url.searchParams.get(name);
+      if (value !== null && (!/^\d{10,13}$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) <= 0)) {
+        return { error: `${name}参数无效` };
+      }
+    }
+    const startTime = Number(url.searchParams.get("startTime") || 0);
+    const endTime = Number(url.searchParams.get("endTime") || 0);
+    if (startTime && endTime && startTime > endTime) return { error: "历史行情起止时间无效" };
     for (const name of [...url.searchParams.keys()]) {
-      if (!["symbol", "interval", "limit"].includes(name)) return { error: `${name}参数不受支持` };
+      if (!["symbol", "interval", "limit", "startTime", "endTime"].includes(name)) return { error: `${name}参数不受支持` };
     }
   } else {
     for (const name of [...url.searchParams.keys()]) {
