@@ -10,7 +10,12 @@
   const STORE_NAME = "datasets";
   const SETTINGS_KEY = "minimaomao-backtest-settings-v1";
   const isLocal = ["localhost", "127.0.0.1"].includes(location.hostname);
-  const apiRoot = isLocal ? "https://fapi.binance.com" : `${location.origin}/api/binance`;
+  const directApiRoots = [
+    "https://fapi.binance.com",
+    "https://fapi1.binance.com",
+    "https://fapi2.binance.com"
+  ];
+  const apiRoots = isLocal ? directApiRoots : [`${location.origin}/api/binance`, ...directApiRoots];
   const byId = (id) => document.getElementById(id);
   const nodes = {
     form: byId("backtest-form"), run: byId("backtest-run"), save: byId("backtest-save-settings"),
@@ -22,6 +27,7 @@
   let currentResult = null;
   let reviewIndex = 0;
   let activeController = null;
+  let loadNotice = "";
 
   function openDatabase() {
     if (!window.indexedDB) return Promise.resolve(null);
@@ -77,14 +83,35 @@
 
   async function fetchPage(symbol, startTime, endTime, signal) {
     const query = new URLSearchParams({ symbol, interval: "15m", limit: "1000", startTime: String(startTime), endTime: String(endTime) });
-    const response = await fetch(`${apiRoot}/fapi/v1/klines?${query}`, { signal, headers: { Accept: "application/json" } });
-    if (!response.ok) throw new Error(`历史行情请求失败（${response.status}）`);
-    const payload = await response.json();
-    if (!Array.isArray(payload)) throw new Error("历史行情格式异常");
-    return payload.map(normalizeKline).filter((candle) => [candle.t, candle.o, candle.h, candle.l, candle.c, candle.ct].every(Number.isFinite));
+    const failures = [];
+    for (const root of apiRoots) {
+      try {
+        const response = await fetch(`${root}/fapi/v1/klines?${query}`, {
+          signal,
+          headers: { Accept: "application/json" },
+          cache: "no-store"
+        });
+        if (!response.ok) {
+          failures.push(`${root.includes(location.host) ? "代理" : "直连"} ${response.status}`);
+          continue;
+        }
+        const payload = await response.json();
+        if (!Array.isArray(payload)) {
+          failures.push(`${root.includes(location.host) ? "代理" : "直连"} 格式异常`);
+          continue;
+        }
+        if (!isLocal && root !== apiRoots[0]) loadNotice = "Cloudflare代理受限，已自动切换Binance直连";
+        return payload.map(normalizeKline).filter((candle) => [candle.t, candle.o, candle.h, candle.l, candle.c, candle.ct].every(Number.isFinite));
+      } catch (error) {
+        if (error.name === "AbortError") throw error;
+        failures.push(`${root.includes(location.host) ? "代理" : "直连"} 不可达`);
+      }
+    }
+    throw new Error(`历史行情同步失败（${[...new Set(failures)].join("、")}）`);
   }
 
   async function loadCandles(symbol, days, signal) {
+    loadNotice = "";
     const end = Date.now();
     const start = end - (days + 35) * DAY;
     const cache = await readCache(symbol);
@@ -99,17 +126,24 @@
     }
     const downloaded = [];
     let page = 0;
-    while (cursor < end && page < 48) {
-      page += 1;
-      setProgress(`同步历史行情 · 第 ${page} 批 · 已读取 ${(candles.length + downloaded.length).toLocaleString()} 根`);
-      const rows = await fetchPage(symbol, cursor, end, signal);
-      if (!rows.length) break;
-      downloaded.push(...rows);
-      const next = rows[rows.length - 1].t + M15;
-      if (next <= cursor) break;
-      cursor = next;
-      if (rows.length < 1000) break;
-      await new Promise((resolve) => setTimeout(resolve, 35));
+    try {
+      while (cursor < end && page < 48) {
+        page += 1;
+        setProgress(`同步历史行情 · 第 ${page} 批 · 已读取 ${(candles.length + downloaded.length).toLocaleString()} 根`);
+        const rows = await fetchPage(symbol, cursor, end, signal);
+        if (!rows.length) break;
+        downloaded.push(...rows);
+        const next = rows[rows.length - 1].t + M15;
+        if (next <= cursor) break;
+        cursor = next;
+        if (rows.length < 1000) break;
+        await new Promise((resolve) => setTimeout(resolve, 120));
+      }
+    } catch (error) {
+      if (error.name === "AbortError") throw error;
+      if (!cacheCoversStart || candles.length < 200) throw error;
+      loadNotice = `在线更新失败，已使用本地缓存（${candles.length.toLocaleString()}根）`;
+      return candles.filter((candle) => candle.t >= start);
     }
     candles = mergeCandles(candles, downloaded, start);
     if (candles.length < 200) throw new Error("可用M15历史K线不足，无法回测");
@@ -294,7 +328,8 @@
     await new Promise((resolve) => setTimeout(resolve, 30));
     const result = engine.runBacktest(candles, engineOptions(settings));
     renderResult(result);
-    setProgress("", false);
+    if (loadNotice) setProgress(loadNotice, true);
+    else setProgress("", false);
     return result;
   }
 

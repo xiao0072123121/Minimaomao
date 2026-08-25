@@ -283,7 +283,7 @@ async function handleBinanceApi(request, executionContext) {
         cf: { cacheTtl: 0, cacheEverything: false }
       });
       lastResponse = response;
-      if (!response.ok && (response.status === 418 || response.status === 429 || response.status >= 500)) continue;
+      if (!response.ok && ([403, 418, 429, 451].includes(response.status) || response.status >= 500)) continue;
       if (!response.ok) break;
 
       const body = await response.arrayBuffer();
