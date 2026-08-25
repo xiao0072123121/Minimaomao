@@ -133,14 +133,56 @@ test("runs the fixed M15 RSI strategy without duplicate positions", () => {
     : trade.previousRsi > result.options.rsiLongEntry && trade.rsi <= result.options.rsiLongEntry));
   assert.ok(result.trades.every((trade) => trade.openAt > trade.signalAt));
   assert.ok(result.trades.every((trade) => trade.openAt - trade.signalAt === 1));
-  assert.ok(result.trades.every((trade) => ["RSI≥60", "RSI≤35", "RSI低谷下破", "RSI高峰上破", "区间结束"].includes(trade.exitReason)));
+  assert.ok(result.trades.every((trade) => ["第二止盈 RSI≥70", "第二止盈 RSI≤30", "RSI低谷下破", "RSI高峰上破", "区间结束"].includes(trade.exitReason)));
   assert.ok(result.trades.every((trade) => !Number.isFinite(trade.initialStop)));
   assert.ok(result.trades.every((trade) => trade.stopLabel === (trade.side === "long" ? "下一RSI低谷下破" : "下一RSI高峰上破")));
   assert.ok(result.trades.filter((trade) => ["RSI低谷下破", "RSI高峰上破"].includes(trade.exitReason)).every((trade) => trade.side === "long"
     ? trade.rsiStopObserved < trade.rsiStopReference
     : trade.rsiStopObserved > trade.rsiStopReference));
+  assert.ok(result.trades.filter((trade) => trade.target1Hit).every((trade) => {
+    const firstExit = trade.exits.find((exit) => exit.reason === "第一止盈 RSI=50");
+    return firstExit && Math.abs(firstExit.quantity - trade.quantity * 0.5) < 1e-9;
+  }));
+  assert.ok(result.trades.every((trade) => Math.abs(trade.exits.reduce((sum, exit) => sum + exit.quantity, 0) - trade.quantity) < 1e-8));
   assert.ok(maximumConcurrent(result.trades) <= 1);
   assert.equal(result.options.maximumLeverage, 1);
+});
+
+test("splits an RSI take-profit into equal first and second exits", () => {
+  const start = Date.UTC(2026, 0, 1);
+  const candles = [];
+  let previous = 4500;
+  for (let index = 0; index < 240; index += 1) {
+    let delta = 0.1 * Math.sin(index / 5);
+    if (index === 60) delta = -80;
+    else if (index > 60 && index < 90) delta = 4;
+    if (index === 150) delta = 80;
+    else if (index > 150 && index < 185) delta = -4;
+    const open = previous;
+    const close = open + delta;
+    candles.push({
+      t: start + index * M15,
+      o: open,
+      h: Math.max(open, close) + 0.2,
+      l: Math.min(open, close) - 0.2,
+      c: close,
+      v: 100,
+      ct: start + (index + 1) * M15 - 1
+    });
+    previous = close;
+  }
+  const result = engine.runRsiBacktest(candles, {
+    analysisStart: candles[20].t,
+    feeRate: 0,
+    slippage: 0
+  });
+  const splitTrade = result.trades.find((trade) => trade.target1Hit && trade.exits.length === 2);
+  assert.ok(splitTrade);
+  assert.equal(splitTrade.exits[0].reason, "第一止盈 RSI=50");
+  assert.equal(splitTrade.exits[1].reason, splitTrade.side === "long" ? "第二止盈 RSI≥70" : "第二止盈 RSI≤30");
+  assert.ok(Math.abs(splitTrade.exits[0].quantity - splitTrade.quantity * 0.5) < 1e-9);
+  assert.ok(Math.abs(splitTrade.exits[1].quantity - splitTrade.quantity * 0.5) < 1e-9);
+  assert.ok(splitTrade.exits[0].time <= splitTrade.exits[1].time);
 });
 
 test("executes an RSI signal at the next M15 open without look-ahead", () => {

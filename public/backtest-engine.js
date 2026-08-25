@@ -310,9 +310,12 @@
       strategyMode: "rsi-reversal",
       rsiPeriod: 14,
       rsiShortEntry: 75,
-      rsiShortExit: 35,
+      rsiShortFirstExit: 50,
+      rsiShortExit: 30,
       rsiLongEntry: 30,
-      rsiLongExit: 60,
+      rsiLongFirstExit: 50,
+      rsiLongExit: 70,
+      firstExitShare: 0.5,
       ...userOptions,
       maximumConcurrent: 1,
       maximumLeverage: 1
@@ -350,10 +353,24 @@
       let closedThisBar = false;
 
       if (position && Number.isFinite(signalRsi) && Number.isFinite(previousRsi)) {
-        const exitLong = position.side === "long" && previousRsi < options.rsiLongExit && signalRsi >= options.rsiLongExit;
-        const exitShort = position.side === "short" && previousRsi > options.rsiShortExit && signalRsi <= options.rsiShortExit;
-        if (exitLong || exitShort) {
-          finishPosition(bar, bar.o, exitLong ? `RSI≥${options.rsiLongExit}` : `RSI≤${options.rsiShortExit}`);
+        const firstExitLong = position.side === "long"
+          && previousRsi < options.rsiLongFirstExit && signalRsi >= options.rsiLongFirstExit;
+        const firstExitShort = position.side === "short"
+          && previousRsi > options.rsiShortFirstExit && signalRsi <= options.rsiShortFirstExit;
+        if (!position.target1Hit && (firstExitLong || firstExitShort)) {
+          const exitQuantity = Math.min(position.remaining, position.quantity * options.firstExitShare);
+          cash += closePart(position, bar.o, exitQuantity, bar.t, "第一止盈 RSI=50", options);
+          position.target1Hit = true;
+          position.target1ExitAt = bar.t;
+          position.target1ExitPrice = position.exits[position.exits.length - 1].price;
+        }
+
+        const finalExitLong = position.side === "long"
+          && previousRsi < options.rsiLongExit && signalRsi >= options.rsiLongExit;
+        const finalExitShort = position.side === "short"
+          && previousRsi > options.rsiShortExit && signalRsi <= options.rsiShortExit;
+        if (finalExitLong || finalExitShort) {
+          finishPosition(bar, bar.o, finalExitLong ? `第二止盈 RSI≥${options.rsiLongExit}` : `第二止盈 RSI≤${options.rsiShortExit}`);
           closedThisBar = true;
         }
       }
@@ -414,8 +431,8 @@
             rsiStopChecked: false,
             target1: NaN,
             target2: NaN,
-            target1Label: side === "short" ? `RSI≤${options.rsiShortExit}` : `RSI≥${options.rsiLongExit}`,
-            target2Label: "—",
+            target1Label: "RSI=50（平50%）",
+            target2Label: side === "short" ? `RSI≤${options.rsiShortExit}（平剩余）` : `RSI≥${options.rsiLongExit}（平剩余）`,
             target1Hit: false,
             riskAmount: NaN,
             rsi: signalRsi,

@@ -200,7 +200,7 @@
     }
     const note = byId("backtest-method-note");
     if (note) note.textContent = rsiMode
-      ? "仅使用已收盘M15的Wilder RSI(14)：RSI首次进入≥75做空、≤30做多，下一根开盘成交。做多后首个确认RSI低谷低于入场RSI则止损；做空对称比较首个RSI高峰。止盈仍为做空≤35、做多≥60。"
+      ? "仅使用已收盘M15的Wilder RSI(14)：RSI首次进入≥75做空、≤30做多，下一根开盘成交。RSI到50平仓50%；剩余仓位在做空RSI≤30或做多RSI≥70时结清。RSI峰谷止损始终作用于当时剩余仓位。"
       : "H4/H1只保留多次独立触碰的强区域；同一区域每次进出周期只触发一笔，最多同时2笔、组合风险不超过2%、名义杠杆不超过4倍，手续费与滑点计入风险。";
   }
 
@@ -278,7 +278,7 @@
     const rsiMode = trade.strategyMode === "rsi-reversal";
     const area = rsiMode ? `${trade.zoneLabel}<small>${trade.rsiNote}</small>` : `${trade.zoneLabel}<small>${formatPrice(trade.zoneLow)}–${formatPrice(trade.zoneHigh)}</small>`;
     const outcome = rsiMode ? `${formatMoney(trade.pnl)} · ${formatPct(trade.returnPct)}` : `${formatMoney(trade.pnl)} · ${trade.rMultiple.toFixed(2)}R`;
-    return `<tr><td>${formatTime(trade.openAt)}</td><td class="${trade.side === "long" ? "positive" : "negative"}">${trade.side === "long" ? "做多" : "做空"}</td><td>${area}</td><td>${formatPrice(trade.entryPrice)}</td><td>${rsiMode ? trade.stopLabel : formatPrice(trade.initialStop)}</td><td>${rsiMode ? trade.target1Label : formatPrice(trade.target1)}</td><td>${rsiMode ? "—" : formatPrice(trade.target2)}</td><td class="${trade.pnl > 0 ? "positive" : trade.pnl < 0 ? "negative" : ""}">${result}<small>${outcome}</small></td><td>${formatDuration(trade.closeAt - trade.openAt)}</td><td>${trade.signal}<small>${rsiMode ? `平仓：${trade.exitReason}` : trade.rsiNote}</small></td></tr>`;
+    return `<tr><td>${formatTime(trade.openAt)}</td><td class="${trade.side === "long" ? "positive" : "negative"}">${trade.side === "long" ? "做多" : "做空"}</td><td>${area}</td><td>${formatPrice(trade.entryPrice)}</td><td>${rsiMode ? trade.stopLabel : formatPrice(trade.initialStop)}</td><td>${rsiMode ? `${trade.target1Label}<small>${trade.target1Hit ? `已执行 ${formatPrice(trade.target1ExitPrice)}` : "未执行"}</small>` : formatPrice(trade.target1)}</td><td>${rsiMode ? trade.target2Label : formatPrice(trade.target2)}</td><td class="${trade.pnl > 0 ? "positive" : trade.pnl < 0 ? "negative" : ""}">${result}<small>${outcome}</small></td><td>${formatDuration(trade.closeAt - trade.openAt)}</td><td>${trade.signal}<small>${rsiMode ? `平仓：${trade.exitReason}` : trade.rsiNote}</small></td></tr>`;
   }
 
   function renderTrades(result) {
@@ -324,12 +324,12 @@
     byId("backtest-review-count").textContent = `第 ${reviewIndex + 1} / ${trades.length} 笔`;
     const rsiMode = trade.strategyMode === "rsi-reversal";
     const steps = rsiMode
-      ? [["M15信号", trade.signal], ["信号收盘", formatTime(trade.signalAt)], ["下根开盘", formatPrice(trade.entryPrice)], ["持仓等待", trade.target1Label], ["出场信号", trade.exitReason], ["平仓", formatPrice(trade.closePrice)]]
+      ? [["M15信号", trade.signal], ["信号收盘", formatTime(trade.signalAt)], ["下根开盘", formatPrice(trade.entryPrice)], ["第一止盈", trade.target1Hit ? `${formatPrice(trade.target1ExitPrice)} · 50%` : "未执行"], ["剩余出场", trade.exitReason], ["平仓", formatPrice(trade.closePrice)]]
       : [["区域确认", formatPrice((trade.zoneLow + trade.zoneHigh) / 2)], ["M15触发", trade.signal], ["进场", formatPrice(trade.entryPrice)], ["第一目标", trade.target1Hit ? formatPrice(trade.target1) : "未到达"], ["第二目标", trade.exitReason], ["平仓", formatPrice(trade.closePrice)]];
     const performanceLabel = rsiMode ? "收益率" : "R倍数";
     const performanceValue = rsiMode ? formatPct(trade.returnPct) : `${trade.rMultiple.toFixed(2)}R`;
     const note = rsiMode
-      ? `依据：${trade.rsiNote}，${trade.signal}后在下一根M15开盘执行；${trade.stopLabel}${Number.isFinite(trade.rsiStopObserved) ? `（已确认RSI ${trade.rsiStopObserved.toFixed(2)}）` : ""}，最终因${trade.exitReason}平仓。`
+      ? `依据：${trade.rsiNote}，${trade.signal}后在下一根M15开盘执行；${trade.target1Hit ? `RSI穿越50时已平50%（${formatPrice(trade.target1ExitPrice)}）` : "第一止盈未触发"}；${trade.stopLabel}${Number.isFinite(trade.rsiStopObserved) ? `（已确认RSI ${trade.rsiStopObserved.toFixed(2)}）` : ""}，剩余仓位因${trade.exitReason}平仓。`
       : `依据：${trade.zoneLabel}重复触碰区域内出现${trade.signal}；${trade.rsiNote}。止损设在确认结构外侧，分批目标为${currentResult.options.firstTargetR}R / ${currentResult.options.secondTargetR}R。`;
     nodes.review.innerHTML = `<div class="backtest-review-layout"><div class="backtest-review-timeline">${steps.map(([label, value], index) => `<div class="backtest-review-step"><span>${label}</span><b>${index + 1}</b><em>${value}</em><small>${index === 0 ? formatTime(trade.openAt) : ""}</small></div>`).join("")}</div><div class="backtest-review-metrics"><div><span>方向</span><b>${trade.side === "long" ? "做多" : "做空"}</b></div><div><span>结果</span><b class="${trade.pnl >= 0 ? "positive" : "negative"}">${formatMoney(trade.pnl)}</b></div><div><span>${performanceLabel}</span><b>${performanceValue}</b></div><div><span>持仓</span><b>${formatDuration(trade.closeAt - trade.openAt)}</b></div></div><div class="backtest-review-note">${note}</div></div>`;
   }
