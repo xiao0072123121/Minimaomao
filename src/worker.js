@@ -6,6 +6,7 @@ const AUTH_REALM = "muti-monitor";
 const BINANCE_API_PREFIX = "/api/binance";
 const CLOUD_SYNC_PATH = "/api/sync";
 const CLOUD_ACCOUNT_ID = "primary";
+const COPY_TRADING_RELAY_PREFIX = "https://43-128-79-156.sslip.io/minimaomao-data/lead-portfolio/";
 const MAX_SYNC_BODY_BYTES = 1_500_000;
 const BINANCE_API_HOSTS = [
   "https://fapi.binance.com",
@@ -29,7 +30,7 @@ function securityHeaders() {
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
-    "X-App-Version": "20261126-six-traders"
+    "X-App-Version": "20261126-copy-relay"
   };
 }
 
@@ -328,7 +329,7 @@ export default {
     if (!(await isAuthorized(request, username, password))) return unauthorized();
     const pathname = new URL(request.url).pathname;
     if (pathname === '/api/copy-trading') {
-      const data = await copyTradingSnapshot(request, executionContext);
+      const data = await copyTradingSnapshot(request, executionContext, env.COPY_TRADING_RELAY_PREFIX || COPY_TRADING_RELAY_PREFIX);
       const {http_status, ...body} = data;
       return jsonResponse(body, http_status || 200);
     }

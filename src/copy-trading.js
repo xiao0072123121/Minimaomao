@@ -16,6 +16,10 @@ const entries = new Map();
 const pending = new Map();
 const beijing = new Intl.DateTimeFormat('sv-SE', {timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});
 
+class SourceError extends Error {
+  constructor(code,message,details = {}) { super(message); this.diagnostic = {code,...details}; }
+}
+
 function number(value) {
   if (value == null || typeof value === 'boolean' || value === '') return null;
   const parsed = Number(value);
@@ -46,7 +50,7 @@ export function normalizePosition(row) {
 }
 
 export async function readBoundedJson(response) {
-  if (response.status !== 200 || !response.body) throw new Error('币安暂未返回数据');
+  if (response.status !== 200 || !response.body) throw new SourceError('HTTP_ERROR',`数据源请求失败（HTTP ${response.status}）`,{http_status:response.status});
   const reader = response.body.getReader();
   const chunks = [];
   let length = 0;
@@ -55,7 +59,7 @@ export async function readBoundedJson(response) {
       const {done,value} = await reader.read();
       if (done) break;
       length += value.byteLength;
-      if (length > MAX_BYTES) throw new Error('币安响应超过读取上限');
+      if (length > MAX_BYTES) throw new SourceError('RESPONSE_TOO_LARGE','币安响应超过读取上限');
       chunks.push(value);
     }
   } catch (error) {
@@ -65,36 +69,48 @@ export async function readBoundedJson(response) {
   const bytes = new Uint8Array(length);
   let offset = 0;
   for (const chunk of chunks) { bytes.set(chunk,offset); offset += chunk.byteLength; }
-  return JSON.parse(new TextDecoder().decode(bytes));
+  try { return JSON.parse(new TextDecoder().decode(bytes)); }
+  catch (_) { throw new SourceError('INVALID_JSON','数据源返回了非 JSON 响应'); }
 }
 
-async function fetchSection(section,fetcher,portfolioId) {
+async function fetchSection(section,fetcher,portfolioId,prefix) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(),5000);
   try {
-    let url = PREFIX + section;
+    let url = prefix + section;
     const options = {headers:{'Content-Type':'application/json'},signal:controller.signal};
     if (section === 'detail') url += '?portfolioId=' + portfolioId;
     else {
       options.method = 'POST';
       options.body = JSON.stringify({portfolioId,pageNumber:1,pageSize:PAGE_SIZE});
     }
-    const result = await readBoundedJson(await fetcher(url,options));
-    if (result?.code !== '000000' || result.success !== true || !result.data || typeof result.data !== 'object') throw new Error('币安接口暂不可用');
+    const response = await fetcher(url,options);
+    const result = await readBoundedJson(response);
+    if (result?.code !== '000000' || result.success !== true || !result.data || typeof result.data !== 'object') throw new SourceError('BINANCE_ERROR','币安接口返回错误',{binance_code:/^[A-Za-z0-9_-]{1,24}$/.test(result?.code) ? result.code : null});
     const data = result.data;
+    let normalized;
     if (section === 'detail') {
-      if (data.leadPortfolioId !== portfolioId) throw new Error('带单组合身份不匹配');
-      return {nickname:data.nickname,status:data.status,positionShow:data.positionShow,lastTradeTime:data.lastTradeTime};
+      if (data.leadPortfolioId !== portfolioId) throw new SourceError('IDENTITY_MISMATCH','带单组合身份不匹配');
+      normalized = {nickname:data.nickname,status:data.status,positionShow:data.positionShow,lastTradeTime:data.lastTradeTime};
+    } else {
+      if (!Array.isArray(data.list) || data.list.length > PAGE_SIZE || data.list.some(row => !row || typeof row !== 'object' || Array.isArray(row))) throw new SourceError('INVALID_RECORDS','币安记录结构异常');
+      normalized = {list:data.list,total:data.total};
     }
-    if (!Array.isArray(data.list) || data.list.length > PAGE_SIZE || data.list.some(row => !row || typeof row !== 'object' || Array.isArray(row))) throw new Error('币安记录结构异常');
-    return {list:data.list,total:data.total};
+    const fetchedAt = response.headers.get('X-Source-Fetched-At');
+    const stale = response.headers.get('X-Source-Stale') === '1';
+    if (prefix !== PREFIX && (!fetchedAt || !Number.isFinite(Date.parse(fetchedAt)))) throw new SourceError('INVALID_SOURCE_TIME','采集服务缺少有效获取时间');
+    return {data:normalized,fetched_at:fetchedAt,stale};
+  } catch (error) {
+    if (error instanceof SourceError) throw error;
+    if (controller.signal.aborted) throw new SourceError('TIMEOUT','数据源请求超时（5秒）');
+    throw new SourceError('NETWORK_ERROR','服务器无法连接数据源');
   } finally { clearTimeout(timeout); }
 }
 
-export function createReader({fetcher = fetch, cache = null, now = Date.now, wait = ms => new Promise(resolve => setTimeout(resolve,ms)), memory = entries, inflight = pending} = {}) {
+export function createReader({fetcher = fetch, prefix = PREFIX, cache = null, now = Date.now, wait = ms => new Promise(resolve => setTimeout(resolve,ms)), memory = entries, inflight = pending} = {}) {
   async function load(section,portfolioId,origin,context) {
-    const cacheId = `${portfolioId}:${section}`;
-    const key = new Request(`${origin}/__lead_records_v1/${portfolioId}/${section}`);
+    const cacheId = `${prefix}:${portfolioId}:${section}`;
+    const key = new Request(`${origin}/__lead_records_v2/${encodeURIComponent(prefix)}/${portfolioId}/${section}`);
     let previous = memory.get(cacheId);
     if (!previous && cache) {
       try {
@@ -113,10 +129,10 @@ export function createReader({fetcher = fetch, cache = null, now = Date.now, wai
     const task = (async () => {
       let result;
       try {
-        const data = await fetchSection(section,fetcher,portfolioId);
-        result = {data,fetched_at:new Date(now()).toISOString(),error:null};
-      } catch (_) {
-        result = {data:previous?.data ?? null,fetched_at:previous?.fetched_at ?? null,error:'币安数据暂不可用，等待下一次刷新'};
+        const source = await fetchSection(section,fetcher,portfolioId,prefix);
+        result = {data:source.data,fetched_at:source.fetched_at || new Date(now()).toISOString(),error:source.stale ? '采集暂时失败，保留上次成功记录' : null,diagnostic:source.stale ? {code:'SOURCE_STALE',upstream_host:new URL(prefix).hostname} : null};
+      } catch (error) {
+        result = {data:previous?.data ?? null,fetched_at:previous?.fetched_at ?? null,error:error.message,diagnostic:{...error.diagnostic,upstream_host:new URL(prefix).hostname}};
       }
       result.attempt = now();
       memory.set(cacheId,result);
@@ -138,10 +154,10 @@ export function createReader({fetcher = fetch, cache = null, now = Date.now, wai
     let first = true;
     for (const [name,section,normalize] of [['orders','order-history',normalizeOrder],['positions','position-history',normalizePosition],['profile','detail',null]]) {
       // Space reads on a cold request; cached sections do not create upstream traffic.
-      if (!first && !memory.has(`${portfolioId}:${section}`)) await wait(1200);
+      if (!first && !memory.has(`${prefix}:${portfolioId}:${section}`)) await wait(1200);
       first = false;
       const saved = await load(section,portfolioId,url.origin,context);
-      const view = {status:saved.data == null ? 'unavailable' : saved.error ? 'stale' : 'ok',fetched_at:saved.fetched_at,error:saved.error};
+      const view = {status:saved.data == null ? 'unavailable' : saved.error ? 'stale' : 'ok',fetched_at:saved.fetched_at,error:saved.error,diagnostic:saved.diagnostic || null};
       if (normalize) {
         const key = name === 'orders' ? 'time_ms' : 'closed_ms';
         view.rows = (saved.data?.list || []).map(normalize).sort((a,b) => (b[key] || 0) - (a[key] || 0));
@@ -154,8 +170,8 @@ export function createReader({fetcher = fetch, cache = null, now = Date.now, wai
 }
 
 const defaultReader = createReader();
-export async function copyTradingSnapshot(request,context) {
+export async function copyTradingSnapshot(request,context,relayPrefix = null) {
   const edgeCache = typeof caches !== 'undefined' ? caches.default : null;
-  if (!edgeCache) return defaultReader(request,context);
-  return createReader({cache:edgeCache})(request,context);
+  if (!edgeCache && !relayPrefix) return defaultReader(request,context);
+  return createReader({cache:edgeCache,prefix:relayPrefix || PREFIX})(request,context);
 }

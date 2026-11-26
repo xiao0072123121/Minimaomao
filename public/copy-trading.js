@@ -50,7 +50,7 @@
   }
   function sectionState(id, data) {
     const state = byId(id);
-    state.textContent = `${data.status === 'ok' ? '已获取' : data.status === 'stale' ? '刷新失败，保留上次记录' : '数据暂不可用'} · ${data.fetched_at ? '获取于 ' + new Date(data.fetched_at).toLocaleString('sv-SE', {timeZone:'Asia/Shanghai'}) : '尚无成功记录'}`;
+    state.textContent = `${data.status === 'ok' ? '已获取' : data.status === 'stale' ? '刷新失败，保留上次记录' : '数据暂不可用'} · ${data.fetched_at ? '获取于 ' + new Date(data.fetched_at).toLocaleString('sv-SE', {timeZone:'Asia/Shanghai'}) : '尚无成功记录'}${data.status !== 'ok' && data.error ? ' · ' + data.error : ''}`;
     state.classList.toggle('copy-warning', data.status !== 'ok');
   }
   function setStatus(message, warning = false) {
@@ -126,7 +126,7 @@
       if (!data.orders || !data.positions || !Array.isArray(data.orders.rows) || !Array.isArray(data.positions.rows) || !data.profile) throw new Error('数据结构异常');
       for (const name of ['orders', 'positions', 'profile']) {
         if (data[name].status === 'unavailable' && snapshot?.[name]?.status !== 'unavailable' && snapshot?.[name]?.fetched_at) {
-          data[name] = {...snapshot[name], status:'stale', error:data[name].error};
+          data[name] = {...snapshot[name], status:'stale', error:data[name].error, diagnostic:data[name].diagnostic};
         }
       }
       snapshot = data;

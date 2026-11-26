@@ -48,13 +48,13 @@ assert.equal(normalizeOrder({avgPrice:'NaN'}).price,null);
 assert.equal(normalizePosition({}).entry_price,null);
 
 await assert.rejects(readBoundedJson(new Response(new Uint8Array(128*1024+1))),/上限/);
-await assert.rejects(readBoundedJson(new Response('',{status:202})),/暂未返回/);
+await assert.rejects(readBoundedJson(new Response('',{status:202})),/HTTP 202/);
 
 const password='local-test-password-only';
 const env={ACCESS_PASSWORD:password,ASSETS:{fetch(){throw new Error('unexpected asset access');}}};
 const unauthenticated = await worker.fetch(new Request('https://test/api/copy-trading'),env,{});
 assert.equal(unauthenticated.status,401,'new API must remain behind existing Basic authentication');
-assert.equal(unauthenticated.headers.get('X-App-Version'),'20261126-six-traders');
+assert.equal(unauthenticated.headers.get('X-App-Version'),'20261126-copy-relay');
 const auth={Authorization:'Basic '+btoa('monitor:'+password)};
 const invalid = await worker.fetch(new Request('https://test/api/copy-trading?portfolio_id=invalid',{headers:auth}),env,{});
 assert.equal(invalid.status,400);
@@ -101,3 +101,37 @@ assert.equal(multiCalls.length-beforeConcurrent,3,'concurrent reads for one trad
 assert.deepEqual(both[0].orders.rows,both[1].orders.rows);
 assert.equal((await multiReader(new Request(`https://test/api/copy-trading?portfolio_id=${PORTFOLIO_ID}&portfolio_id=${TRADERS[1].id}`))).http_status,400);
 console.log('configured traders: concurrent/cache identity isolation, independent failure fallback and single-flight checks passed');
+
+// The reproduced cloud failure must stay diagnosable, rather than look like no trades.
+const sharedMemory = new Map();
+const blockedReader = createReader({fetcher:async()=>new Response('<html>Forbidden</html>',{status:403}),wait:async()=>{},memory:sharedMemory,inflight:new Map()});
+const blocked = await blockedReader(incoming());
+assert.equal(blocked.orders.status,'unavailable');
+assert.match(blocked.orders.error,/HTTP 403/);
+assert.equal(blocked.orders.diagnostic.http_status,403);
+assert.equal(blocked.orders.diagnostic.upstream_host,'www.binance.com');
+assert.equal(blocked.orders.fetched_at,null);
+
+const sourceTime = '2026-11-26T04:00:00.000Z';
+let relayStale = false, relayHeaders = true, relayTime = time;
+const relayReader = createReader({prefix:'https://approved-relay.test/lead-portfolio/',now:()=>relayTime,wait:async()=>{},memory:sharedMemory,inflight:new Map(),fetcher:async(url,options)=>{
+  assert.equal(new URL(url).hostname,'approved-relay.test');
+  assert.equal(new Headers(options.headers).has('Authorization'),false);
+  const data = url.includes('/detail?') ? {leadPortfolioId:PORTFOLIO_ID,nickname:'relay'} : {list:url.endsWith('order-history') ? [order] : [position],total:1};
+  return new Response(JSON.stringify({code:'000000',success:true,data}),{headers:relayHeaders?{'X-Source-Fetched-At':sourceTime,'X-Source-Stale':relayStale?'1':'0'}:{}});
+}});
+const relayed = await relayReader(incoming());
+assert.equal(relayed.orders.status,'ok','direct-source failure cache must not block a different configured source');
+assert.equal(relayed.orders.rows.length,1);
+assert.equal(relayed.orders.fetched_at,sourceTime,'a cached relay response must not acquire a new timestamp');
+relayTime += 120001; relayStale = true;
+const relayOld = await relayReader(incoming());
+assert.equal(relayOld.orders.status,'stale');
+assert.equal(relayOld.orders.fetched_at,sourceTime);
+assert.equal(relayOld.orders.diagnostic.code,'SOURCE_STALE');
+relayTime += 120001; relayHeaders = false;
+const missingTime = await relayReader(incoming());
+assert.equal(missingTime.orders.status,'stale');
+assert.equal(missingTime.orders.diagnostic.code,'INVALID_SOURCE_TIME');
+assert.equal(missingTime.orders.fetched_at,sourceTime);
+console.log('cloud HTTP diagnostics, isolated source caches and honest relay timestamps passed');
