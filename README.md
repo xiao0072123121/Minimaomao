@@ -22,7 +22,7 @@ Binance 多标的价格行为监测、模拟交易与交易日志网页。
 
 ## 带单观察
 
-- “带单观察”与价格监控、模拟交易、交易日志共用主页面的 Tab 导航、面板、表格和按钮样式；点击后在当前页面下方显示，不跳转独立页面，沿用现有 Basic 登录保护。
+- “带单观察”与价格监控、模拟交易、交易日志共用主页面的 Tab 导航、面板、表格和按钮样式；点击后在当前页面下方显示，不跳转独立页面，可免登录访问。
 - 只有该 Tab 可见时才读取和自动刷新带单记录；切换 Tab 保留记录和品种筛选。`/#copy-trading` 可直接打开，原 `copy-trading.html` 链接跳转至此 Tab。
 - 可切换熬鹰资本 `5075281354358777856`、发烧好了呢 `5271501457743196416`、Bran Brandon `5126298543040831233`、Btc星辰 `4751838302089254401`、Sky株式会社 `4532994172262753536`、鎏渊 `5108371059752839168`；仅查询当前选择的带单员公开资料、最近20条操作和20条平仓历史。
 - 服务端只接受已配置的组合 ID，缓存和失败冷却按带单员隔离；前端分别保留各人的记录与品种筛选，切换时取消旧请求并拒绝过期响应覆盖当前选择。不读取用户账户、不操作真实订单。
@@ -59,7 +59,7 @@ Worker只允许代理以下Binance接口：
 
 ## Cloudflare Workers 部署
 
-本项目使用一个轻量 Worker 做密码校验，并通过 Workers Static Assets 提供网页，不需要构建步骤。
+本项目使用一个轻量 Worker 提供公开行情接口，并通过 Workers Static Assets 提供网页，不需要构建步骤。
 
 - Worker 名称：`muti-monitor`
 - 生产分支：`main`
@@ -69,12 +69,4 @@ Worker只允许代理以下Binance接口：
 
 ## 隐私
 
-仓库不包含部署私钥、Cloudflare凭据或访问密码。Worker采用HTTP Basic Authentication。
-
-在 Cloudflare Worker 的 `Settings` > `Variables and Secrets` 中添加：
-
-- Type：`Secret`
-- Name：`ACCESS_PASSWORD`
-- Value：至少12个字符
-
-默认用户名是 `monitor`；可通过文本变量 `ACCESS_USERNAME` 修改。
+行情分析主页面、带单观察及其公开数据接口免登录。新页面的模拟交易记录保存在当前浏览器。旧云同步接口 `/api/sync` 和未公开的页面仍要求原有 HTTP Basic 凭据，云端日志未开放给访客。原 `ACCESS_PASSWORD` 和可选的 `ACCESS_USERNAME` 继续保护这些资源。

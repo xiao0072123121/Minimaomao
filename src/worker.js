@@ -20,6 +20,12 @@ const BINANCE_ENDPOINTS = new Set([
 ]);
 const BINANCE_SYMBOLS = new Set(["XAUUSDT", "BTCUSDT", "SNDKUSDT", "SKHYNIXUSDT"]);
 const BINANCE_INTERVALS = new Set(["15m", "1h", "4h"]);
+const PUBLIC_ASSETS = new Set([
+  "/", "/index", "/index.html", "/copy-trading", "/copy-trading.html",
+  "/paper-trading.css", "/paper-trading.js", "/binance-xau.js", "/price-action-zones.js",
+  "/volume-profile.js", "/liquidation-calculator.js", "/cloud-sync.js",
+  "/copy-trading.js", "/copy-trading-records.js", "/robots.txt"
+]);
 
 const encoder = new TextEncoder();
 let cloudSchemaReady = null;
@@ -30,7 +36,7 @@ function securityHeaders() {
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
-    "X-App-Version": "20261126-entry-columns"
+    "X-App-Version": "20261126-public-dashboard"
   };
 }
 
@@ -47,13 +53,13 @@ function setupRequired() {
   );
 }
 
-function unauthorized() {
+function unauthorized({ challenge = true } = {}) {
   return new Response("需要输入账号和密码。", {
     status: 401,
     headers: {
       ...securityHeaders(),
       "Content-Type": "text/plain; charset=UTF-8",
-      "WWW-Authenticate": `Basic realm="${AUTH_REALM}", charset="UTF-8"`
+      ...(challenge ? { "WWW-Authenticate": `Basic realm="${AUTH_REALM}", charset="UTF-8"` } : {})
     }
   });
 }
@@ -101,12 +107,12 @@ async function isAuthorized(request, username, password) {
   return usernameMatches && passwordMatches;
 }
 
-function protectAssetResponse(response) {
+function protectAssetResponse(response, { authenticated = true } = {}) {
   const headers = new Headers(response.headers);
   for (const [name, value] of Object.entries(securityHeaders())) {
     headers.set(name, value);
   }
-  headers.set("Vary", "Authorization");
+  if (authenticated) headers.set("Vary", "Authorization");
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
@@ -319,24 +325,30 @@ async function handleBinanceApi(request, executionContext) {
 
 export default {
   async fetch(request, env, executionContext) {
-    const password = typeof env.ACCESS_PASSWORD === "string" ? env.ACCESS_PASSWORD : "";
-    if (password.length < MINIMUM_PASSWORD_LENGTH) return setupRequired();
-
-    const username = typeof env.ACCESS_USERNAME === "string" && env.ACCESS_USERNAME.trim()
-      ? env.ACCESS_USERNAME.trim()
-      : DEFAULT_USERNAME;
-
-    if (!(await isAuthorized(request, username, password))) return unauthorized();
     const pathname = new URL(request.url).pathname;
     if (pathname === '/api/copy-trading') {
       const data = await copyTradingSnapshot(request, executionContext, env.COPY_TRADING_RELAY_PREFIX || COPY_TRADING_RELAY_PREFIX);
       const {http_status, ...body} = data;
       return jsonResponse(body, http_status || 200);
     }
-    if (pathname === CLOUD_SYNC_PATH) return handleCloudSync(request, env);
-    if (pathname.startsWith(BINANCE_API_PREFIX)) {
+    if (pathname.startsWith(BINANCE_API_PREFIX) && BINANCE_ENDPOINTS.has(pathname.slice(BINANCE_API_PREFIX.length))) {
       return handleBinanceApi(request, executionContext);
     }
+    if (request.method === 'GET' || request.method === 'HEAD') {
+      if (pathname === '/favicon.ico') return new Response(null, {status:204,headers:securityHeaders()});
+      if (PUBLIC_ASSETS.has(pathname)) return protectAssetResponse(await env.ASSETS.fetch(request), {authenticated:false});
+    }
+
+    // Only the dashboard and its public data are exempt from the existing login.
+    const password = typeof env.ACCESS_PASSWORD === "string" ? env.ACCESS_PASSWORD : "";
+    if (password.length < MINIMUM_PASSWORD_LENGTH) return setupRequired();
+    const username = typeof env.ACCESS_USERNAME === "string" && env.ACCESS_USERNAME.trim()
+      ? env.ACCESS_USERNAME.trim()
+      : DEFAULT_USERNAME;
+    if (!(await isAuthorized(request, username, password))) return unauthorized({challenge:pathname !== CLOUD_SYNC_PATH});
+
+    if (pathname === CLOUD_SYNC_PATH) return handleCloudSync(request, env);
+    if (pathname.startsWith(BINANCE_API_PREFIX)) return handleBinanceApi(request, executionContext);
     return protectAssetResponse(await env.ASSETS.fetch(request));
   }
 };

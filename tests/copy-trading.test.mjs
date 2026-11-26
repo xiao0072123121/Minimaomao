@@ -50,17 +50,42 @@ assert.equal(normalizePosition({}).entry_price,null);
 await assert.rejects(readBoundedJson(new Response(new Uint8Array(128*1024+1))),/上限/);
 await assert.rejects(readBoundedJson(new Response('',{status:202})),/HTTP 202/);
 
-const password='local-test-password-only';
-const env={ACCESS_PASSWORD:password,ASSETS:{fetch(){throw new Error('unexpected asset access');}}};
-const unauthenticated = await worker.fetch(new Request('https://test/api/copy-trading'),env,{});
-assert.equal(unauthenticated.status,401,'new API must remain behind existing Basic authentication');
-assert.equal(unauthenticated.headers.get('X-App-Version'),'20261126-entry-columns');
-const auth={Authorization:'Basic '+btoa('monitor:'+password)};
-const invalid = await worker.fetch(new Request('https://test/api/copy-trading?portfolio_id=invalid',{headers:auth}),env,{});
+const env={ASSETS:{fetch(){return new Response('dashboard');}}};
+const page = await worker.fetch(new Request('https://test/'),env,{});
+assert.equal(page.status,200,'homepage must open without credentials or password configuration');
+assert.equal(page.headers.has('WWW-Authenticate'),false);
+assert.equal(await page.text(),'dashboard');
+const invalid = await worker.fetch(new Request('https://test/api/copy-trading?portfolio_id=invalid'),env,{});
 assert.equal(invalid.status,400);
-const badMethod = await worker.fetch(new Request('https://test/api/copy-trading',{headers:auth,method:'POST'}),env,{});
+const badMethod = await worker.fetch(new Request('https://test/api/copy-trading',{method:'POST'}),env,{});
 assert.equal(badMethod.status,405);
-console.log('copy trading: source identity, size bounds, auth, method restriction, cache/backoff, timestamps and direction checks passed');
+const invalidMarket = await worker.fetch(new Request('https://test/api/binance/fapi/v1/ticker/price?symbol=UNKNOWN'),env,{});
+assert.equal(invalidMarket.status,400,'public market requests must still use the symbol allowlist');
+const testPassword = 'local-test-password-only';
+const privateEnv = {...env, ACCESS_PASSWORD:testPassword};
+const report = await worker.fetch(new Request('https://test/gold-event-report.html'),privateEnv,{});
+assert.equal(report.status,401,'unlisted assets must still require authentication');
+for (const method of ['GET','PUT']) {
+  const sync = await worker.fetch(new Request('https://test/api/sync',{method}),{
+    ...privateEnv, get TRADING_DB(){ throw new Error('public request must not access private journal data'); }
+  },{});
+  assert.equal(sync.status,401,'public requests must not read or change shared journal data');
+  assert.equal(sync.headers.has('WWW-Authenticate'),false);
+}
+const privateSync = await worker.fetch(new Request('https://test/api/sync',{
+  headers:{Authorization:'Basic '+btoa('monitor:'+testPassword)}
+}),{
+  ...privateEnv, TRADING_DB:{prepare(sql){
+    if (sql.startsWith('CREATE TABLE')) return {run:async()=>({success:true})};
+    return {bind(account){
+      assert.equal(account,'primary');
+      return {first:async()=>({revision:1,payload:JSON.stringify({capital:100000,trades:[],deletedTrades:{}}),updated_at:time})};
+    }};
+  }}
+},{});
+assert.equal(privateSync.status,200,'the private journal remains available with valid credentials');
+assert.equal((await privateSync.json()).revision,1);
+console.log('copy trading: public entry, private journal isolation, source identity, size bounds, method restrictions and cache checks passed');
 
 // Distinct portfolios must never share rows, profile data, stale fallbacks or pending reads.
 const multiCalls = [], failingIds = new Set();
