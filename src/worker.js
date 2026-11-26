@@ -1,3 +1,5 @@
+import { copyTradingSnapshot } from './copy-trading.js';
+
 const DEFAULT_USERNAME = "monitor";
 const MINIMUM_PASSWORD_LENGTH = 12;
 const AUTH_REALM = "muti-monitor";
@@ -26,7 +28,8 @@ function securityHeaders() {
     "Cache-Control": "private, no-store",
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
-    "X-Frame-Options": "DENY"
+    "X-Frame-Options": "DENY",
+    "X-App-Version": "20261126-copy-observer"
   };
 }
 
@@ -324,6 +327,11 @@ export default {
 
     if (!(await isAuthorized(request, username, password))) return unauthorized();
     const pathname = new URL(request.url).pathname;
+    if (pathname === '/api/copy-trading') {
+      const data = await copyTradingSnapshot(request, executionContext);
+      const {http_status, ...body} = data;
+      return jsonResponse(body, http_status || 200);
+    }
     if (pathname === CLOUD_SYNC_PATH) return handleCloudSync(request, env);
     if (pathname.startsWith(BINANCE_API_PREFIX)) {
       return handleBinanceApi(request, executionContext);
