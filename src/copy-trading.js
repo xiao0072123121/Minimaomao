@@ -1,5 +1,11 @@
 // Anonymous public lead records only. Incoming account credentials are never forwarded.
 export const PORTFOLIO_ID = '5075281354358777856';
+export const TRADERS = Object.freeze([
+  {id:PORTFOLIO_ID,name:'熬鹰资本'},
+  {id:'5271501457743196416',name:'发烧好了呢'},
+  {id:'5126298543040831233',name:'Bran Brandon'},
+  {id:'4751838302089254401',name:'Btc星辰'},
+]);
 export const REFRESH_SECONDS = 120;
 const PREFIX = 'https://www.binance.com/bapi/futures/v1/friendly/future/copy-trade/lead-portfolio/';
 const MAX_BYTES = 128 * 1024;
@@ -60,22 +66,22 @@ export async function readBoundedJson(response) {
   return JSON.parse(new TextDecoder().decode(bytes));
 }
 
-async function fetchSection(section,fetcher) {
+async function fetchSection(section,fetcher,portfolioId) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(),5000);
   try {
     let url = PREFIX + section;
     const options = {headers:{'Content-Type':'application/json'},signal:controller.signal};
-    if (section === 'detail') url += '?portfolioId=' + PORTFOLIO_ID;
+    if (section === 'detail') url += '?portfolioId=' + portfolioId;
     else {
       options.method = 'POST';
-      options.body = JSON.stringify({portfolioId:PORTFOLIO_ID,pageNumber:1,pageSize:PAGE_SIZE});
+      options.body = JSON.stringify({portfolioId,pageNumber:1,pageSize:PAGE_SIZE});
     }
     const result = await readBoundedJson(await fetcher(url,options));
     if (result?.code !== '000000' || result.success !== true || !result.data || typeof result.data !== 'object') throw new Error('币安接口暂不可用');
     const data = result.data;
     if (section === 'detail') {
-      if (data.leadPortfolioId !== PORTFOLIO_ID) throw new Error('带单组合身份不匹配');
+      if (data.leadPortfolioId !== portfolioId) throw new Error('带单组合身份不匹配');
       return {nickname:data.nickname,status:data.status,positionShow:data.positionShow,lastTradeTime:data.lastTradeTime};
     }
     if (!Array.isArray(data.list) || data.list.length > PAGE_SIZE || data.list.some(row => !row || typeof row !== 'object' || Array.isArray(row))) throw new Error('币安记录结构异常');
@@ -84,9 +90,10 @@ async function fetchSection(section,fetcher) {
 }
 
 export function createReader({fetcher = fetch, cache = null, now = Date.now, wait = ms => new Promise(resolve => setTimeout(resolve,ms)), memory = entries, inflight = pending} = {}) {
-  async function load(section,origin,context) {
-    const key = new Request(`${origin}/__lead_records_v1/${PORTFOLIO_ID}/${section}`);
-    let previous = memory.get(section);
+  async function load(section,portfolioId,origin,context) {
+    const cacheId = `${portfolioId}:${section}`;
+    const key = new Request(`${origin}/__lead_records_v1/${portfolioId}/${section}`);
+    let previous = memory.get(cacheId);
     if (!previous && cache) {
       try {
         const response = await cache.match(key);
@@ -97,40 +104,41 @@ export function createReader({fetcher = fetch, cache = null, now = Date.now, wai
       } catch (_) { /* A missing or unusable edge cache does not make up data. */ }
     }
     if (previous && now() - previous.attempt < REFRESH_SECONDS * 1000) {
-      memory.set(section,previous);
+      memory.set(cacheId,previous);
       return previous;
     }
-    if (inflight.has(section)) return inflight.get(section);
+    if (inflight.has(cacheId)) return inflight.get(cacheId);
     const task = (async () => {
       let result;
       try {
-        const data = await fetchSection(section,fetcher);
+        const data = await fetchSection(section,fetcher,portfolioId);
         result = {data,fetched_at:new Date(now()).toISOString(),error:null};
       } catch (_) {
         result = {data:previous?.data ?? null,fetched_at:previous?.fetched_at ?? null,error:'币安数据暂不可用，等待下一次刷新'};
       }
       result.attempt = now();
-      memory.set(section,result);
+      memory.set(cacheId,result);
       if (cache) {
         const write = cache.put(key,new Response(JSON.stringify(result),{headers:{'Content-Type':'application/json','Cache-Control':'public, max-age=86400'}})).catch(() => {});
         if (context?.waitUntil) context.waitUntil(write); else await write;
       }
       return result;
     })();
-    inflight.set(section,task);
-    try { return await task; } finally { inflight.delete(section); }
+    inflight.set(cacheId,task);
+    try { return await task; } finally { inflight.delete(cacheId); }
   }
   return async function snapshot(request,context) {
     const url = new URL(request.url);
     if (request.method !== 'GET') return {error:'仅支持GET请求',http_status:405};
-    if (url.search && [...url.searchParams].some(([key,value]) => key !== 'portfolio_id' || value !== PORTFOLIO_ID)) return {error:'尚未配置这个带单组合',http_status:400};
-    const result = {portfolio_id:PORTFOLIO_ID,source:'Binance 公开带单记录',source_url:`https://www.binance.bh/zh-CN/copy-trading/lead-details/${PORTFOLIO_ID}`,timezone:'Asia/Shanghai',refresh_seconds:REFRESH_SECONDS,checked_at:new Date(now()).toISOString()};
+    const portfolioId = url.searchParams.get('portfolio_id') || PORTFOLIO_ID;
+    if ([...url.searchParams.keys()].some(key => key !== 'portfolio_id') || url.searchParams.getAll('portfolio_id').length > 1 || !TRADERS.some(trader => trader.id === portfolioId)) return {error:'尚未配置这个带单组合',http_status:400};
+    const result = {portfolio_id:portfolioId,traders:TRADERS,source:'Binance 公开带单记录',source_url:`https://www.binance.bh/zh-CN/copy-trading/lead-details/${portfolioId}`,timezone:'Asia/Shanghai',refresh_seconds:REFRESH_SECONDS,checked_at:new Date(now()).toISOString()};
     let first = true;
     for (const [name,section,normalize] of [['orders','order-history',normalizeOrder],['positions','position-history',normalizePosition],['profile','detail',null]]) {
       // Space reads on a cold request; cached sections do not create upstream traffic.
-      if (!first && !memory.has(section)) await wait(1200);
+      if (!first && !memory.has(`${portfolioId}:${section}`)) await wait(1200);
       first = false;
-      const saved = await load(section,url.origin,context);
+      const saved = await load(section,portfolioId,url.origin,context);
       const view = {status:saved.data == null ? 'unavailable' : saved.error ? 'stale' : 'ok',fetched_at:saved.fetched_at,error:saved.error};
       if (normalize) {
         const key = name === 'orders' ? 'time_ms' : 'closed_ms';

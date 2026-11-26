@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {createReader,normalizeOrder,normalizePosition,readBoundedJson,PORTFOLIO_ID} from '../src/copy-trading.js';
+import {createReader,normalizeOrder,normalizePosition,readBoundedJson,PORTFOLIO_ID,TRADERS} from '../src/copy-trading.js';
 import worker from '../src/worker.js';
 
 const incoming = () => new Request('https://minimaomao.zhoum-n.workers.dev/api/copy-trading',{headers:{Authorization:'Basic test-only'}});
@@ -54,10 +54,50 @@ const password='local-test-password-only';
 const env={ACCESS_PASSWORD:password,ASSETS:{fetch(){throw new Error('unexpected asset access');}}};
 const unauthenticated = await worker.fetch(new Request('https://test/api/copy-trading'),env,{});
 assert.equal(unauthenticated.status,401,'new API must remain behind existing Basic authentication');
-assert.equal(unauthenticated.headers.get('X-App-Version'),'20261126-copy-tab');
+assert.equal(unauthenticated.headers.get('X-App-Version'),'20261126-four-traders');
 const auth={Authorization:'Basic '+btoa('monitor:'+password)};
 const invalid = await worker.fetch(new Request('https://test/api/copy-trading?portfolio_id=invalid',{headers:auth}),env,{});
 assert.equal(invalid.status,400);
 const badMethod = await worker.fetch(new Request('https://test/api/copy-trading',{headers:auth,method:'POST'}),env,{});
 assert.equal(badMethod.status,405);
 console.log('copy trading: source identity, size bounds, auth, method restriction, cache/backoff, timestamps and direction checks passed');
+
+// Distinct portfolios must never share rows, profile data, stale fallbacks or pending reads.
+const multiCalls = [], failingIds = new Set();
+let multiTime = 1795660000000;
+const multiFetcher = async (url,options) => {
+  const portfolioId = url.includes('/detail?') ? new URL(url).searchParams.get('portfolioId') : JSON.parse(options.body).portfolioId;
+  assert(TRADERS.some(trader => trader.id === portfolioId));
+  multiCalls.push(portfolioId);
+  if (failingIds.has(portfolioId)) return new Response(JSON.stringify({code:'11012005',success:false}));
+  const symbol = 'TEST' + portfolioId.slice(-4) + 'USDT';
+  const data = url.includes('/detail?') ? {leadPortfolioId:portfolioId,nickname:portfolioId,positionShow:false} :
+    {list:url.endsWith('order-history') ? [{...order,symbol}] : [{...position,symbol}],total:1};
+  return new Response(JSON.stringify({code:'000000',success:true,data}));
+};
+const multiReader = createReader({fetcher:multiFetcher,now:()=>multiTime,wait:async()=>{},memory:new Map(),inflight:new Map()});
+const forTrader = id => new Request('https://test/api/copy-trading?portfolio_id=' + id);
+const snapshots = await Promise.all(TRADERS.map(trader => multiReader(forTrader(trader.id))));
+assert.equal(multiCalls.length,12);
+for (const [index,data] of snapshots.entries()) {
+  const trader = TRADERS[index];
+  assert.equal(data.portfolio_id,trader.id);
+  assert.equal(data.profile.data.nickname,trader.id);
+  assert.equal(data.orders.rows[0].symbol,'TEST'+trader.id.slice(-4)+'USDT');
+  assert.equal(data.positions.rows[0].symbol,data.orders.rows[0].symbol);
+}
+multiTime += 120001;
+failingIds.add(TRADERS[1].id);
+const failedTrader = await multiReader(forTrader(TRADERS[1].id));
+assert.equal(failedTrader.orders.status,'stale');
+assert.equal(failedTrader.orders.fetched_at,snapshots[1].orders.fetched_at);
+assert.deepEqual(failedTrader.orders.rows,snapshots[1].orders.rows);
+const otherTrader = await multiReader(forTrader(TRADERS[2].id));
+assert.equal(otherTrader.orders.status,'ok');
+assert.notEqual(otherTrader.orders.rows[0].symbol,failedTrader.orders.rows[0].symbol);
+const beforeConcurrent = multiCalls.length;
+const both = await Promise.all([multiReader(forTrader(TRADERS[3].id)),multiReader(forTrader(TRADERS[3].id))]);
+assert.equal(multiCalls.length-beforeConcurrent,3,'concurrent reads for one trader should share in-flight fetches');
+assert.deepEqual(both[0].orders.rows,both[1].orders.rows);
+assert.equal((await multiReader(new Request(`https://test/api/copy-trading?portfolio_id=${PORTFOLIO_ID}&portfolio_id=${TRADERS[1].id}`))).http_status,400);
+console.log('four traders: concurrent/cache identity isolation, independent failure fallback and single-flight checks passed');

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="dark">
   <title>Binance行情分析</title>
-  <link rel="stylesheet" href="paper-trading.css?v=20261126-copy-tab">
+  <link rel="stylesheet" href="paper-trading.css?v=20261126-four-traders">
 </head>
 <body class="monitor-active">
   <div class="app-shell">
@@ -126,8 +126,8 @@
       <section id="view-copy-trading" class="app-view copy-view" data-app-view="copy-trading">
         <section class="panel section-panel" aria-label="带单员信息">
           <div class="section-toolbar">
-            <div><h2 id="copy-trader-name">熬鹰资本</h2><p>组合 5075281354358777856 · 公开操作 · 北京时间 · 每2分钟检查更新</p></div>
-            <div class="toolbar-actions"><a class="secondary-button copy-source-link" href="https://www.binance.bh/zh-CN/copy-trading/lead-details/5075281354358777856?timeRange=30D" target="_blank" rel="noopener noreferrer">币安带单员主页</a><button id="copy-refresh" class="record-entry-button" type="button">刷新记录</button></div>
+            <div><h2 id="copy-trader-name">熬鹰资本</h2><p id="copy-trader-description">组合 5075281354358777856 · 公开操作 · 北京时间 · 每2分钟检查更新</p></div>
+            <div class="toolbar-actions"><label class="copy-filter">带单员 <select id="copy-trader-select"><option value="5075281354358777856">熬鹰资本</option><option value="5271501457743196416">发烧好了呢</option><option value="5126298543040831233">Bran Brandon</option><option value="4751838302089254401">Btc星辰</option></select></label><a id="copy-trader-source" class="secondary-button copy-source-link" href="https://www.binance.bh/zh-CN/copy-trading/lead-details/5075281354358777856?timeRange=30D" target="_blank" rel="noopener noreferrer">币安带单员主页</a><button id="copy-refresh" class="record-entry-button" type="button">刷新记录</button></div>
           </div>
           <div class="copy-notes">
             <p>这里展示带单员本人的公开成交，与你的模拟跟单成交可能不同。“开多/加多”等操作按成交方向识别，不能区分首次开仓与加仓；平仓历史中的价格为该轮仓位的平均价格。</p>
@@ -263,7 +263,7 @@
   <script src="binance-xau.js?v=20260825-integer-zones-v1"></script>
   <script src="liquidation-calculator.js?v=20260821-binance-liquidation-v1"></script>
   <script src="cloud-sync.js?v=20260822-cloud-sync-v1"></script>
-  <script src="paper-trading.js?v=20261126-copy-tab"></script>
-  <script src="copy-trading.js?v=20261126-copy-tab"></script>
+  <script src="paper-trading.js?v=20261126-four-traders"></script>
+  <script src="copy-trading.js?v=20261126-four-traders"></script>
 </body>
 </html>
