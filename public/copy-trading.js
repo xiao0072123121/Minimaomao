@@ -1,4 +1,4 @@
-import {mergeRecords} from './copy-trading-records.js?v=20261126-merged-records';
+import {mergeRecords,recordColumns} from './copy-trading-records.js?v=20261126-entry-columns';
 
 (() => {
   'use strict';
@@ -94,7 +94,7 @@ import {mergeRecords} from './copy-trading-records.js?v=20261126-merged-records'
         byId(section + '-state').classList.remove('copy-warning');
       }
       byId('records-count').textContent = '等待读取';
-      table('records-body', [], () => [], 8, '等待读取当前带单员记录');
+      table('records-body', [], () => [], 9, '等待读取当前带单员记录');
       return;
     }
     byId('position-visibility').textContent = !profile || snapshot.profile.status !== 'ok' ? '当前持仓公开情况待核验；仅按公开仓位状态展示。' : profile.positionShow === false ? '带单员隐藏了当前持仓；下方状态来自公开仓位记录，无法核实的操作显示“待确认”。' : '下方按公开仓位记录展示状态，公开记录可能延迟，不代表完整实时持仓。';
@@ -110,24 +110,42 @@ import {mergeRecords} from './copy-trading-records.js?v=20261126-merged-records'
     const operationText = operation => `${operation.action}\n${operation.time || '时间待确认'}\n价格 ${number(operation.price)} · 数量 ${number(operation.quantity)}`;
     const activity = row => {
       if (!row.latest_operation) return '最近操作页未覆盖';
-      if (row.operation_count === 1) return operationText(row.latest_operation);
+      if (row.operation_count === 1 && row.record_kind === 'operation') {
+        const values = recordColumns(row);
+        // One-way/unknown operations cannot be placed in open/close columns.
+        return row.record_kind === 'operation' && !values.entry_is_fill && !values.close_is_fill ? operationText(row.latest_operation) : row.latest_operation.action;
+      }
       const details = document.createElement('details');
       const summary = document.createElement('summary');
-      summary.textContent = `${operationText(row.latest_operation)}\n共 ${row.operation_count} 笔操作，点击展开`;
+      summary.textContent = `${row.latest_operation.action}\n${row.operation_count > 1 ? '共 ' + row.operation_count + ' 笔操作，点击展开' : '查看成交明细'}`;
       details.append(summary);
-      for (const operation of row.operations.slice(1)) {
+      for (const operation of row.operations) {
         const item = document.createElement('p');
         item.textContent = operationText(operation);
         details.append(item);
       }
       return details;
     };
-    table('records-body', rows, row => [
+    const tradeTime = (value, hint) => {
+      if (!hint) return value;
+      const label = document.createElement('span');
+      label.textContent = value || '—';
+      const note = document.createElement('small');
+      note.className = 'copy-fill-note';
+      note.textContent = hint;
+      label.append(note);
+      return label;
+    };
+    table('records-body', rows, row => {
+      const values = recordColumns(row);
+      return [
       [`${row.symbol} / ${row.direction}`, row.direction === '多' ? 'copy-long' : row.direction === '空' ? 'copy-short' : ''],
       [row.status + (row.partial_closed ? '\n已部分平仓' : ''), 'copy-status-' + row.state],
-      [row.opened_at], [number(row.entry_price)], [row.state === 'open' ? '未平仓' : row.closed_at],
-      [number(row.close_price)], [number(row.closed_quantity)], [activity(row), 'copy-activity'],
-    ], 8, snapshot.orders.status === 'unavailable' && snapshot.positions.status === 'unavailable' ? '公开记录暂不可用，等待刷新' : '当前筛选范围暂无开平仓记录');
+      [tradeTime(values.opened_at,values.entry_is_fill ? '本次开/加仓成交' : '')], [number(values.entry_price)], [number(values.entry_quantity)],
+      [row.state === 'open' ? '未平仓' : tradeTime(values.closed_at,values.close_is_fill ? '本次平/减仓成交' : '')],
+      [number(values.close_price)], [number(values.closed_quantity)], [activity(row), 'copy-activity'],
+    ];
+    }, 9, snapshot.orders.status === 'unavailable' && snapshot.positions.status === 'unavailable' ? '公开记录暂不可用，等待刷新' : '当前筛选范围暂无开平仓记录');
     sectionState('orders-state', snapshot.orders, '操作记录');
     sectionState('positions-state', snapshot.positions, '仓位记录');
   }
@@ -167,7 +185,7 @@ import {mergeRecords} from './copy-trading-records.js?v=20261126-merged-records'
           byId(section + '-state').textContent = '尚未取得数据';
         }
         byId('records-count').textContent = '尚未取得数据';
-        table('records-body', [], () => [], 8, '暂时无法读取记录');
+        table('records-body', [], () => [], 9, '暂时无法读取记录');
       }
     } finally {
       clearTimeout(timeout);

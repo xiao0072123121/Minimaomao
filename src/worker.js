@@ -30,7 +30,7 @@ function securityHeaders() {
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
-    "X-App-Version": "20261126-merged-records"
+    "X-App-Version": "20261126-entry-columns"
   };
 }
 

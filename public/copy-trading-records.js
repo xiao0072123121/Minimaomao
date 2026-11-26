@@ -7,6 +7,23 @@ function ms(value, display) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+// Fill the horizontal columns without relabelling a single addition/reduction
+// as a verified cycle opening/closure or replacing a position average.
+export function recordColumns(row) {
+  const values = {opened_at:row.opened_at,entry_price:row.entry_price,entry_quantity:row.entry_quantity ?? null,
+    closed_at:row.closed_at,close_price:row.close_price,closed_quantity:row.closed_quantity,
+    entry_is_fill:false,close_is_fill:false};
+  if (row.record_kind !== 'operation' || !row.latest_operation) return values;
+  const order = row.latest_operation;
+  const direction = `${order.side}:${order.position_side}`;
+  if (['BUY:LONG','SELL:SHORT'].includes(direction)) {
+    Object.assign(values,{opened_at:order.time,entry_price:order.price,entry_quantity:order.quantity,entry_is_fill:true});
+  } else if (['SELL:LONG','BUY:SHORT'].includes(direction)) {
+    Object.assign(values,{closed_at:order.time,close_price:order.price,closed_quantity:order.quantity,close_is_fill:true});
+  }
+  return values;
+}
+
 export function mergeRecords(snapshot) {
   const positions = snapshot?.positions?.rows || [];
   const orders = snapshot?.orders?.rows || [];

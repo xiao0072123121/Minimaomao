@@ -404,7 +404,8 @@ body.modal-open { overflow: hidden; }
 .copy-view .copy-source-link { text-decoration: none; white-space: nowrap; border-radius: 7px; }
 .copy-view .copy-filter { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; white-space: nowrap; }
 .copy-view .copy-filter select { max-width: 220px; height: 30px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 6px; color: var(--text); background: #081620; }
-.copy-view .copy-records-table { min-width: 1180px; }
+.copy-view .copy-records-table { min-width: 1260px; }
+.copy-view .copy-fill-note { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
 .copy-view .copy-activity { white-space: pre-line; line-height: 1.7; min-width: 185px; }
 .copy-view .copy-activity summary { cursor: pointer; }
 .copy-view .copy-activity details p { padding-top: 8px; border-top: 1px solid var(--border); }

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {mergeRecords} from '../public/copy-trading-records.js';
+import {mergeRecords,recordColumns} from '../public/copy-trading-records.js';
 import {normalizeOrder,normalizePosition} from '../src/copy-trading.js';
 
 const start = Date.parse('2026-11-26T01:00:00Z');
@@ -32,6 +32,25 @@ const unmatched = rows.find(row=>row.record_kind==='operation');
 assert.equal(unmatched.state,'unknown','unmatched buy is not automatically unclosed');
 assert.equal(unmatched.opened_at,null,'a possible addition is not a verified first opening');
 assert.equal(unmatched.latest_operation.price,120);
+const openingColumns = recordColumns(unmatched);
+assert.equal(openingColumns.opened_at,unmatched.latest_operation.time);
+assert.equal(openingColumns.entry_price,120);
+assert.equal(openingColumns.entry_quantity,1);
+assert.equal(openingColumns.entry_is_fill,true);
+assert.equal(unmatched.state,'unknown','displaying a fill must not change its verification status');
+assert.equal(unmatched.opened_at,null,'display columns must not overwrite cycle evidence');
+const cycleColumns = recordColumns(done);
+assert.equal(cycleColumns.entry_price,100,'a cycle average must not be overwritten with its latest fill');
+assert.equal(cycleColumns.entry_quantity,null,'closed volume must not be invented as opening quantity');
+const reduction = mergeRecords(snapshot([], [order('SELL','LONG',start+30000,122)]))[0];
+assert.equal(recordColumns(reduction).opened_at,null);
+assert.equal(recordColumns(reduction).closed_at,reduction.latest_operation.time);
+assert.equal(recordColumns(reduction).close_price,122);
+assert.equal(recordColumns(reduction).closed_quantity,1);
+assert.equal(reduction.state,'unknown','a reduction fill does not prove the cycle is fully closed');
+const both = mergeRecords(snapshot([], [order('BUY','BOTH',start)]))[0];
+assert.equal(recordColumns(both).opened_at,null);
+assert.equal(recordColumns(both).closed_at,null);
 
 const overlapping = position('overlap','Long','All Closed',start+10000,start+25000,start+25000);
 const ambiguous = mergeRecords(snapshot([closed,overlapping],[order('SELL','LONG',start+18000)]));

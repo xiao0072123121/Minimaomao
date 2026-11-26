@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="dark">
   <title>Binance行情分析</title>
-  <link rel="stylesheet" href="paper-trading.css?v=20261126-merged-records">
+  <link rel="stylesheet" href="paper-trading.css?v=20261126-entry-columns">
 </head>
 <body class="monitor-active">
   <div class="app-shell">
@@ -141,9 +141,9 @@
             <div class="toolbar-actions"><label class="copy-filter">状态 <select id="copy-status-filter"><option value="">全部状态</option><option value="open">未平仓</option><option value="closed">已平仓</option><option value="unknown">待确认</option></select></label><label class="copy-filter">品种 <select id="copy-symbol-filter"><option value="">全部品种</option></select></label></div>
           </div>
           <div class="copy-notes"><p id="copy-orders-state">操作记录等待读取</p><p id="copy-positions-state">仓位记录等待读取</p></div>
-          <div class="table-wrap"><table class="data-table copy-records-table"><thead><tr><th>品种 / 方向</th><th>状态</th><th>开仓时间（北京时间）</th><th>开仓均价</th><th>平仓时间（北京时间）</th><th>平仓均价</th><th>已平数量</th><th>最新操作</th></tr></thead><tbody id="copy-records-body"><tr class="empty-row"><td colspan="8">等待读取开平仓记录</td></tr></tbody></table></div>
+          <div class="table-wrap"><table class="data-table copy-records-table"><thead><tr><th>品种 / 方向</th><th>状态</th><th>开仓时间（北京时间）</th><th>开仓均价</th><th>开仓数量</th><th>平仓时间（北京时间）</th><th>平仓均价</th><th>已平数量</th><th>最新操作</th></tr></thead><tbody id="copy-records-body"><tr class="empty-row"><td colspan="9">等待读取开平仓记录</td></tr></tbody></table></div>
         </section>
-        <p class="copy-footnote">合并最近20条操作与20条仓位记录，状态以币安公开更新为准，不代表完整实时持仓。部分平仓的均价和数量仅指已平部分；最新操作价格为该笔成交价。时间为北京时间。</p>
+        <p class="copy-footnote">合并最近20条操作与20条仓位记录，状态以币安公开更新为准，不代表完整实时持仓。标注“本次成交”的行仅显示该笔开/加仓或平/减仓数据，不代表整轮首次开仓或全部平仓；未公开的整轮开仓数量显示“—”。部分平仓的均价和数量仅指已平部分。时间为北京时间。</p>
       </section>
 
       <section id="view-simulation" class="app-view" data-app-view="simulation">
@@ -260,7 +260,7 @@
   <script src="binance-xau.js?v=20260825-integer-zones-v1"></script>
   <script src="liquidation-calculator.js?v=20260821-binance-liquidation-v1"></script>
   <script src="cloud-sync.js?v=20260822-cloud-sync-v1"></script>
-  <script src="paper-trading.js?v=20261126-merged-records"></script>
-  <script type="module" src="copy-trading.js?v=20261126-merged-records"></script>
+  <script src="paper-trading.js?v=20261126-entry-columns"></script>
+  <script type="module" src="copy-trading.js?v=20261126-entry-columns"></script>
 </body>
 </html>
