@@ -1,12 +1,22 @@
 (() => {
   'use strict';
-  const byId = id => document.getElementById(id);
+  const root = document.getElementById('view-copy-trading');
+  if (!root) return;
+  const byId = id => root.querySelector('#copy-' + id);
   const button = byId('refresh');
   const filter = byId('symbol-filter');
   let snapshot = null;
   let pending = false;
   let timer = null;
-  function schedule() { clearTimeout(timer); if (!document.hidden) timer = setTimeout(refresh, 120000); }
+  let lastCheckedAt = 0;
+  const active = () => root.classList.contains('active') && !document.hidden;
+  function schedule() { clearTimeout(timer); if (active()) timer = setTimeout(refresh, Math.max(0, 120000 - (Date.now() - lastCheckedAt))); }
+  function activate() {
+    clearTimeout(timer);
+    if (!active()) return;
+    if (!snapshot || Date.now() - lastCheckedAt >= 120000) refresh();
+    else schedule();
+  }
   const number = value => value == null || !Number.isFinite(Number(value)) ? '—' :
     Number(value).toLocaleString('en-US', {maximumFractionDigits: 10});
   function cell(row, value, className = '') {
@@ -53,7 +63,7 @@
     sectionState('positions-state', snapshot.positions);
   }
   async function refresh() {
-    if (pending) return;
+    if (pending || !active()) return;
     pending = true;
     button.disabled = true;
     const controller = new AbortController();
@@ -95,12 +105,14 @@
       clearTimeout(timeout);
       pending = false;
       button.disabled = false;
+      lastCheckedAt = Date.now();
       schedule();
     }
   }
   filter.addEventListener('change', render);
   button.addEventListener('click', refresh);
-  document.addEventListener('visibilitychange', () => { clearTimeout(timer); if (!document.hidden) refresh(); });
+  window.addEventListener('app-view-change', activate);
+  document.addEventListener('visibilitychange', activate);
   window.addEventListener('pagehide', () => clearTimeout(timer));
-  refresh();
+  activate();
 })();

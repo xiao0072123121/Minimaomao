@@ -1,36 +1,10 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>币安带单观察 · 最新操作</title>
-<link rel="stylesheet" href="paper-trading.css">
-<link rel="stylesheet" href="copy-trading.css?v=20261126a">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="0;url=./#copy-trading">
+  <title>带单观察 · Binance行情分析</title>
 </head>
-<body class="app-page page-binance-copy">
-<main class="ui-page-shell">
-  <header class="unified-page-header">
-    <div class="unified-page-header-copy"><h1>币安带单观察</h1><p>带单员公开操作 · 北京时间 · 每2分钟检查更新</p></div>
-    <div class="unified-page-header-actions"><button id="refresh" type="button">刷新记录</button><a href="./">返回行情分析</a></div>
-  </header>
-  <section class="copy-profile" aria-label="带单员信息">
-    <div><span class="eyebrow">正在观察</span><h2 id="trader-name">熬鹰资本</h2><p>组合 5075281354358777856</p></div>
-    <a href="https://www.binance.bh/zh-CN/copy-trading/lead-details/5075281354358777856?timeRange=30D" target="_blank" rel="noopener noreferrer">币安带单员主页</a>
-  </section>
-  <p class="copy-note">这里展示带单员本人的公开成交记录，与你账号中的模拟跟单成交可能不同。“开多/加多”等操作按成交方向识别；不能仅凭这条记录区分首次开仓与加仓。已平仓记录中的价格为该轮仓位的平均价格。</p>
-  <p id="position-visibility" class="copy-note">正在核验当前持仓公开状态…</p>
-  <p id="refresh-state" role="status" aria-live="polite">正在读取最新记录…</p>
-  <section class="copy-panel" aria-labelledby="orders-title">
-    <div class="copy-panel-head"><h2 id="orders-title">最新操作记录</h2><span id="orders-state">正在读取…</span></div>
-    <label class="copy-filter">筛选品种 <select id="symbol-filter"><option value="">全部品种</option></select></label>
-    <div class="copy-table-scroll"><table><thead><tr><th>成交时间（北京时间）</th><th>品种</th><th>操作</th><th>成交均价</th><th>成交数量</th></tr></thead><tbody id="orders-body"><tr><td colspan="5">正在读取…</td></tr></tbody></table></div>
-  </section>
-  <section class="copy-panel" aria-labelledby="positions-title">
-    <div class="copy-panel-head"><h2 id="positions-title">最近平仓记录</h2><span id="positions-state">正在读取…</span></div>
-    <div class="copy-table-scroll"><table><thead><tr><th>品种 / 方向</th><th>开仓时间（北京时间）</th><th>开仓均价</th><th>平仓时间（北京时间）</th><th>平仓均价</th><th>已平数量</th><th>状态</th></tr></thead><tbody id="positions-body"><tr><td colspan="7">正在读取…</td></tr></tbody></table></div>
-  </section>
-  <p class="copy-footnote">每次只读取最近20条操作与20条平仓记录；公开接口可能有延迟或缺失，列表不代表完整持仓。价格按合约报价单位显示，数量按对应基础资产单位显示。</p>
-</main>
-<script src="copy-trading.js?v=20261126a"></script>
-</body>
+<body><a href="./#copy-trading">打开带单观察</a></body>
 </html>

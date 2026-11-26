@@ -397,6 +397,20 @@ body.modal-open { overflow: hidden; }
 .fill-details summary { width: max-content; color: #7fa4be; cursor: pointer; list-style-position: inside; }
 .fill-detail-list { display: grid; gap: 3px; min-width: 230px; margin-top: 5px; padding: 7px 8px; border: 1px solid var(--border); border-radius: 6px; background: #091923; }
 .fill-detail-list span { color: #a9c0d1 !important; }
+.copy-view .section-panel:first-child { margin-top: 0; }
+.copy-view .copy-notes { padding: 9px 13px; color: var(--muted); font-size: 11px; line-height: 1.7; }
+.copy-view .copy-notes p { margin: 0 0 4px; }
+.copy-view .copy-notes p:last-child { margin-bottom: 0; }
+.copy-view .copy-source-link { text-decoration: none; white-space: nowrap; border-radius: 7px; }
+.copy-view .copy-filter { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.copy-view .copy-filter select { max-width: 220px; height: 30px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 6px; color: var(--text); background: #081620; }
+.copy-view .copy-orders-table { min-width: 760px; }
+.copy-view .copy-positions-table { min-width: 1100px; }
+.copy-view .data-table td.copy-long { color: var(--red); }
+.copy-view .data-table td.copy-short { color: var(--green); }
+.copy-view .copy-warning { color: var(--gold); }
+.copy-view .copy-footnote { margin: 10px 0 0; color: var(--muted); font-size: 10px; line-height: 1.7; }
+.copy-view button:disabled { opacity: .55; cursor: wait; }
 .toast {
   position: fixed; right: 18px; bottom: 18px; z-index: 30; transform: translateY(20px); opacity: 0; pointer-events: none;
   max-width: 360px; padding: 11px 14px; border: 1px solid var(--border-strong); border-radius: 8px; color: var(--text); background: #102332;

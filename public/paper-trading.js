@@ -797,6 +797,7 @@
   }
 
   function navigate(view) {
+    if (!["monitor", "copy-trading", "simulation", "journal"].includes(view)) view = "monitor";
     state.currentView = view;
     document.body.classList.toggle("monitor-active", view === "monitor");
     document.querySelectorAll(".nav-button[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
@@ -806,6 +807,8 @@
       refreshOpenSimulationQuotes(false);
     }
     if (view === "journal") renderSimulation();
+    if (window.location.hash !== `#${view}`) window.history.replaceState(null, "", `#${view}`);
+    window.dispatchEvent(new CustomEvent("app-view-change", { detail: { view } }));
   }
 
   function editTrade(tradeId) {
@@ -889,6 +892,7 @@
     });
     window.addEventListener("online", () => scheduleCloudSync(100));
     window.addEventListener("offline", () => setCloudSyncStatus("offline", "离线缓存中"));
+    window.addEventListener("hashchange", () => navigate(window.location.hash.slice(1)));
   }
 
   async function start() {
@@ -908,6 +912,7 @@
     if (snapshot?.price) recordQuote(snapshot);
     resetTradeForm();
     renderAll();
+    navigate(window.location.hash.slice(1) || "monitor");
     state.cloudSyncReady = true;
     await syncCloudState();
     await refreshSimulationQuote($("simulation-symbol").value, false, true);
