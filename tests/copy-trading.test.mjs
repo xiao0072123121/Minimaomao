@@ -54,7 +54,7 @@ const password='local-test-password-only';
 const env={ACCESS_PASSWORD:password,ASSETS:{fetch(){throw new Error('unexpected asset access');}}};
 const unauthenticated = await worker.fetch(new Request('https://test/api/copy-trading'),env,{});
 assert.equal(unauthenticated.status,401,'new API must remain behind existing Basic authentication');
-assert.equal(unauthenticated.headers.get('X-App-Version'),'20261126-four-traders');
+assert.equal(unauthenticated.headers.get('X-App-Version'),'20261126-five-traders');
 const auth={Authorization:'Basic '+btoa('monitor:'+password)};
 const invalid = await worker.fetch(new Request('https://test/api/copy-trading?portfolio_id=invalid',{headers:auth}),env,{});
 assert.equal(invalid.status,400);
@@ -78,7 +78,7 @@ const multiFetcher = async (url,options) => {
 const multiReader = createReader({fetcher:multiFetcher,now:()=>multiTime,wait:async()=>{},memory:new Map(),inflight:new Map()});
 const forTrader = id => new Request('https://test/api/copy-trading?portfolio_id=' + id);
 const snapshots = await Promise.all(TRADERS.map(trader => multiReader(forTrader(trader.id))));
-assert.equal(multiCalls.length,12);
+assert.equal(multiCalls.length,TRADERS.length*3);
 for (const [index,data] of snapshots.entries()) {
   const trader = TRADERS[index];
   assert.equal(data.portfolio_id,trader.id);
@@ -100,4 +100,4 @@ const both = await Promise.all([multiReader(forTrader(TRADERS[3].id)),multiReade
 assert.equal(multiCalls.length-beforeConcurrent,3,'concurrent reads for one trader should share in-flight fetches');
 assert.deepEqual(both[0].orders.rows,both[1].orders.rows);
 assert.equal((await multiReader(new Request(`https://test/api/copy-trading?portfolio_id=${PORTFOLIO_ID}&portfolio_id=${TRADERS[1].id}`))).http_status,400);
-console.log('four traders: concurrent/cache identity isolation, independent failure fallback and single-flight checks passed');
+console.log('configured traders: concurrent/cache identity isolation, independent failure fallback and single-flight checks passed');

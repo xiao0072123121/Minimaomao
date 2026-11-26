@@ -5,6 +5,7 @@ export const TRADERS = Object.freeze([
   {id:'5271501457743196416',name:'发烧好了呢'},
   {id:'5126298543040831233',name:'Bran Brandon'},
   {id:'4751838302089254401',name:'Btc星辰'},
+  {id:'4532994172262753536',name:'Sky株式会社'},
 ]);
 export const REFRESH_SECONDS = 120;
 const PREFIX = 'https://www.binance.com/bapi/futures/v1/friendly/future/copy-trade/lead-portfolio/';
