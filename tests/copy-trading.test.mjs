@@ -54,7 +54,7 @@ const password='local-test-password-only';
 const env={ACCESS_PASSWORD:password,ASSETS:{fetch(){throw new Error('unexpected asset access');}}};
 const unauthenticated = await worker.fetch(new Request('https://test/api/copy-trading'),env,{});
 assert.equal(unauthenticated.status,401,'new API must remain behind existing Basic authentication');
-assert.equal(unauthenticated.headers.get('X-App-Version'),'20261126-copy-observer');
+assert.equal(unauthenticated.headers.get('X-App-Version'),'20261126-trim-modules');
 const auth={Authorization:'Basic '+btoa('monitor:'+password)};
 const invalid = await worker.fetch(new Request('https://test/api/copy-trading?portfolio_id=invalid',{headers:auth}),env,{});
 assert.equal(invalid.status,400);

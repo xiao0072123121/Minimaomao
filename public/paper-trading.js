@@ -11,11 +11,10 @@
   const CLOUD_SYNC_INTERVAL = 30000;
   const CLOUD_SYNC_DEBOUNCE = 700;
   const SIDE_LABELS = { long: "做多", short: "做空" };
-  const REASON_ORDER = ["支撑/压力", "K线反转", "RSI超买超卖", "区间高抛低吸", "突破/回踩", "其他"];
   const state = {
     trades: [], simulationTrades: [], simulationCapital: DEFAULT_SIMULATION_CAPITAL,
     simulationQuotes: new Map(), quoteHistory: new Map(), simulationSide: "long",
-    selectedWeekStart: startOfWeek(Date.now()), toastTimer: null, simulationTimer: null,
+    toastTimer: null, simulationTimer: null,
     currentView: "monitor", simulationSaving: false,
     simulationCapitalUpdatedAt: 0, simulationDeletedTrades: {}, cloudRevision: 0,
     cloudSyncReady: false, cloudSyncTimer: null, cloudSyncInterval: null,
@@ -68,31 +67,6 @@
     const hours = Math.floor(minutes % 1440 / 60);
     const remainder = minutes % 60;
     return `${days ? `${days}天 ` : ""}${hours ? `${hours}小时 ` : ""}${remainder}分钟`;
-  }
-
-  function startOfWeek(timestamp) {
-    const date = new Date(timestamp);
-    date.setHours(0, 0, 0, 0);
-    const weekday = date.getDay() || 7;
-    date.setDate(date.getDate() - weekday + 1);
-    return date.getTime();
-  }
-
-  function endOfWeek(weekStart) {
-    return weekStart + 7 * 24 * 60 * 60 * 1000;
-  }
-
-  function formatWeek(weekStart) {
-    const start = new Date(weekStart);
-    const end = new Date(endOfWeek(weekStart) - 1);
-    const part = (date) => `${String(date.getMonth() + 1).padStart(2, "0")}/${String(date.getDate()).padStart(2, "0")}`;
-    return `${part(start)} – ${part(end)}`;
-  }
-
-  function confidenceLabel(count) {
-    if (count < 10) return "样本不足";
-    if (count < 30) return "初步倾向";
-    return "较稳定";
   }
 
   function toLocalInput(timestamp) {
@@ -354,10 +328,6 @@
     toast.classList.add("visible");
     clearTimeout(state.toastTimer);
     state.toastTimer = setTimeout(() => toast.classList.remove("visible"), 2800);
-  }
-
-  function analysisTrades() {
-    return state.simulationTrades.filter((trade) => trade.closed && trade.includeInAnalysis);
   }
 
   function simulationDirection(trade) {
@@ -640,8 +610,6 @@
     }
     if (changed) {
       await saveSimulationState();
-      renderWeekly();
-      renderHabits();
       showToast("模拟持仓已按止损/止盈条件自动平仓。");
     }
   }
@@ -821,115 +789,11 @@
     closeTradeModal();
     resetTradeForm();
     navigate(normalized.closed ? "journal" : "simulation");
-    showToast(existing ? "模拟交易记录已更新。" : value.closed ? "已平仓模拟交易已录入并纳入分析。" : "模拟持仓已保存，止盈止损触价后将自动执行。" );
-  }
-
-  function reviewFor(trades) {
-    const count = trades.length;
-    const wins = trades.filter((trade) => trade.pnl > 0).length;
-    const pnl = trades.reduce((sum, trade) => sum + trade.pnl, 0);
-    const grossProfit = trades.filter((trade) => trade.pnl > 0).reduce((sum, trade) => sum + trade.pnl, 0);
-    const grossLoss = Math.abs(trades.filter((trade) => trade.pnl < 0).reduce((sum, trade) => sum + trade.pnl, 0));
-    let running = 0;
-    let peak = 0;
-    let maxDrawdown = 0;
-    [...trades].sort((a, b) => a.closeAt - b.closeAt).forEach((trade) => {
-      running += trade.pnl;
-      peak = Math.max(peak, running);
-      maxDrawdown = Math.min(maxDrawdown, running - peak);
-    });
-    return {
-      count, winRate: count ? wins / count * 100 : NaN, pnl,
-      profitFactor: grossLoss ? grossProfit / grossLoss : grossProfit ? Infinity : NaN,
-      maxDrawdown, averageHold: count ? trades.reduce((sum, trade) => sum + trade.closeAt - trade.openAt, 0) / count : NaN
-    };
-  }
-
-  function drawWeeklyChart(trades) {
-    const svg = $("weekly-equity-chart");
-    if (!trades.length) {
-      svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="#8298aa" font-size="14">本周尚无纳入分析的交易</text>';
-      return;
-    }
-    const ordered = [...trades].sort((a, b) => a.closeAt - b.closeAt);
-    let running = 0;
-    const values = [0, ...ordered.map((trade) => (running += trade.pnl))];
-    const min = Math.min(...values, 0);
-    const max = Math.max(...values, 0);
-    const span = Math.max(1, max - min);
-    const points = values.map((value, index) => `${40 + index / Math.max(1, values.length - 1) * 820},${190 - (value - min) / span * 150}`).join(" ");
-    const zeroY = 190 - (0 - min) / span * 150;
-    const color = values.at(-1) >= 0 ? "#28d69d" : "#ff6572";
-    svg.innerHTML = `<line x1="40" y1="${zeroY}" x2="860" y2="${zeroY}" stroke="rgba(153,184,207,.25)" stroke-dasharray="5 5"/><polyline points="${points}" fill="none" stroke="${color}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>`;
-  }
-
-  function countBy(trades, getter) {
-    const counts = new Map();
-    trades.forEach((trade) => getter(trade).forEach((key) => counts.set(key, (counts.get(key) || 0) + 1)));
-    return [...counts.entries()].sort((a, b) => b[1] - a[1]);
-  }
-
-  function renderWeekly() {
-    const weekTrades = analysisTrades().filter((trade) => trade.closeAt >= state.selectedWeekStart && trade.closeAt < endOfWeek(state.selectedWeekStart));
-    const review = reviewFor(weekTrades);
-    $("week-label").textContent = formatWeek(state.selectedWeekStart);
-    $("review-count").textContent = String(review.count);
-    $("review-win-rate").textContent = formatPercent(review.winRate);
-    $("review-pnl").textContent = formatMoney(review.pnl, true);
-    $("review-pnl").className = review.pnl > 0 ? "metric-positive" : review.pnl < 0 ? "metric-negative" : "";
-    $("review-profit-factor").textContent = review.profitFactor === Infinity ? "∞" : Number.isFinite(review.profitFactor) ? review.profitFactor.toFixed(2) : "—";
-    $("review-drawdown").textContent = formatMoney(review.maxDrawdown);
-    $("review-hold").textContent = formatDuration(review.averageHold);
-    $("review-confidence").textContent = confidenceLabel(review.count);
-    drawWeeklyChart(weekTrades);
-    const commonReason = countBy(weekTrades, (trade) => trade.reasons)[0];
-    const longTrades = weekTrades.filter((trade) => trade.side === "long");
-    const shortTrades = weekTrades.filter((trade) => trade.side === "short");
-    const insights = review.count ? [
-      { type: review.pnl >= 0 ? "next" : "problem", title: "本周结果", text: `${review.count}笔，胜率${formatPercent(review.winRate)}，净盈亏${formatMoney(review.pnl, true)}。` },
-      { type: "", title: "最常用依据", text: commonReason ? `${commonReason[0]}出现${commonReason[1]}次；仍需结合盈亏证据观察。` : "尚未形成重复依据。" },
-      { type: "next", title: "方向分布", text: `做多${longTrades.length}笔，做空${shortTrades.length}笔；用于检查是否长期偏向单一方向。` }
-    ] : [{ type: "", title: "等待模拟交易", text: "本周完成并纳入分析的模拟交易出现后，这里自动生成总结。" }];
-    $("weekly-insights").innerHTML = insights.map((item) => `<div class="insight-item ${item.type}"><b>${escapeHtml(item.title)}</b><p>${escapeHtml(item.text)}</p></div>`).join("");
-    $("weekly-trades-body").innerHTML = weekTrades.length ? [...weekTrades].sort((a,b) => b.closeAt - a.closeAt).map((trade) => `<tr><td>${escapeHtml(formatDate(trade.closeAt))}</td><td>${escapeHtml(trade.id.slice(0,8))}</td><td>${escapeHtml(trade.symbol)}</td><td>${SIDE_LABELS[trade.side]}</td><td>${escapeHtml(trade.reasons.join(" / ") || "模拟开仓")}</td><td>${escapeHtml(trade.exitReason)}</td><td class="${trade.pnl >= 0 ? "metric-positive" : "metric-negative"}">${escapeHtml(formatMoney(trade.pnl, true))}</td></tr>`).join("") : '<tr class="empty-row"><td colspan="7">本周暂无模拟交易证据。</td></tr>';
-  }
-
-  function renderHabits() {
-    const trades = analysisTrades();
-    const confidence = confidenceLabel(trades.length);
-    $("habit-confidence").textContent = `${confidence} · ${trades.length}笔`;
-    if (!trades.length) {
-      $("habit-list").innerHTML = '<div class="empty-row">完成模拟交易后开始形成画像。</div>';
-      return;
-    }
-    const longCount = trades.filter((trade) => trade.side === "long").length;
-    const preferredSide = longCount === trades.length - longCount ? "多空数量相同" : longCount > trades.length - longCount ? `偏多（${longCount}/${trades.length}）` : `偏空（${trades.length - longCount}/${trades.length}）`;
-    const reasonStats = REASON_ORDER.map((reason) => {
-      const matching = trades.filter((trade) => trade.reasons.includes(reason));
-      return { reason, count: matching.length, pnl: matching.reduce((sum, trade) => sum + trade.pnl, 0) };
-    }).filter((item) => item.count).sort((a,b) => b.count - a.count);
-    const common = reasonStats[0];
-    const best = reasonStats.filter((item) => item.count >= 2).sort((a,b) => b.pnl - a.pnl)[0];
-    const stopDistances = trades.filter((trade) => Number.isFinite(trade.stopLoss)).map((trade) => Math.abs(trade.entryPrice - trade.stopLoss));
-    const targetDistances = trades.filter((trade) => Number.isFinite(trade.takeProfit)).map((trade) => Math.abs(trade.takeProfit - trade.entryPrice));
-    const exits = countBy(trades, (trade) => [trade.exitReason]);
-    const average = (values) => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : NaN;
-    const rows = [
-      ["偏好方向", preferredSide, confidence],
-      ["常用开仓依据", common ? `${common.reason}（${common.count}/${trades.length}）` : "暂无", confidence],
-      ["当前较好证据", best ? `${best.reason}：${best.count}笔，净${formatMoney(best.pnl, true)}` : "同类样本不足2笔", confidence],
-      ["平均计划止损距离", Number.isFinite(average(stopDistances)) ? `${formatPrice(average(stopDistances))} USDT` : "未录入足够止损", confidence],
-      ["平均计划止盈距离", Number.isFinite(average(targetDistances)) ? `${formatPrice(average(targetDistances))} USDT` : "未录入足够止盈", confidence],
-      ["平均持仓时长", formatDuration(average(trades.map((trade) => trade.closeAt - trade.openAt))), confidence],
-      ["常见退出方式", exits[0] ? `${exits[0][0]}（${exits[0][1]}/${trades.length}）` : "暂无", confidence]
-    ];
-    $("habit-list").innerHTML = rows.map(([label, value, level]) => `<div class="habit-row"><span>${escapeHtml(label)}</span><b>${escapeHtml(value)}</b><em>${escapeHtml(level)}</em></div>`).join("");
+    showToast(existing ? "模拟交易记录已更新。" : value.closed ? "已平仓模拟交易已录入交易日志。" : "模拟持仓已保存，止盈止损触价后将自动执行。" );
   }
 
   function renderAll() {
     renderSimulation();
-    renderWeekly();
-    renderHabits();
   }
 
   function navigate(view) {
@@ -942,8 +806,6 @@
       refreshOpenSimulationQuotes(false);
     }
     if (view === "journal") renderSimulation();
-    if (view === "weekly") renderWeekly();
-    if (view === "habits") renderHabits();
   }
 
   function editTrade(tradeId) {
@@ -1013,8 +875,6 @@
       if (deleteSimulationButton) deleteSimulationTrade(deleteSimulationButton.dataset.deleteSimulation);
     };
     [$("simulation-open-body"), $("simulation-closed-body")].forEach((body) => body.addEventListener("click", handleRecordAction));
-    $("week-prev").addEventListener("click", () => { state.selectedWeekStart -= 7 * 24 * 60 * 60 * 1000; renderWeekly(); });
-    $("week-next").addEventListener("click", () => { if (state.selectedWeekStart < startOfWeek(Date.now())) state.selectedWeekStart += 7 * 24 * 60 * 60 * 1000; renderWeekly(); });
     window.addEventListener("market-price", (event) => {
       const detail = event.detail || {};
       if (!detail.symbol || !Number.isFinite(Number(detail.price))) return;
