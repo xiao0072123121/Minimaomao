@@ -42,10 +42,14 @@ export function normalizeOrder(row) {
 }
 
 export function normalizePosition(row) {
+  const closed = ['All Closed','Closed'].includes(row.status);
+  const partial = row.status === 'Partially Closed' && row.closed == null;
+  const state = closed ? 'closed' : partial ? 'open' : 'unknown';
   return {position_id:String(row.positionId || ''),symbol:String(row.symbol || '—'),
     direction:({Long:'多',Short:'空'})[row.side] || '待确认',
-    status:({'All Closed':'已全部平仓',Closed:'已平仓'})[row.status] || '状态待确认',
+    status:({closed:'已平仓',open:'未平仓',unknown:'待确认'})[state],state,partial_closed:partial,source_status:row.status || null,
     opened_at:timestamp(row.opened),closed_at:timestamp(row.closed),closed_ms:number(row.closed),
+    opened_ms:number(row.opened),updated_at:timestamp(row.updateTime),updated_ms:number(row.updateTime),
     entry_price:number(row.avgCost),close_price:number(row.avgClosePrice),closed_quantity:number(row.closedVolume)};
 }
 

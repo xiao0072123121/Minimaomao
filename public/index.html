@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="dark">
   <title>Binance行情分析</title>
-  <link rel="stylesheet" href="paper-trading.css?v=20261126-copy-relay">
+  <link rel="stylesheet" href="paper-trading.css?v=20261126-merged-records">
 </head>
 <body class="monitor-active">
   <div class="app-shell">
@@ -130,23 +130,20 @@
             <div class="toolbar-actions"><label class="copy-filter">带单员 <select id="copy-trader-select"><option value="5075281354358777856">熬鹰资本</option><option value="5271501457743196416">发烧好了呢</option><option value="5126298543040831233">Bran Brandon</option><option value="4751838302089254401">Btc星辰</option><option value="4532994172262753536">Sky株式会社</option><option value="5108371059752839168">鎏渊</option></select></label><a id="copy-trader-source" class="secondary-button copy-source-link" href="https://www.binance.bh/zh-CN/copy-trading/lead-details/5075281354358777856?timeRange=30D" target="_blank" rel="noopener noreferrer">币安带单员主页</a><button id="copy-refresh" class="record-entry-button" type="button">刷新记录</button></div>
           </div>
           <div class="copy-notes">
-            <p>这里展示带单员本人的公开成交，与你的模拟跟单成交可能不同。“开多/加多”等操作按成交方向识别，不能区分首次开仓与加仓；平仓历史中的价格为该轮仓位的平均价格。</p>
+            <p>公开操作和仓位记录合并展示；未平仓排在前面，部分平仓仍显示“未平仓”。缺少可靠仓位对应的操作显示“待确认”，不据此推算当前持仓。</p>
             <p id="copy-position-visibility">打开此 Tab 后核验当前持仓公开状态。</p>
             <p id="copy-refresh-state" role="status" aria-live="polite">打开此 Tab 后读取最新记录。</p>
           </div>
         </section>
-        <section class="panel section-panel" aria-labelledby="copy-orders-title">
+        <section class="panel section-panel" aria-labelledby="copy-records-title">
           <div class="section-toolbar">
-            <div><h2 id="copy-orders-title">最新操作记录</h2><p id="copy-orders-state">等待读取</p></div>
-            <label class="copy-filter">筛选品种 <select id="copy-symbol-filter"><option value="">全部品种</option></select></label>
+            <div><h2 id="copy-records-title">开平仓记录</h2><p id="copy-records-count">等待读取</p></div>
+            <div class="toolbar-actions"><label class="copy-filter">状态 <select id="copy-status-filter"><option value="">全部状态</option><option value="open">未平仓</option><option value="closed">已平仓</option><option value="unknown">待确认</option></select></label><label class="copy-filter">品种 <select id="copy-symbol-filter"><option value="">全部品种</option></select></label></div>
           </div>
-          <div class="table-wrap"><table class="data-table copy-orders-table"><thead><tr><th>成交时间（北京时间）</th><th>品种</th><th>操作</th><th>成交均价</th><th>成交数量</th></tr></thead><tbody id="copy-orders-body"><tr class="empty-row"><td colspan="5">等待读取最新操作记录</td></tr></tbody></table></div>
+          <div class="copy-notes"><p id="copy-orders-state">操作记录等待读取</p><p id="copy-positions-state">仓位记录等待读取</p></div>
+          <div class="table-wrap"><table class="data-table copy-records-table"><thead><tr><th>品种 / 方向</th><th>状态</th><th>开仓时间（北京时间）</th><th>开仓均价</th><th>平仓时间（北京时间）</th><th>平仓均价</th><th>已平数量</th><th>最新操作</th></tr></thead><tbody id="copy-records-body"><tr class="empty-row"><td colspan="8">等待读取开平仓记录</td></tr></tbody></table></div>
         </section>
-        <section class="panel section-panel" aria-labelledby="copy-positions-title">
-          <div class="section-toolbar"><div><h2 id="copy-positions-title">最近平仓记录</h2><p id="copy-positions-state">等待读取</p></div></div>
-          <div class="table-wrap"><table class="data-table copy-positions-table"><thead><tr><th>品种 / 方向</th><th>开仓时间（北京时间）</th><th>开仓均价</th><th>平仓时间（北京时间）</th><th>平仓均价</th><th>已平数量</th><th>状态</th></tr></thead><tbody id="copy-positions-body"><tr class="empty-row"><td colspan="7">等待读取平仓记录</td></tr></tbody></table></div>
-        </section>
-        <p class="copy-footnote">最近20条操作与20条平仓记录 · 公开接口可能延迟或缺失，列表不代表完整持仓 · 价格按合约报价单位，数量按基础资产单位显示</p>
+        <p class="copy-footnote">合并最近20条操作与20条仓位记录，状态以币安公开更新为准，不代表完整实时持仓。部分平仓的均价和数量仅指已平部分；最新操作价格为该笔成交价。时间为北京时间。</p>
       </section>
 
       <section id="view-simulation" class="app-view" data-app-view="simulation">
@@ -263,7 +260,7 @@
   <script src="binance-xau.js?v=20260825-integer-zones-v1"></script>
   <script src="liquidation-calculator.js?v=20260821-binance-liquidation-v1"></script>
   <script src="cloud-sync.js?v=20260822-cloud-sync-v1"></script>
-  <script src="paper-trading.js?v=20261126-copy-relay"></script>
-  <script src="copy-trading.js?v=20261126-copy-relay"></script>
+  <script src="paper-trading.js?v=20261126-merged-records"></script>
+  <script type="module" src="copy-trading.js?v=20261126-merged-records"></script>
 </body>
 </html>
